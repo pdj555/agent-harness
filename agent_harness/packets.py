@@ -13,6 +13,7 @@ from typing import Any
 from agent_harness import __version__
 from agent_harness.adapters import AdapterStatus, EngineRun
 from agent_harness.capital import CapitalLoop
+from agent_harness.stress import stress_packet
 
 
 SCHEMA_VERSION = "agent-harness.run.v1"
@@ -52,7 +53,11 @@ def status_to_payload(status: AdapterStatus) -> dict[str, Any]:
         "capabilities": list(status.capabilities),
         "contract_version": status.contract_version,
         "repo_sha": status.repo_sha,
+        "repo_branch": status.repo_branch,
         "repo_dirty": status.repo_dirty,
+        "repo_status": list(status.repo_status),
+        "repo_status_count": status.repo_status_count,
+        "repo_status_truncated": status.repo_status_truncated,
     }
 
 
@@ -127,6 +132,7 @@ def build_run_packet(
         },
         "ranked_loops": [loop_to_payload(loop) for loop in ranked_loops],
     }
+    packet["stress_tests"] = stress_packet(packet)
     packet["content_digest"] = packet_digest(packet)
     return packet
 

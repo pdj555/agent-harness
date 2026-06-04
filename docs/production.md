@@ -11,15 +11,20 @@ append-only ledger, and passed to other agents.
    thesis that touches allocation.
 2. Walk-forward validation. A capital thesis should include backtest evidence
    unless the operator explicitly disables it.
-3. Durable packets. A thesis run is not complete until it has a saved packet.
-4. Repo fingerprints. Every adapter must expose repo SHA and dirty status.
-5. Replayability. Operators must be able to inspect a packet without re-running
+3. Stress survival. A capital thesis should survive deterministic stress
+   haircuts before promotion.
+4. Durable packets. A thesis run is not complete until it has a saved packet.
+5. Repo fingerprints. Every adapter must expose repo SHA and dirty status.
+6. Replayability. Operators must be able to inspect a packet without re-running
    engines.
-6. Ledger ingest. Packets must enter the append-only ledger unless explicitly
+7. Ledger ingest. Packets must enter the append-only ledger unless explicitly
    disabled by an operator.
-7. Evaluation. Packets must pass schema, risk-order, simulation, backtest,
-   position-cap, cash-buffer, and fingerprint checks before they are treated as
-   production-ready.
+8. Ledger report. Promotion readiness must be checked across the ledger, not just
+   one packet.
+9. Promotion gate. Canonical artifacts must be written only by `ledger promote`.
+10. Evaluation. Packets must pass schema, risk-order, simulation, backtest,
+    stress, position-cap, cash-buffer, and fingerprint checks before they are
+    treated as production-ready.
 
 ## Packet Lifecycle
 
@@ -31,7 +36,10 @@ append-only ledger, and passed to other agents.
    engines.
 5. `agent-harness eval <packet>` checks whether the packet is usable.
 6. `agent-harness ledger list/show` exposes the append-only query surface.
-7. A future provenance adapter should push the packet into
+7. `agent-harness ledger report` aggregates performance and promotion blockers.
+8. `agent-harness ledger promote` writes a promotion attempt and publishes
+   `canonical.json` only if promotion is ready.
+9. A future provenance adapter should push the packet into
    `research-run-platform` or an equivalent ledger.
 
 ## Ledger Files
@@ -43,6 +51,26 @@ append-only ledger, and passed to other agents.
 
 Ledger ingest is idempotent when the same `run_id` and digest are seen again.
 If a run id is reused for different content, ingest fails.
+
+## Promotion Readiness
+
+`agent-harness ledger report` checks whether the latest run can be promoted as a
+canonical research signal.
+
+Current blockers:
+
+- fewer than the required number of ledger runs
+- latest run failed eval
+- simulation did not execute
+- walk-forward validation did not execute
+- latest backtest failed to beat cash
+- latest stress tests failed
+- latest run has dirty repos
+
+`agent-harness ledger promote` persists each promotion attempt under
+`.agent-harness/promotions/attempts`. Blocked attempts update
+`.agent-harness/promotions/latest.json` but do not write
+`.agent-harness/promotions/canonical.json`.
 
 ## Risk Stance
 

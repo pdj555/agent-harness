@@ -47,7 +47,7 @@ def _packet(tmp_path: Path, *, run_suffix: str = "a") -> dict:
                     "value_at_risk_95_pct": 0.03,
                 },
             },
-            "rankings": {"AAPL": {"max_drawdown_q95": 0.08}},
+            "rankings": {"AAPL": {"max_drawdown_q95": 0.03}},
             "errors": [],
         },
         repo_sha="abc",
@@ -98,6 +98,7 @@ def test_ingest_packet_is_idempotent(tmp_path: Path) -> None:
     assert len(read_ledger_entries(tmp_path / "ledger")) == 1
     assert (tmp_path / "ledger" / "packets" / "run_test_a.json").exists()
     assert first["backtest"]["excess_return_vs_cash"] == 0.02
+    assert first["stress"]["ok"]
 
 
 def test_ingest_rejects_run_id_digest_collision(tmp_path: Path) -> None:

@@ -84,6 +84,17 @@ def evaluate_packet(packet: dict[str, Any]) -> dict[str, Any]:
                 )
             )
 
+    stress_tests = packet.get("stress_tests")
+    checks.append(
+        _check(
+            "stress_tests_passed",
+            isinstance(stress_tests, dict) and bool(stress_tests.get("ok")),
+            f"worst_margin={stress_tests.get('worst_margin')}"
+            if isinstance(stress_tests, dict)
+            else "stress tests missing",
+        )
+    )
+
     risk_controls = packet.get("risk_controls", {})
     max_position = risk_controls.get("max_position_weight", 0.0)
     concentration_weight = risk_controls.get("concentration_weight", 0.50)
@@ -122,10 +133,16 @@ def evaluate_packet(packet: dict[str, Any]) -> dict[str, Any]:
         _check(
             "repo_fingerprints_present",
             all(
-                isinstance(adapter, dict) and "repo_sha" in adapter and "repo_dirty" in adapter
+                isinstance(adapter, dict)
+                and "repo_sha" in adapter
+                and "repo_branch" in adapter
+                and "repo_dirty" in adapter
+                and "repo_status" in adapter
+                and "repo_status_count" in adapter
+                and "repo_status_truncated" in adapter
                 for adapter in adapters.values()
             ),
-            "all adapters include repo_sha/repo_dirty"
+            "all adapters include repo sha, branch, dirty flag, and status lines"
             if adapters
             else "no adapter fingerprints present",
         )

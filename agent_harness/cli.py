@@ -25,11 +25,13 @@ from agent_harness.ledger import (
     read_ledger_entries,
 )
 from agent_harness.packets import build_run_packet, status_to_payload, validate_run_packet
+from agent_harness.promotions import default_promotions_dir, promote_latest
 from agent_harness.registry import (
     default_namespace_root,
     discover_repositories,
     known_repo_specs,
 )
+from agent_harness.reports import build_ledger_report
 from agent_harness.store import default_run_dir, load_packet, write_packet
 
 
@@ -122,6 +124,18 @@ def build_parser() -> argparse.ArgumentParser:
     ledger_show.add_argument("run_id", help="Run id to show.")
     ledger_show.add_argument("--packet", action="store_true", help="Show the stored packet copy.")
     ledger_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    ledger_report = ledger_sub.add_parser("report", help="Summarize ledger performance and promotion readiness.")
+    ledger_report.add_argument("--min-runs", type=int, default=3, help="Runs required before promotion readiness.")
+    ledger_report.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    ledger_promote = ledger_sub.add_parser("promote", help="Promote the latest ready ledger run to canonical.")
+    ledger_promote.add_argument("--min-runs", type=int, default=3, help="Runs required before promotion readiness.")
+    ledger_promote.add_argument(
+        "--promotions-dir",
+        type=Path,
+        default=default_promotions_dir(),
+        help="Directory for promotion artifacts.",
+    )
+    ledger_promote.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     return parser
 
 
@@ -366,6 +380,7 @@ def _render_ledger(args: argparse.Namespace) -> int:
             top_loop = payload.get("top_loop", {})
             primary = payload.get("primary_pick", {})
             backtest = payload.get("backtest", {})
+            stress = payload.get("stress", {})
             print(f"Run: {payload.get('run_id')}")
             print(f"Created: {payload.get('created_at')}")
             print(f"Digest: {payload.get('content_digest')}")
@@ -378,7 +393,87 @@ def _render_ledger(args: argparse.Namespace) -> int:
                 f"excess_cash={backtest.get('excess_return_vs_cash')} "
                 f"drawdown={backtest.get('strategy_max_drawdown')}"
             )
+            print(
+                "Stress: "
+                f"ok={stress.get('ok')} "
+                f"worst_margin={stress.get('worst_margin')}"
+            )
         return 0
+
+    if args.ledger_command == "report":
+        entries = read_ledger_entries(args.ledger_dir)
+        report = build_ledger_report(
+            entries,
+            min_runs_for_promotion=int(args.min_runs),
+        )
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            promotion = report["promotion"]
+            backtest = report["backtest"]
+            stress = report["stress"]
+            picks = report["primary_picks"]
+            trust = report["trust"]
+            state = "READY" if promotion["ready"] else "NOT READY"
+            print(f"Ledger report: {state}")
+            print(f"Runs: {report['run_count']} latest={report['latest_run_id']}")
+            print(
+                "Eval: "
+                f"ok_rate={report['eval']['ok_rate']:.2f} "
+                f"avg_score={report['eval']['score']['avg']}"
+            )
+            print(
+                "Backtest: "
+                f"avg_excess_cash={backtest['excess_return_vs_cash']['avg']} "
+                f"positive_cash_rate={backtest['positive_excess_cash_rate']:.2f} "
+                f"max_drawdown={backtest['strategy_max_drawdown']['max']}"
+            )
+            print(
+                "Stress: "
+                f"ok_rate={stress['ok_rate']:.2f} "
+                f"worst_margin={stress['worst_margin']['min']}"
+            )
+            print(
+                "Primary picks: "
+                f"most_common={picks['most_common']} "
+                f"share={picks['most_common_share']:.2f} "
+                f"counts={picks['counts']}"
+            )
+            print(
+                "Trust: "
+                f"dirty_run_rate={trust['dirty_run_rate']:.2f} "
+                f"dirty_repos={trust['dirty_repos']}"
+            )
+            if promotion["blockers"]:
+                print("Blockers:")
+                for blocker in promotion["blockers"]:
+                    print(f"- {blocker}")
+        return 0
+
+    if args.ledger_command == "promote":
+        record, paths = promote_latest(
+            ledger_dir=args.ledger_dir,
+            promotions_dir=args.promotions_dir,
+            min_runs=int(args.min_runs),
+        )
+        if args.json:
+            payload = dict(record)
+            payload["paths"] = {
+                key: str(value) if value is not None else None
+                for key, value in paths.items()
+            }
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"Promotion: {record['status']}")
+            print(f"Run: {record.get('run_id')}")
+            print(f"Attempt: {paths['attempt_path']}")
+            if paths.get("canonical_path") is not None:
+                print(f"Canonical: {paths['canonical_path']}")
+            if record["blockers"]:
+                print("Blockers:")
+                for blocker in record["blockers"]:
+                    print(f"- {blocker}")
+        return 0 if record["status"] == "promoted" else 2
 
     return 1
 

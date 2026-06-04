@@ -105,3 +105,29 @@ def test_ledger_list_and_show_commands_use_saved_packet(tmp_path: Path, capsys) 
     assert main(["ledger", "--ledger-dir", str(ledger_dir), "show", run_id]) == 0
     shown = capsys.readouterr()
     assert f"Run: {run_id}" in shown.out
+
+    assert main(["ledger", "--ledger-dir", str(ledger_dir), "report", "--min-runs", "1"]) == 0
+    report = capsys.readouterr()
+    assert "Ledger report:" in report.out
+    assert "Runs:" in report.out
+
+    promotions_dir = tmp_path / "promotions"
+    assert (
+        main(
+            [
+                "ledger",
+                "--ledger-dir",
+                str(ledger_dir),
+                "promote",
+                "--min-runs",
+                "1",
+                "--promotions-dir",
+                str(promotions_dir),
+            ]
+        )
+        == 2
+    )
+    promoted = capsys.readouterr()
+    assert "Promotion: blocked" in promoted.out
+    assert (promotions_dir / "latest.json").exists()
+    assert not (promotions_dir / "canonical.json").exists()

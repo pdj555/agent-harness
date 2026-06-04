@@ -37,8 +37,14 @@ def _packet(tmp_path: Path) -> dict:
             "action_plan": {
                 "headline": "Lean in",
                 "cash_weight": 0.4,
-                "primary_pick": {"ticker": "AAPL", "weight": 0.6},
-            }
+                "primary_pick": {
+                    "ticker": "AAPL",
+                    "weight": 0.6,
+                    "expected_return": 0.18,
+                    "value_at_risk_95_pct": 0.02,
+                },
+            },
+            "rankings": {"AAPL": {"max_drawdown_q95": 0.03}},
         },
         command=("monte-carlo", "simulate", "AAPL"),
         repo_sha="abc",
@@ -80,6 +86,7 @@ def test_packet_digest_validates(tmp_path: Path) -> None:
 
     assert packet["content_digest"] == packet_digest(packet)
     assert validate_run_packet(packet) == []
+    assert packet["stress_tests"]["ok"]
 
 
 def test_evaluate_packet_requires_risk_gate_first(tmp_path: Path) -> None:

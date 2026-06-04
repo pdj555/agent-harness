@@ -86,6 +86,51 @@ def _backtest_summary(packet: dict[str, Any]) -> dict[str, Any]:
     return summary if isinstance(summary, dict) else {}
 
 
+def _stress_summary(packet: dict[str, Any]) -> dict[str, Any]:
+    stress = packet.get("stress_tests", {})
+    return stress if isinstance(stress, dict) else {}
+
+
+def _status_lines(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(line) for line in value if isinstance(line, str) and line.strip()]
+
+
+def build_repo_trust(packet: dict[str, Any]) -> dict[str, Any]:
+    """Return compact repository trust metadata from packet adapters."""
+
+    adapters = packet.get("adapters") if isinstance(packet.get("adapters"), dict) else {}
+    rows: list[dict[str, Any]] = []
+    dirty_details: list[dict[str, Any]] = []
+    for name, adapter in sorted(adapters.items(), key=lambda item: item[0]):
+        if not isinstance(adapter, dict):
+            continue
+        status_lines = _status_lines(adapter.get("repo_status"))
+        status_count = adapter.get("repo_status_count")
+        if not isinstance(status_count, int):
+            status_count = len(status_lines)
+        row = {
+            "name": str(adapter.get("name") or name),
+            "repo_path": adapter.get("repo_path"),
+            "repo_sha": adapter.get("repo_sha"),
+            "repo_branch": adapter.get("repo_branch"),
+            "repo_dirty": adapter.get("repo_dirty"),
+            "repo_status": status_lines,
+            "repo_status_count": status_count,
+            "repo_status_truncated": bool(adapter.get("repo_status_truncated")),
+        }
+        rows.append(row)
+        if row["repo_dirty"] is True:
+            dirty_details.append(row)
+    return {
+        "adapter_count": len(rows),
+        "dirty_count": len(dirty_details),
+        "dirty_details": dirty_details,
+        "adapters": rows,
+    }
+
+
 def build_ledger_entry(
     packet: dict[str, Any],
     *,
@@ -102,6 +147,8 @@ def build_ledger_entry(
     primary = _primary_pick(packet)
     top_loop = _top_loop(packet)
     backtest = _backtest_summary(packet)
+    stress = _stress_summary(packet)
+    repo_trust = build_repo_trust(packet)
     monte_run = packet.get("engine_runs", {}).get("monte_carlo")
     monte_ok = isinstance(monte_run, dict) and bool(monte_run.get("ok"))
     backtest_run = packet.get("engine_runs", {}).get("monte_carlo_backtest")
@@ -122,6 +169,7 @@ def build_ledger_entry(
         "eval_ok": bool(evaluation["ok"]),
         "eval_score": evaluation["score"],
         "dirty_repos": list(evaluation["dirty_repos"]),
+        "repo_trust": repo_trust,
         "top_loop": {
             "name": top_loop.get("name"),
             "repo": top_loop.get("repo"),
@@ -141,6 +189,13 @@ def build_ledger_entry(
             "excess_return_vs_equal_weight": backtest.get("excess_return_vs_equal_weight"),
             "excess_return_vs_cash": backtest.get("excess_return_vs_cash"),
             "periods": backtest.get("periods"),
+        },
+        "stress": {
+            "ok": stress.get("ok"),
+            "worst_margin": stress.get("worst_margin"),
+            "scenario_count": len(stress.get("scenarios", []))
+            if isinstance(stress.get("scenarios"), list)
+            else 0,
         },
     }
 

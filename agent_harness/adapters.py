@@ -43,7 +43,11 @@ class AdapterStatus:
     capabilities: tuple[str, ...] = ()
     contract_version: str = "1"
     repo_sha: str | None = None
+    repo_branch: str | None = None
     repo_dirty: bool | None = None
+    repo_status: tuple[str, ...] = ()
+    repo_status_count: int = 0
+    repo_status_truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -102,11 +106,39 @@ def _repo_sha(repo_path: Path) -> str | None:
     return _git_output(repo_path, ("rev-parse", "HEAD"))
 
 
-def _repo_dirty(repo_path: Path) -> bool | None:
-    output = _git_output(repo_path, ("status", "--porcelain"))
+def _repo_branch(repo_path: Path) -> str | None:
+    return _git_output(repo_path, ("rev-parse", "--abbrev-ref", "HEAD"))
+
+
+def _repo_status_lines(repo_path: Path) -> tuple[str, ...] | None:
+    output = _git_output(repo_path, ("status", "--porcelain=v1"))
     if output is None:
         return None
-    return bool(output)
+    return tuple(line for line in output.splitlines() if line.strip())
+
+
+def _repo_fingerprint(repo_path: Path, *, status_limit: int = 50) -> dict[str, Any]:
+    """Return compact git trust metadata for a repository path."""
+
+    status_lines = _repo_status_lines(repo_path)
+    if status_lines is None:
+        return {
+            "repo_sha": _repo_sha(repo_path),
+            "repo_branch": _repo_branch(repo_path),
+            "repo_dirty": None,
+            "repo_status": (),
+            "repo_status_count": 0,
+            "repo_status_truncated": False,
+        }
+    scoped = status_lines[:status_limit]
+    return {
+        "repo_sha": _repo_sha(repo_path),
+        "repo_branch": _repo_branch(repo_path),
+        "repo_dirty": bool(status_lines),
+        "repo_status": scoped,
+        "repo_status_count": len(status_lines),
+        "repo_status_truncated": len(status_lines) > len(scoped),
+    }
 
 
 @contextlib.contextmanager
@@ -158,8 +190,7 @@ class MonteCarloAdapter:
         self.repo_path = repo_path.expanduser().resolve()
 
     def status(self) -> AdapterStatus:
-        repo_sha = _repo_sha(self.repo_path)
-        repo_dirty = _repo_dirty(self.repo_path)
+        fingerprint = _repo_fingerprint(self.repo_path)
         if not self.repo_path.exists():
             return AdapterStatus(
                 name="monte-carlo",
@@ -168,8 +199,7 @@ class MonteCarloAdapter:
                 reason="repository not found",
                 command=self.default_command(("AAPL", "MSFT")),
                 capabilities=("simulation", "backtest", "risk_guardrails", "allocation"),
-                repo_sha=repo_sha,
-                repo_dirty=repo_dirty,
+                **fingerprint,
             )
         missing = [
             filename
@@ -184,8 +214,7 @@ class MonteCarloAdapter:
                 reason=f"missing expected files: {', '.join(missing)}",
                 command=self.default_command(("AAPL", "MSFT")),
                 capabilities=("simulation", "backtest", "risk_guardrails", "allocation"),
-                repo_sha=repo_sha,
-                repo_dirty=repo_dirty,
+                **fingerprint,
             )
         return AdapterStatus(
             name="monte-carlo",
@@ -194,8 +223,7 @@ class MonteCarloAdapter:
             reason="public_cli execution functions found",
             command=self.default_command(("AAPL", "MSFT")),
             capabilities=("simulation", "backtest", "risk_guardrails", "allocation"),
-            repo_sha=repo_sha,
-            repo_dirty=repo_dirty,
+            **fingerprint,
         )
 
     def default_command(self, tickers: tuple[str, ...]) -> tuple[str, ...]:
@@ -462,8 +490,7 @@ class StockSentimentAdapter:
         self.repo_path = repo_path.expanduser().resolve()
 
     def status(self) -> AdapterStatus:
-        repo_sha = _repo_sha(self.repo_path)
-        repo_dirty = _repo_dirty(self.repo_path)
+        fingerprint = _repo_fingerprint(self.repo_path)
         command = (
             "python3",
             "-m",
@@ -483,8 +510,7 @@ class StockSentimentAdapter:
                 command=command,
                 required_env=("OPENAI_API_KEY",),
                 capabilities=("news", "sentiment", "catalyst_overlay"),
-                repo_sha=repo_sha,
-                repo_dirty=repo_dirty,
+                **fingerprint,
             )
         if not (self.repo_path / "stock_sentiment" / "cli.py").exists():
             return AdapterStatus(
@@ -495,8 +521,7 @@ class StockSentimentAdapter:
                 command=command,
                 required_env=("OPENAI_API_KEY",),
                 capabilities=("news", "sentiment", "catalyst_overlay"),
-                repo_sha=repo_sha,
-                repo_dirty=repo_dirty,
+                **fingerprint,
             )
         if not os.environ.get("OPENAI_API_KEY"):
             return AdapterStatus(
@@ -507,8 +532,7 @@ class StockSentimentAdapter:
                 command=command,
                 required_env=("OPENAI_API_KEY",),
                 capabilities=("news", "sentiment", "catalyst_overlay"),
-                repo_sha=repo_sha,
-                repo_dirty=repo_dirty,
+                **fingerprint,
             )
         return AdapterStatus(
             name="stock-sentiment-analysis",
@@ -518,8 +542,7 @@ class StockSentimentAdapter:
             command=command,
             required_env=("OPENAI_API_KEY",),
             capabilities=("news", "sentiment", "catalyst_overlay"),
-            repo_sha=repo_sha,
-            repo_dirty=repo_dirty,
+            **fingerprint,
         )
 
 
@@ -531,8 +554,7 @@ class LocalLedgerAdapter:
         self.ledger_dir = ledger_dir.expanduser()
 
     def status(self) -> AdapterStatus:
-        repo_sha = _repo_sha(self.repo_path)
-        repo_dirty = _repo_dirty(self.repo_path)
+        fingerprint = _repo_fingerprint(self.repo_path)
         return AdapterStatus(
             name="agent-harness-ledger",
             available=True,
@@ -541,8 +563,7 @@ class LocalLedgerAdapter:
             command=("agent-harness", "ledger", "list"),
             capabilities=("provenance", "run_ledger", "replay", "eval"),
             contract_version="1",
-            repo_sha=repo_sha,
-            repo_dirty=repo_dirty,
+            **fingerprint,
         )
 
 
@@ -553,8 +574,7 @@ class ResearchRunPlatformAdapter:
         self.repo_path = repo_path.expanduser().resolve()
 
     def status(self) -> AdapterStatus:
-        repo_sha = _repo_sha(self.repo_path)
-        repo_dirty = _repo_dirty(self.repo_path)
+        fingerprint = _repo_fingerprint(self.repo_path)
         command = ("agent-harness", "ledger", "sync", "research-run-platform")
         if not self.repo_path.exists():
             return AdapterStatus(
@@ -564,8 +584,7 @@ class ResearchRunPlatformAdapter:
                 reason="repository not found locally; local ledger remains active",
                 command=command,
                 capabilities=("provenance", "run_explorer", "duckdb", "audit"),
-                repo_sha=repo_sha,
-                repo_dirty=repo_dirty,
+                **fingerprint,
             )
         missing = [
             marker
@@ -580,8 +599,7 @@ class ResearchRunPlatformAdapter:
                 reason=f"repository found but missing expected markers: {', '.join(missing)}",
                 command=command,
                 capabilities=("provenance", "run_explorer", "duckdb", "audit"),
-                repo_sha=repo_sha,
-                repo_dirty=repo_dirty,
+                **fingerprint,
             )
         return AdapterStatus(
             name="research-run-platform",
@@ -590,6 +608,5 @@ class ResearchRunPlatformAdapter:
             reason="repository found; ready for future ledger sync adapter",
             command=command,
             capabilities=("provenance", "run_explorer", "duckdb", "audit"),
-            repo_sha=repo_sha,
-            repo_dirty=repo_dirty,
+            **fingerprint,
         )
