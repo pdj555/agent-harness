@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-harness"
+version = "0.1.0"
+description = "Orchestration harness for decision engines in the pdj555 namespace."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Preston Jones" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+agent-harness = "agent_harness.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent_harness*"]
