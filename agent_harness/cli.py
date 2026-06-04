@@ -29,6 +29,7 @@ from agent_harness.ledger import (
 )
 from agent_harness.outcomes import default_outcome_dir, evaluate_outcome, write_outcome
 from agent_harness.packets import build_run_packet, status_to_payload, validate_run_packet
+from agent_harness.platform_sync import default_platform_export_dir, write_platform_export
 from agent_harness.promotions import default_promotions_dir, promote_latest
 from agent_harness.registry import (
     default_namespace_root,
@@ -188,6 +189,25 @@ def build_parser() -> argparse.ArgumentParser:
     ledger_trust.add_argument("run_id", nargs="?", help="Run id to audit. Defaults to the latest ledger entry.")
     ledger_trust.add_argument("--trust-policy", type=Path, help="Path to a trust-policy JSON file.")
     ledger_trust.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    ledger_sync = ledger_sub.add_parser("sync", help="Export ledger data for an external platform.")
+    ledger_sync.add_argument(
+        "target",
+        choices=["research-run-platform"],
+        help="Platform export target.",
+    )
+    ledger_sync.add_argument(
+        "--output-dir",
+        type=Path,
+        default=default_platform_export_dir(),
+        help="Directory for platform export bundles.",
+    )
+    ledger_sync.add_argument(
+        "--promotions-dir",
+        type=Path,
+        default=default_promotions_dir(),
+        help="Directory containing promotion attempts to include.",
+    )
+    ledger_sync.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     ledger_promote = ledger_sub.add_parser("promote", help="Promote the latest ready ledger run to canonical.")
     ledger_promote.add_argument("--min-runs", type=int, default=3, help="Runs required before promotion readiness.")
     ledger_promote.add_argument("--min-outcomes", type=int, default=0, help="Realized outcomes required before promotion readiness.")
@@ -829,6 +849,36 @@ def _render_ledger(args: argparse.Namespace) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
             _render_trust_payload(payload)
+        return 0
+
+    if args.ledger_command == "sync":
+        entries = read_ledger_entries(args.ledger_dir)
+        outcome_entries = read_outcome_entries(args.ledger_dir)
+        manifest, paths = write_platform_export(
+            ledger_entries=entries,
+            outcome_entries=outcome_entries,
+            ledger_dir=args.ledger_dir,
+            output_dir=args.output_dir,
+            promotions_dir=args.promotions_dir,
+            target=args.target,
+        )
+        payload = {
+            "manifest": manifest,
+            "paths": {key: str(value) for key, value in paths.items()},
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"Platform sync: {manifest['target']}")
+            print(f"Export id: {manifest['export_id']}")
+            print(
+                "Rows: "
+                f"runs={manifest['counts']['runs']} "
+                f"outcomes={manifest['counts']['outcomes']} "
+                f"promotions={manifest['counts']['promotions']}"
+            )
+            print(f"Bundle: {paths['export_dir']}")
+            print(f"Manifest: {paths['manifest']}")
         return 0
 
     if args.ledger_command == "promote":
