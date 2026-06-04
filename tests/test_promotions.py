@@ -10,6 +10,17 @@ def _ready_report() -> dict:
         "promotion": {"ready": True, "blockers": [], "min_runs": 3},
         "run_count": 3,
         "latest_run_id": "run_ready",
+        "trust": {
+            "latest_policy_evaluation": {
+                "ok": True,
+                "blocking_change_count": 0,
+                "allowed_change_count": 0,
+            }
+        },
+        "outcomes": {
+            "outcome_count": 1,
+            "scorecard": {"ok_rate": 1.0},
+        },
     }
 
 
@@ -30,6 +41,8 @@ def test_build_promotion_record_promotes_ready_report() -> None:
     assert record["status"] == "promoted"
     assert record["canonical_decision"]["primary_pick"]["ticker"] == "AAPL"
     assert record["canonical_decision"]["stress"]["ok"]
+    assert record["canonical_decision"]["trust"]["ok"]
+    assert record["canonical_decision"]["outcomes"]["outcome_count"] == 1
     assert record["blockers"] == []
 
 

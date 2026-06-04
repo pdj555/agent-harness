@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,14 @@ def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def _stable_digest(payload: dict[str, Any]) -> str:
+    scoped = dict(payload)
+    scoped.pop("outcome_digest", None)
+    scoped.pop("evaluated_at", None)
+    encoded = json.dumps(scoped, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _load_index(ledger_dir: Path) -> dict[str, Any]:
@@ -261,6 +270,26 @@ def read_ledger_entries(ledger_dir: Path | None = None) -> list[dict[str, Any]]:
     return entries
 
 
+def _read_jsonl_entries(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        payload = json.loads(line)
+        if isinstance(payload, dict):
+            entries.append(payload)
+    return entries
+
+
+def read_outcome_entries(ledger_dir: Path | None = None) -> list[dict[str, Any]]:
+    """Read realized-outcome ledger entries in append order."""
+
+    root = (ledger_dir or default_ledger_dir()).expanduser().resolve()
+    return _read_jsonl_entries(root / "outcomes.jsonl")
+
+
 def get_ledger_entry(run_id: str, ledger_dir: Path | None = None) -> dict[str, Any]:
     """Return a single ledger entry by run id."""
 
@@ -283,3 +312,199 @@ def load_ledger_packet(run_id: str, ledger_dir: Path | None = None) -> dict[str,
     if not isinstance(payload, dict):
         raise ValueError("ledger packet copy must be a JSON object")
     return payload
+
+
+def _safe_key(value: str) -> str:
+    return "".join(char if char.isalnum() or char in "._-" else "_" for char in value)
+
+
+def _outcome_base_key(outcome: dict[str, Any]) -> str:
+    window = outcome.get("window", {}) if isinstance(outcome.get("window"), dict) else {}
+    return "_".join(
+        _safe_key(str(part))
+        for part in (
+            outcome.get("run_id") or "run",
+            window.get("start_date") or "start",
+            window.get("end_date") or "end",
+        )
+    )
+
+
+def _outcome_key(outcome: dict[str, Any], digest: str) -> str:
+    return f"{_outcome_base_key(outcome)}_{_safe_key(digest[:12])}"
+
+
+def _existing_outcome_matches_digest(existing: dict[str, Any], digest: str) -> bool:
+    if existing.get("outcome_digest") == digest:
+        return True
+    copy_path_raw = existing.get("outcome_copy_path")
+    if not isinstance(copy_path_raw, str) or not copy_path_raw:
+        return False
+    copy_path = Path(copy_path_raw)
+    if not copy_path.exists():
+        return False
+    existing_payload = json.loads(copy_path.read_text(encoding="utf-8"))
+    return isinstance(existing_payload, dict) and _stable_digest(existing_payload) == digest
+
+
+def build_outcome_entry(
+    outcome: dict[str, Any],
+    *,
+    outcome_path: Path | None = None,
+    outcome_copy_path: Path | None = None,
+) -> dict[str, Any]:
+    """Build the compact queryable row for a realized outcome artifact."""
+
+    if outcome.get("schema_version") != "agent-harness.outcome.v1":
+        raise ValueError("unsupported outcome schema_version")
+    digest = outcome.get("outcome_digest") or _stable_digest(outcome)
+    window = outcome.get("window", {}) if isinstance(outcome.get("window"), dict) else {}
+    scorecard = outcome.get("scorecard", {}) if isinstance(outcome.get("scorecard"), dict) else {}
+    returns = outcome.get("returns", {}) if isinstance(outcome.get("returns"), dict) else {}
+    risk = outcome.get("risk", {}) if isinstance(outcome.get("risk"), dict) else {}
+    primary = outcome.get("primary_pick", {}) if isinstance(outcome.get("primary_pick"), dict) else {}
+    sources = outcome.get("sources", {}) if isinstance(outcome.get("sources"), dict) else {}
+    attribution = (
+        outcome.get("attribution", {})
+        if isinstance(outcome.get("attribution"), dict)
+        else {}
+    )
+    drivers = (
+        attribution.get("drivers", {})
+        if isinstance(attribution.get("drivers"), dict)
+        else {}
+    )
+    active_excess = (
+        attribution.get("active_excess", {})
+        if isinstance(attribution.get("active_excess"), dict)
+        else {}
+    )
+    cash = (
+        attribution.get("cash", {})
+        if isinstance(attribution.get("cash"), dict)
+        else {}
+    )
+    price_sources = (
+        sources.get("prices", {})
+        if isinstance(sources.get("prices"), dict)
+        else {}
+    )
+    return {
+        "ledger_schema_version": LEDGER_SCHEMA_VERSION,
+        "entry_type": "outcome",
+        "ingested_at": _utc_now(),
+        "run_id": outcome.get("run_id"),
+        "content_digest": outcome.get("content_digest"),
+        "outcome_digest": digest,
+        "outcome_path": str(outcome_path.expanduser().resolve()) if outcome_path else None,
+        "outcome_copy_path": str(outcome_copy_path.expanduser().resolve()) if outcome_copy_path else None,
+        "window": {
+            "start_date": window.get("start_date"),
+            "end_date": window.get("end_date"),
+            "horizon_rows": window.get("horizon_rows"),
+        },
+        "primary_pick": {
+            "ticker": primary.get("ticker"),
+            "expected_return": primary.get("expected_return"),
+            "realized_return": primary.get("realized_return"),
+            "forecast_error": primary.get("forecast_error"),
+            "hit": primary.get("hit"),
+        },
+        "returns": {
+            "allocation": returns.get("allocation"),
+            "equal_weight": returns.get("equal_weight"),
+            "cash": returns.get("cash"),
+            "excess_vs_equal_weight": returns.get("excess_vs_equal_weight"),
+            "excess_vs_cash": returns.get("excess_vs_cash"),
+        },
+        "risk": {
+            "realized_max_drawdown": risk.get("realized_max_drawdown"),
+        },
+        "sources": {
+            "price_dir": sources.get("price_dir"),
+            "price_source_digest": sources.get("price_source_digest"),
+            "prices": {
+                str(ticker): {
+                    "sha256": row.get("sha256") if isinstance(row, dict) else None,
+                    "rows": row.get("rows") if isinstance(row, dict) else None,
+                    "first_date": row.get("first_date") if isinstance(row, dict) else None,
+                    "last_date": row.get("last_date") if isinstance(row, dict) else None,
+                }
+                for ticker, row in sorted(price_sources.items())
+            },
+        },
+        "attribution": {
+            "active_excess": {
+                "vs_equal_weight": active_excess.get("vs_equal_weight"),
+                "from_positions": active_excess.get("from_positions"),
+                "from_cash": active_excess.get("from_cash"),
+            },
+            "cash": {
+                "weight": cash.get("weight"),
+                "contribution": cash.get("contribution"),
+                "drag_vs_equal_weight": cash.get("drag_vs_equal_weight"),
+            },
+            "drivers": {
+                "top_allocation_contributor": drivers.get("top_allocation_contributor"),
+                "top_active_contributor": drivers.get("top_active_contributor"),
+                "weakest_active_contributor": drivers.get("weakest_active_contributor"),
+                "largest_active_drag": drivers.get("largest_active_drag"),
+            },
+        },
+        "scorecard": {
+            "ok": scorecard.get("ok"),
+            "beat_cash": scorecard.get("beat_cash"),
+            "beat_equal_weight": scorecard.get("beat_equal_weight"),
+            "primary_hit": scorecard.get("primary_hit"),
+        },
+    }
+
+
+def ingest_outcome(
+    outcome: dict[str, Any],
+    *,
+    outcome_path: Path | None = None,
+    ledger_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Ingest a realized outcome into the ledger."""
+
+    root = (ledger_dir or default_ledger_dir()).expanduser().resolve()
+    index_path = root / "outcome_index.json"
+    index = (
+        json.loads(index_path.read_text(encoding="utf-8"))
+        if index_path.exists()
+        else {"schema_version": LEDGER_SCHEMA_VERSION, "outcomes": {}}
+    )
+    outcomes = index.setdefault("outcomes", {})
+    if not isinstance(outcomes, dict):
+        raise ValueError("outcome index outcomes must be a JSON object")
+    digest = outcome.get("outcome_digest") or _stable_digest(outcome)
+    base_key = _outcome_base_key(outcome)
+    key = _outcome_key(outcome, str(digest))
+    for existing_key, existing_entry in outcomes.items():
+        if not isinstance(existing_entry, dict):
+            continue
+        if existing_key == base_key or existing_key.startswith(f"{base_key}_"):
+            if _existing_outcome_matches_digest(existing_entry, str(digest)):
+                return existing_entry
+    existing = outcomes.get(key)
+    if isinstance(existing, dict):
+        if not _existing_outcome_matches_digest(existing, str(digest)):
+            raise ValueError(f"outcome key collision with different digest: {key}")
+        return existing
+
+    outcome = dict(outcome)
+    outcome["outcome_digest"] = digest
+    copy_path = root / "outcomes" / f"{key}.json"
+    _atomic_write_json(copy_path, outcome)
+    entry = build_outcome_entry(
+        outcome,
+        outcome_path=outcome_path,
+        outcome_copy_path=copy_path,
+    )
+    _append_jsonl(root / "outcomes.jsonl", entry)
+    outcomes[key] = entry
+    index["schema_version"] = LEDGER_SCHEMA_VERSION
+    _atomic_write_json(index_path, index)
+    _atomic_write_json(root / "latest_outcome.json", entry)
+    return entry

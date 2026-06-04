@@ -87,6 +87,11 @@ def test_packet_digest_validates(tmp_path: Path) -> None:
     assert packet["content_digest"] == packet_digest(packet)
     assert validate_run_packet(packet) == []
     assert packet["stress_tests"]["ok"]
+    monte_status = packet["adapters"]["monte-carlo"]
+    assert "repo_branch" in monte_status
+    assert monte_status["repo_status"] == []
+    assert monte_status["repo_status_count"] == 0
+    assert monte_status["repo_status_truncated"] is False
 
 
 def test_evaluate_packet_requires_risk_gate_first(tmp_path: Path) -> None:

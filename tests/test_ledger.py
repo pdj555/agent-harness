@@ -101,6 +101,30 @@ def test_ingest_packet_is_idempotent(tmp_path: Path) -> None:
     assert first["stress"]["ok"]
 
 
+def test_ingest_packet_records_repo_trust_details(tmp_path: Path) -> None:
+    packet = _packet(tmp_path)
+    packet["adapters"]["monte-carlo"].update(
+        {
+            "repo_branch": "main",
+            "repo_dirty": True,
+            "repo_status": [" M decision.py", "?? scratch.ipynb"],
+            "repo_status_count": 2,
+            "repo_status_truncated": False,
+        }
+    )
+    packet["content_digest"] = packet_digest(packet)
+
+    entry = ingest_packet(packet, ledger_dir=tmp_path / "ledger")
+
+    assert entry["dirty_repos"] == ["monte-carlo"]
+    assert entry["repo_trust"]["dirty_count"] == 1
+    assert entry["repo_trust"]["dirty_details"][0]["repo_branch"] == "main"
+    assert entry["repo_trust"]["dirty_details"][0]["repo_status"] == [
+        " M decision.py",
+        "?? scratch.ipynb",
+    ]
+
+
 def test_ingest_rejects_run_id_digest_collision(tmp_path: Path) -> None:
     packet = _packet(tmp_path)
     ingest_packet(packet, ledger_dir=tmp_path / "ledger")

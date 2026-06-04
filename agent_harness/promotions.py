@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agent_harness.ledger import read_ledger_entries
+from agent_harness.ledger import read_ledger_entries, read_outcome_entries
 from agent_harness.reports import build_ledger_report
 
 
@@ -55,6 +55,8 @@ def build_promotion_record(
     backtest = latest_entry.get("backtest", {}) if latest_entry else {}
     stress = latest_entry.get("stress", {}) if latest_entry else {}
     top_loop = latest_entry.get("top_loop", {}) if latest_entry else {}
+    trust = report.get("trust", {}) if isinstance(report.get("trust"), dict) else {}
+    outcomes = report.get("outcomes", {}) if isinstance(report.get("outcomes"), dict) else {}
 
     canonical_decision = None
     if ready and latest_entry:
@@ -65,6 +67,8 @@ def build_promotion_record(
             "primary_pick": primary_pick,
             "backtest": backtest,
             "stress": stress,
+            "trust": trust.get("latest_policy_evaluation"),
+            "outcomes": outcomes,
             "risk_authority": "research_only",
         }
 
@@ -107,11 +111,22 @@ def promote_latest(
     ledger_dir: Path | None = None,
     promotions_dir: Path | None = None,
     min_runs: int = 3,
+    min_outcomes: int = 0,
+    outcome_thresholds: dict[str, Any] | None = None,
+    trust_policy: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Path | None]]:
     """Attempt to promote the latest ledger entry as the canonical decision."""
 
     entries = read_ledger_entries(ledger_dir)
-    report = build_ledger_report(entries, min_runs_for_promotion=min_runs)
+    outcome_entries = read_outcome_entries(ledger_dir)
+    report = build_ledger_report(
+        entries,
+        min_runs_for_promotion=min_runs,
+        trust_policy=trust_policy,
+        outcome_entries=outcome_entries,
+        min_outcomes_for_promotion=min_outcomes,
+        outcome_thresholds=outcome_thresholds,
+    )
     latest_entry = entries[-1] if entries else None
     record = build_promotion_record(report=report, latest_entry=latest_entry)
     paths = write_promotion_record(record, promotions_dir=promotions_dir)

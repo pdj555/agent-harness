@@ -37,11 +37,20 @@ python3 -m agent_harness replay .agent-harness/runs/latest.json
 # Production checks over a saved packet
 python3 -m agent_harness eval .agent-harness/runs/latest.json
 
+# Realized outcome scoring over Date,Close price CSVs
+python3 -m agent_harness outcome .agent-harness/runs/latest.json
+
 # Query the append-only provenance ledger
 python3 -m agent_harness ledger list
 python3 -m agent_harness ledger show <run_id>
 python3 -m agent_harness ledger report
+python3 -m agent_harness ledger outcomes
+python3 -m agent_harness ledger trust
 python3 -m agent_harness ledger promote
+
+# Apply an explicit trust policy when auditing or promoting
+python3 -m agent_harness ledger trust --trust-policy docs/trust-policy.example.json
+python3 -m agent_harness ledger report --trust-policy docs/trust-policy.example.json
 ```
 
 By default, the harness assumes sibling repos live beside this repo under
@@ -73,12 +82,41 @@ The packet contains:
 - invocation and input parameters
 - risk controls
 - adapter readiness
-- sibling repo SHA and dirty status
+- sibling repo SHA, branch, dirty status, and bounded `git status --porcelain` lines
 - simulation/backtest command, duration, diagnostics, summary, and normalized payload
 - deterministic stress-test margins
 - ranked implementation loops
 
 This turns the harness from a CLI demo into a replayable decision artifact.
+
+## Realized Outcomes
+
+Simulation is only useful if it is closed by observed returns. `outcome` scores a
+saved packet over a price window and writes
+`.agent-harness/outcomes/<run>_<start>_<end>_<digest>.json` plus
+`.agent-harness/outcomes/latest.json`. Saved outcomes are also ingested into the
+ledger by default as compact rows in `.agent-harness/ledger/outcomes.jsonl`.
+
+```bash
+python3 -m agent_harness outcome .agent-harness/runs/latest.json
+python3 -m agent_harness outcome .agent-harness/runs/latest.json \
+  --price-dir /path/to/csvs \
+  --start-date 2024-01-02 \
+  --end-date 2024-01-15
+```
+
+The outcome artifact records primary-pick hit rate, allocation return, equal-weight
+return, cash return, excess return, realized max drawdown, forecast error, and a
+PASS/FAIL scorecard. `ledger outcomes` aggregates realized results across the
+ledger: hit rate, beat-cash rate, beat-equal-weight rate, excess-return stats,
+forecast-error calibration, realized drawdown, and attribution averages. Outcome
+thresholds can block promotion on low ok rate, weak excess return, high average
+absolute forecast error, or excessive realized drawdown. Each outcome also
+records price-source hashes, rejects duplicate price dates or unbalanced
+portfolio weights, and attributes performance by per-position contribution,
+active contribution versus equal weight, cash return contribution, cash drag,
+top positive active contributor, weakest active contributor, and largest active
+drag.
 
 ## Provenance Ledger
 
@@ -89,6 +127,9 @@ stores:
 - `index.json`: run-id index
 - `latest.json`: latest compact ledger entry
 - `packets/<run_id>.json`: immutable packet copy
+- `outcomes.jsonl`: compact realized-outcome event log
+- `latest_outcome.json`: latest compact outcome entry
+- `outcomes/<run_id>_<start>_<end>_<digest>.json`: immutable realized-outcome copy
 
 Commands:
 
@@ -98,12 +139,31 @@ python3 -m agent_harness ledger list --limit 5
 python3 -m agent_harness ledger show <run_id>
 python3 -m agent_harness ledger show <run_id> --packet
 python3 -m agent_harness ledger report --min-runs 3
+python3 -m agent_harness ledger outcomes --min-outcomes 1
+python3 -m agent_harness ledger outcomes --min-outcomes 1 \
+  --min-ok-rate 0.8 \
+  --min-excess-cash 0.0 \
+  --max-forecast-error 0.10 \
+  --max-drawdown 0.05
+python3 -m agent_harness ledger trust
+python3 -m agent_harness ledger trust <run_id>
+python3 -m agent_harness ledger trust --trust-policy docs/trust-policy.example.json
+python3 -m agent_harness ledger report --trust-policy docs/trust-policy.example.json
+python3 -m agent_harness ledger report --min-outcomes 1
+python3 -m agent_harness ledger report --min-outcomes 1 --max-outcome-forecast-error 0.10
 python3 -m agent_harness ledger promote --min-runs 3
+python3 -m agent_harness ledger promote --min-outcomes 1
+python3 -m agent_harness ledger promote --min-outcomes 1 --max-outcome-drawdown 0.05
 ```
 
 The report aggregates eval pass rate, engine pass rate, primary-pick stability,
 backtest excess return, stress margins, drawdown, dirty-repo frequency, and
-promotion blockers.
+promotion blockers. `ledger trust` shows the exact branch, SHA, dirty state, and
+status lines that must be cleaned or intentionally acknowledged before
+promotion. A trust policy can explicitly allow narrow dirty paths, such as
+documentation-only runbook edits, while still blocking capital-engine code,
+tests, dependency, and config changes. Without a policy, every dirty change is
+promotion-blocking.
 `ledger promote` writes every attempt to `.agent-harness/promotions/attempts`.
 It only publishes `.agent-harness/promotions/canonical.json` when the report is
 ready.
@@ -132,14 +192,19 @@ The harness ranks work by risk-adjusted implementation priority:
    input, engine version, output, rejection, and follow-up in the org-level run
    explorer.
    Proof: `agent-harness thesis` now creates and ingests replayable packet JSON by default.
-3. **Expand `agent_harness.evals`.** Score forecast quality, evidence coverage,
-   latency, failure mode, repo cleanliness, and rollback cost.
-   Proof: `agent-harness eval .agent-harness/runs/latest.json` gates packet readiness.
+3. **Use realized outcomes as the feedback loop.** Score packet recommendations
+   against observed price windows before trusting repeated promotion.
+   Proof: `agent-harness outcome .agent-harness/runs/latest.json` now records
+   allocation return, excess return, drawdown, hit/miss, forecast error, and
+   price-source hashes;
+   `agent-harness ledger outcomes` aggregates that into promotion-grade metrics
+   with explicit calibration, drawdown, and attribution evidence.
 4. **Make ledger promotion the operating gate.** Use `agent-harness ledger report`
    to block canonical decisions when repos are dirty, backtests are missing, or
    stress tests fail.
-   Proof: `agent-harness ledger promote` currently writes a blocked attempt and
-   refuses to publish `canonical.json` while repos are dirty.
+   Proof: `agent-harness ledger trust` now shows the exact dirty branches and
+   status lines, and `agent-harness ledger promote` refuses to publish
+   `canonical.json` while those blockers remain.
 5. **Activate sentiment as a catalyst overlay.** When credentials are present,
    run `stock-sentiment-analysis` after risk gating and discount it aggressively
    by half-life.
@@ -168,6 +233,9 @@ python3 -m pytest -q
 python3 -m agent_harness thesis AAPL MSFT --days 30 --scenarios 100 --seed 42
 python3 -m agent_harness replay .agent-harness/runs/latest.json
 python3 -m agent_harness eval .agent-harness/runs/latest.json
+python3 -m agent_harness outcome .agent-harness/runs/latest.json
 python3 -m agent_harness ledger report
+python3 -m agent_harness ledger outcomes
+python3 -m agent_harness ledger trust
 python3 -m agent_harness ledger promote
 ```

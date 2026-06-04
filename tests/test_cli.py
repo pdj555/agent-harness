@@ -106,6 +106,11 @@ def test_ledger_list_and_show_commands_use_saved_packet(tmp_path: Path, capsys) 
     shown = capsys.readouterr()
     assert f"Run: {run_id}" in shown.out
 
+    assert main(["ledger", "--ledger-dir", str(ledger_dir), "trust"]) == 0
+    trusted = capsys.readouterr()
+    assert f"Trust audit: {run_id}" in trusted.out
+    assert "monte-carlo" in trusted.out
+
     assert main(["ledger", "--ledger-dir", str(ledger_dir), "report", "--min-runs", "1"]) == 0
     report = capsys.readouterr()
     assert "Ledger report:" in report.out
