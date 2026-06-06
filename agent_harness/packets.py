@@ -105,6 +105,7 @@ def build_run_packet(
     monte_carlo_run: EngineRun | None,
     ranked_loops: list[CapitalLoop],
     monte_carlo_backtest: EngineRun | None = None,
+    stock_sentiment_run: EngineRun | None = None,
 ) -> dict[str, Any]:
     """Build a durable decision packet for this thesis run."""
 
@@ -129,6 +130,7 @@ def build_run_packet(
         "engine_runs": {
             "monte_carlo": engine_run_to_payload(monte_carlo_run),
             "monte_carlo_backtest": engine_run_to_payload(monte_carlo_backtest),
+            "stock_sentiment": engine_run_to_payload(stock_sentiment_run),
         },
         "ranked_loops": [loop_to_payload(loop) for loop in ranked_loops],
     }

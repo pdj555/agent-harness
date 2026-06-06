@@ -1,0 +1,152 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@
+ - `evidence <run_id>` and `GET /runs/<run_id>/evidence` return the primary pick,
+   backtest edge, stress result, latest realized outcome, latest regime replay,
+-  promotion status, blockers, aggregate realized excess-return statistics,
+-  forecast-error statistics, drawdown statistics, and regime replay fragility in
+-  one envelope.
++  promotion status, promotion-attempt analytics, blocker categories, blockers,
++  aggregate realized excess-return statistics, forecast-error statistics,
++  drawdown statistics, and regime replay fragility in one envelope.
+@@
+ The receiver CI checks out sibling `agent-harness`, builds its synthetic
+ production fixture, writes a platform export, ingests it through the receiver
+ CLI, and verifies both `research-run-platform evidence run_ci_3 --json` and
+-`GET /runs/run_ci_3/evidence`.
++`GET /runs/run_ci_3/evidence`, including promotion-attempt blocker categories.
+diff --git a/research_run_platform/cli.py b/research_run_platform/cli.py
+--- a/research_run_platform/cli.py
++++ b/research_run_platform/cli.py
+@@
+             print(
+                 "Promotion: "
+                 f"count={promotion['count']} "
+                 f"latest={promotion.get('latest_promotion_id')} "
+                 f"status={promotion.get('status')}"
+             )
++            attempts = (
++                promotion.get("attempts")
++                if isinstance(promotion.get("attempts"), dict)
++                else {}
++            )
++            categories = (
++                attempts.get("categories")
++                if isinstance(attempts.get("categories"), dict)
++                else {}
++            )
++            top_categories = categories.get("top") if isinstance(categories.get("top"), list) else []
++            if top_categories:
++                top = top_categories[0]
++                print(
++                    "Promotion blockers: "
++                    f"top_category={top.get('category')} "
++                    f"count={top.get('count')} "
++                    f"recent={top.get('recent_count')}"
++                )
+             for blocker in evidence["blockers"]:
+                 print(f"- {blocker}")
+         return 0 if evidence["ready"] else 2
+diff --git a/research_run_platform/importer.py b/research_run_platform/importer.py
+--- a/research_run_platform/importer.py
++++ b/research_run_platform/importer.py
+@@
+     if isinstance(raw_promotion_blockers, list):
+         promotion_blockers = [str(item) for item in raw_promotion_blockers]
+     elif raw_promotion_blockers:
+         promotion_blockers = [str(raw_promotion_blockers)]
+     else:
+         promotion_blockers = []
++    promotion_attempts = _dict(record.get("promotion_attempts"))
++    promotion_attempt_report = _dict(promotion_row.get("promotion_attempt_report"))
+@@
+         "promotion": {
+             "count": int(record.get("promotion_count") or 0),
+             "latest_promotion_id": record.get("latest_promotion_id"),
+             "status": promotion_row.get("status"),
+             "blockers": promotion_blockers,
++            "attempts": promotion_attempts or None,
++            "latest_attempt_report": promotion_attempt_report or None,
+         },
+diff --git a/tests/test_importer.py b/tests/test_importer.py
+--- a/tests/test_importer.py
++++ b/tests/test_importer.py
+@@
+     assert evidence["regime_replay"]["aggregate"]["worst_drawdown"]["max"] == 0.03
+     assert evidence["promotion"]["status"] is None
++
++
++def test_run_evidence_surfaces_promotion_attempt_analytics(tmp_path: Path) -> None:
++    paths = build_fixture(tmp_path / "fixture")
++    ledger_dir = Path(paths["ledger_dir"])
++    _, export_paths = write_platform_export(
++        ledger_entries=read_ledger_entries(ledger_dir),
++        outcome_entries=read_outcome_entries(ledger_dir),
++        regime_entries=read_regime_entries(ledger_dir),
++        ledger_dir=ledger_dir,
++        output_dir=tmp_path / "exports",
++        discover_promotions=True,
++    )
++    db_path = tmp_path / "platform.sqlite"
++
++    ingest_bundle(export_paths["export_dir"], db_path=db_path)
++
++    evidence = get_run_evidence("run_ci_3", db_path=db_path)
++    promotion = evidence["promotion"]
++    attempts = promotion["attempts"]
++    latest_report = promotion["latest_attempt_report"]
++
++    assert evidence["ready"] is True
++    assert promotion["count"] == 2
++    assert promotion["latest_promotion_id"] == "promotion_ci_promoted"
++    assert promotion["status"] == "promoted"
++    assert attempts["attempt_count"] == 2
++    assert attempts["latest"]["promotion_id"] == "promotion_ci_promoted"
++    assert attempts["categories"]["top"][0]["category"] == "backtest"
++    assert attempts["categories"]["top"][0]["count"] == 1
++    assert latest_report["latest"]["promotion_id"] == "promotion_ci_promoted"
++    assert latest_report["categories"]["unique_count"] == 0
+diff --git a/tools/ci_smoke.py b/tools/ci_smoke.py
+--- a/tools/ci_smoke.py
++++ b/tools/ci_smoke.py
+@@
+     regime = (
+         payload.get("regime_replay")
+         if isinstance(payload.get("regime_replay"), dict)
+         else {}
+     )
++    promotion = (
++        payload.get("promotion")
++        if isinstance(payload.get("promotion"), dict)
++        else {}
++    )
+     primary = run.get("primary_pick") if isinstance(run.get("primary_pick"), dict) else {}
++    attempts = (
++        promotion.get("attempts")
++        if isinstance(promotion.get("attempts"), dict)
++        else {}
++    )
++    categories = (
++        attempts.get("categories")
++        if isinstance(attempts.get("categories"), dict)
++        else {}
++    )
++    top_categories = categories.get("top") if isinstance(categories.get("top"), list) else []
+     if payload.get("ready") is not True:
+         raise AssertionError(f"expected ready evidence, got blockers={payload.get('blockers')}")
+@@
+     if edge.get("realized_avg_excess_vs_cash") != 0.014:
+         raise AssertionError(f"unexpected realized edge: {edge}")
++    if promotion.get("latest_promotion_id") != "promotion_ci_promoted":
++        raise AssertionError(f"unexpected promotion evidence: {promotion}")
++    if attempts.get("attempt_count") != 2:
++        raise AssertionError(f"unexpected promotion attempts: {attempts}")
++    if not top_categories or top_categories[0].get("category") != "backtest":
++        raise AssertionError(f"unexpected promotion categories: {categories}")
+@@
+         regime_entries=read_regime_entries(ledger_dir),
+         ledger_dir=ledger_dir,
+         output_dir=work_dir / "exports",
++        discover_promotions=True,
+     )

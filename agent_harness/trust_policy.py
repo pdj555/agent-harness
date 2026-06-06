@@ -14,6 +14,96 @@ TRUST_POLICY_SCHEMA_VERSION = "agent-harness.trust-policy.v1"
 DEFAULT_TRUST_POLICY_FILE = "agent-harness.trust.json"
 
 
+def _list_field(payload: dict[str, Any], field: str, problems: list[str]) -> list[Any]:
+    value = payload.get(field, [])
+    if not isinstance(value, list):
+        problems.append(f"{field} must be a list")
+        return []
+    return value
+
+
+def _string_list_field(
+    rule: dict[str, Any],
+    field: str,
+    *,
+    default: list[str] | None = None,
+) -> list[str]:
+    value = rule.get(field, default or [])
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item]
+    return []
+
+
+def _validate_rule(
+    rule: Any,
+    *,
+    field: str,
+    index: int,
+    require_expiration: bool,
+) -> list[str]:
+    prefix = f"{field}[{index}]"
+    problems: list[str] = []
+    if not isinstance(rule, dict):
+        return [f"{prefix} must be a JSON object"]
+    for required in ("id", "repo", "reason"):
+        if not isinstance(rule.get(required), str) or not rule.get(required, "").strip():
+            problems.append(f"{prefix}.{required} must be a non-empty string")
+    patterns = _string_list_field(rule, "patterns", default=["*"])
+    if not patterns:
+        problems.append(f"{prefix}.patterns must contain at least one pattern")
+    statuses = _string_list_field(rule, "statuses", default=["*"])
+    if not statuses:
+        problems.append(f"{prefix}.statuses must contain at least one status")
+    for pattern in patterns:
+        path = Path(pattern)
+        if path.is_absolute() or ".." in path.parts:
+            problems.append(f"{prefix}.patterns must stay repo-relative: {pattern}")
+    expires_at = rule.get("expires_at")
+    if require_expiration and not isinstance(expires_at, str):
+        problems.append(f"{prefix}.expires_at is required for allowed dirty rules")
+    if isinstance(expires_at, str):
+        try:
+            date.fromisoformat(expires_at)
+        except ValueError:
+            problems.append(f"{prefix}.expires_at must be YYYY-MM-DD")
+    return problems
+
+
+def validate_trust_policy(policy: dict[str, Any]) -> list[str]:
+    """Return schema problems for a trust policy.
+
+    The evaluator is fail-closed, but loaded policy files should also be precise:
+    no anonymous rules, no path traversal, and no permanent dirty allow-list.
+    """
+
+    problems: list[str] = []
+    if policy.get("schema_version") != TRUST_POLICY_SCHEMA_VERSION:
+        problems.append("unsupported trust policy schema_version")
+    allowed = _list_field(policy, "allowed_dirty", problems)
+    blocked = _list_field(policy, "blocked_dirty", problems)
+    for index, rule in enumerate(allowed):
+        problems.extend(
+            _validate_rule(
+                rule,
+                field="allowed_dirty",
+                index=index,
+                require_expiration=True,
+            )
+        )
+    for index, rule in enumerate(blocked):
+        problems.extend(
+            _validate_rule(
+                rule,
+                field="blocked_dirty",
+                index=index,
+                require_expiration=False,
+            )
+        )
+    return problems
+
+
 def empty_trust_policy(*, source_path: Path | None = None) -> dict[str, Any]:
     """Return the default policy: every dirty change blocks promotion."""
 
@@ -55,6 +145,9 @@ def load_trust_policy(
     payload["loaded"] = True
     payload.setdefault("allowed_dirty", [])
     payload.setdefault("blocked_dirty", [])
+    problems = validate_trust_policy(payload)
+    if problems:
+        raise ValueError("; ".join(problems))
     return payload
 
 

@@ -14,3 +14,15 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest -q
+      - run: python tools/build_ci_production_fixture.py --root .ci-production
+      - run: >
+          agent-harness --namespace-root .ci-production
+          ledger --ledger-dir .ci-production/ledger
+          --gates .ci-production/gates.json
+          verify-production
+          --price-dir .ci-production/prices
+          --platform-output-dir .ci-production/platform_exports
+          --promotions-dir .ci-production/promotions
+          --require-platform-signature
+        env:
+          AGENT_HARNESS_PLATFORM_SIGNING_KEY: ci-production-platform-signing-key

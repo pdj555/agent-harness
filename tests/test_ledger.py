@@ -125,6 +125,39 @@ def test_ingest_packet_records_repo_trust_details(tmp_path: Path) -> None:
     ]
 
 
+def test_ingest_packet_records_sentiment_overlay(tmp_path: Path) -> None:
+    packet = _packet(tmp_path)
+    packet["engine_runs"]["stock_sentiment"] = {
+        "name": "stock-sentiment-analysis",
+        "ok": True,
+        "summary": "AAPL sentiment",
+        "payload": {
+            "ticker": "AAPL",
+            "score": 0.4,
+            "label": "positive",
+            "confidence": 0.7,
+            "signal": "buy",
+            "articles_analyzed": 5,
+            "source": "google-rss",
+            "source_label": "Google News RSS",
+            "classification_degraded": False,
+            "classification_warnings": [],
+        },
+        "diagnostics": [],
+        "command": ["stock-sentiment", "analyze", "AAPL"],
+        "duration_ms": 12,
+        "repo_sha": "def",
+        "repo_dirty": False,
+    }
+    packet["content_digest"] = packet_digest(packet)
+
+    entry = ingest_packet(packet, ledger_dir=tmp_path / "ledger")
+
+    assert entry["stock_sentiment_ok"]
+    assert entry["sentiment"]["score"] == 0.4
+    assert entry["sentiment"]["signal"] == "buy"
+
+
 def test_ingest_rejects_run_id_digest_collision(tmp_path: Path) -> None:
     packet = _packet(tmp_path)
     ingest_packet(packet, ledger_dir=tmp_path / "ledger")

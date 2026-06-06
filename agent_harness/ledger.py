@@ -50,6 +50,14 @@ def _stable_digest(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _stable_regime_digest(payload: dict[str, Any]) -> str:
+    scoped = dict(payload)
+    scoped.pop("report_digest", None)
+    scoped.pop("generated_at", None)
+    encoded = json.dumps(scoped, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _load_index(ledger_dir: Path) -> dict[str, Any]:
     path = ledger_dir / "index.json"
     if not path.exists():
@@ -98,6 +106,14 @@ def _backtest_summary(packet: dict[str, Any]) -> dict[str, Any]:
 def _stress_summary(packet: dict[str, Any]) -> dict[str, Any]:
     stress = packet.get("stress_tests", {})
     return stress if isinstance(stress, dict) else {}
+
+
+def _sentiment_summary(packet: dict[str, Any]) -> dict[str, Any]:
+    sentiment_run = packet.get("engine_runs", {}).get("stock_sentiment")
+    if not isinstance(sentiment_run, dict):
+        return {}
+    payload = sentiment_run.get("payload", {})
+    return payload if isinstance(payload, dict) else {}
 
 
 def _status_lines(value: Any) -> list[str]:
@@ -157,11 +173,14 @@ def build_ledger_entry(
     top_loop = _top_loop(packet)
     backtest = _backtest_summary(packet)
     stress = _stress_summary(packet)
+    sentiment = _sentiment_summary(packet)
     repo_trust = build_repo_trust(packet)
     monte_run = packet.get("engine_runs", {}).get("monte_carlo")
     monte_ok = isinstance(monte_run, dict) and bool(monte_run.get("ok"))
     backtest_run = packet.get("engine_runs", {}).get("monte_carlo_backtest")
     backtest_ok = isinstance(backtest_run, dict) and bool(backtest_run.get("ok"))
+    sentiment_run = packet.get("engine_runs", {}).get("stock_sentiment")
+    sentiment_ok = isinstance(sentiment_run, dict) and bool(sentiment_run.get("ok"))
 
     return {
         "ledger_schema_version": LEDGER_SCHEMA_VERSION,
@@ -175,6 +194,7 @@ def build_ledger_entry(
         "namespace_root": packet.get("namespace_root"),
         "monte_carlo_ok": monte_ok,
         "monte_carlo_backtest_ok": backtest_ok,
+        "stock_sentiment_ok": sentiment_ok,
         "eval_ok": bool(evaluation["ok"]),
         "eval_score": evaluation["score"],
         "dirty_repos": list(evaluation["dirty_repos"]),
@@ -205,6 +225,18 @@ def build_ledger_entry(
             "scenario_count": len(stress.get("scenarios", []))
             if isinstance(stress.get("scenarios"), list)
             else 0,
+        },
+        "sentiment": {
+            "ticker": sentiment.get("ticker"),
+            "score": sentiment.get("score"),
+            "label": sentiment.get("label"),
+            "confidence": sentiment.get("confidence"),
+            "signal": sentiment.get("signal"),
+            "articles_analyzed": sentiment.get("articles_analyzed"),
+            "source": sentiment.get("source"),
+            "source_label": sentiment.get("source_label"),
+            "classification_degraded": sentiment.get("classification_degraded"),
+            "classification_warnings": sentiment.get("classification_warnings", []),
         },
     }
 
@@ -290,6 +322,13 @@ def read_outcome_entries(ledger_dir: Path | None = None) -> list[dict[str, Any]]
     return _read_jsonl_entries(root / "outcomes.jsonl")
 
 
+def read_regime_entries(ledger_dir: Path | None = None) -> list[dict[str, Any]]:
+    """Read deterministic-regime replay ledger entries in append order."""
+
+    root = (ledger_dir or default_ledger_dir()).expanduser().resolve()
+    return _read_jsonl_entries(root / "regimes.jsonl")
+
+
 def get_ledger_entry(run_id: str, ledger_dir: Path | None = None) -> dict[str, Any]:
     """Return a single ledger entry by run id."""
 
@@ -364,6 +403,7 @@ def build_outcome_entry(
     risk = outcome.get("risk", {}) if isinstance(outcome.get("risk"), dict) else {}
     primary = outcome.get("primary_pick", {}) if isinstance(outcome.get("primary_pick"), dict) else {}
     sources = outcome.get("sources", {}) if isinstance(outcome.get("sources"), dict) else {}
+    sentiment = outcome.get("sentiment", {}) if isinstance(outcome.get("sentiment"), dict) else {}
     attribution = (
         outcome.get("attribution", {})
         if isinstance(outcome.get("attribution"), dict)
@@ -432,6 +472,27 @@ def build_outcome_entry(
                 }
                 for ticker, row in sorted(price_sources.items())
             },
+        },
+        "sentiment": {
+            "present": sentiment.get("present"),
+            "ok": sentiment.get("ok"),
+            "ticker": sentiment.get("ticker"),
+            "ticker_matches_primary": sentiment.get("ticker_matches_primary"),
+            "score": sentiment.get("score"),
+            "label": sentiment.get("label"),
+            "confidence": sentiment.get("confidence"),
+            "signal": sentiment.get("signal"),
+            "signal_direction": sentiment.get("signal_direction"),
+            "articles_analyzed": sentiment.get("articles_analyzed"),
+            "source": sentiment.get("source"),
+            "classification_degraded": sentiment.get("classification_degraded"),
+            "primary_ticker": sentiment.get("primary_ticker"),
+            "primary_realized_return": sentiment.get("primary_realized_return"),
+            "realized_direction": sentiment.get("realized_direction"),
+            "directional_hit": sentiment.get("directional_hit"),
+            "signed_realized_return": sentiment.get("signed_realized_return"),
+            "score_return_alignment": sentiment.get("score_return_alignment"),
+            "confidence_weighted_alignment": sentiment.get("confidence_weighted_alignment"),
         },
         "attribution": {
             "active_excess": {
@@ -507,4 +568,172 @@ def ingest_outcome(
     index["schema_version"] = LEDGER_SCHEMA_VERSION
     _atomic_write_json(index_path, index)
     _atomic_write_json(root / "latest_outcome.json", entry)
+    return entry
+
+
+def _regime_key(report: dict[str, Any], digest: str) -> str:
+    return "_".join(
+        _safe_key(str(part))
+        for part in (
+            report.get("run_id") or "run",
+            "regime_replay",
+            digest[:12],
+        )
+    )
+
+
+def _existing_regime_matches_digest(existing: dict[str, Any], digest: str) -> bool:
+    if existing.get("report_digest") == digest:
+        return True
+    copy_path_raw = existing.get("regime_copy_path")
+    if not isinstance(copy_path_raw, str) or not copy_path_raw:
+        return False
+    copy_path = Path(copy_path_raw)
+    if not copy_path.exists():
+        return False
+    existing_payload = json.loads(copy_path.read_text(encoding="utf-8"))
+    return isinstance(existing_payload, dict) and _stable_regime_digest(existing_payload) == digest
+
+
+def build_regime_entry(
+    report: dict[str, Any],
+    *,
+    regime_path: Path | None = None,
+    regime_copy_path: Path | None = None,
+) -> dict[str, Any]:
+    """Build the compact queryable row for a deterministic regime replay."""
+
+    if report.get("schema_version") != "agent-harness.regime-replay.v1":
+        raise ValueError("unsupported regime replay schema_version")
+    digest = report.get("report_digest") or _stable_regime_digest(report)
+    summary = report.get("summary", {}) if isinstance(report.get("summary"), dict) else {}
+    parameters = (
+        report.get("parameters", {})
+        if isinstance(report.get("parameters"), dict)
+        else {}
+    )
+    regimes = report.get("regimes", []) if isinstance(report.get("regimes"), list) else []
+    regime_rows = [row for row in regimes if isinstance(row, dict)]
+    return {
+        "ledger_schema_version": LEDGER_SCHEMA_VERSION,
+        "entry_type": "regime_replay",
+        "ingested_at": _utc_now(),
+        "run_id": report.get("run_id"),
+        "content_digest": report.get("content_digest"),
+        "report_digest": digest,
+        "regime_path": str(regime_path.expanduser().resolve()) if regime_path else None,
+        "regime_copy_path": str(regime_copy_path.expanduser().resolve()) if regime_copy_path else None,
+        "primary_ticker": report.get("primary_ticker"),
+        "parameters": {
+            "rows": parameters.get("rows"),
+            "start_date": parameters.get("start_date"),
+            "cash_return": parameters.get("cash_return"),
+            "max_drawdown": parameters.get("max_drawdown"),
+            "regime_names": parameters.get("regime_names"),
+        },
+        "summary": {
+            "ok": summary.get("ok"),
+            "regime_count": summary.get("regime_count"),
+            "scorecard_pass_count": summary.get("scorecard_pass_count"),
+            "fragile_count": summary.get("fragile_count"),
+            "fragile_regimes": summary.get("fragile_regimes", []),
+            "worst_excess_vs_cash": summary.get("worst_excess_vs_cash"),
+            "worst_excess_vs_equal_weight": summary.get("worst_excess_vs_equal_weight"),
+            "worst_drawdown": summary.get("worst_drawdown"),
+            "max_drawdown": summary.get("max_drawdown"),
+            "primary_reversal_loss": summary.get("primary_reversal_loss"),
+            "cash_drag_rally_excess_vs_equal_weight": summary.get(
+                "cash_drag_rally_excess_vs_equal_weight"
+            ),
+        },
+        "regimes": [
+            {
+                "name": row.get("name"),
+                "outcome_digest": row.get("outcome_digest"),
+                "scorecard_ok": (
+                    row.get("scorecard", {}).get("ok")
+                    if isinstance(row.get("scorecard"), dict)
+                    else None
+                ),
+                "fragility_ok": (
+                    row.get("fragility", {}).get("ok")
+                    if isinstance(row.get("fragility"), dict)
+                    else None
+                ),
+                "fragility_reasons": (
+                    row.get("fragility", {}).get("reasons", [])
+                    if isinstance(row.get("fragility"), dict)
+                    else []
+                ),
+                "allocation_return": (
+                    row.get("returns", {}).get("allocation")
+                    if isinstance(row.get("returns"), dict)
+                    else None
+                ),
+                "excess_vs_cash": (
+                    row.get("returns", {}).get("excess_vs_cash")
+                    if isinstance(row.get("returns"), dict)
+                    else None
+                ),
+                "excess_vs_equal_weight": (
+                    row.get("returns", {}).get("excess_vs_equal_weight")
+                    if isinstance(row.get("returns"), dict)
+                    else None
+                ),
+                "realized_max_drawdown": (
+                    row.get("risk", {}).get("realized_max_drawdown")
+                    if isinstance(row.get("risk"), dict)
+                    else None
+                ),
+                "primary_realized_return": (
+                    row.get("primary_pick", {}).get("realized_return")
+                    if isinstance(row.get("primary_pick"), dict)
+                    else None
+                ),
+            }
+            for row in regime_rows
+        ],
+    }
+
+
+def ingest_regime_replay(
+    report: dict[str, Any],
+    *,
+    regime_path: Path | None = None,
+    ledger_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Ingest a deterministic regime replay into the ledger."""
+
+    root = (ledger_dir or default_ledger_dir()).expanduser().resolve()
+    index_path = root / "regime_index.json"
+    index = (
+        json.loads(index_path.read_text(encoding="utf-8"))
+        if index_path.exists()
+        else {"schema_version": LEDGER_SCHEMA_VERSION, "regimes": {}}
+    )
+    regimes = index.setdefault("regimes", {})
+    if not isinstance(regimes, dict):
+        raise ValueError("regime index regimes must be a JSON object")
+    digest = str(report.get("report_digest") or _stable_regime_digest(report))
+    key = _regime_key(report, digest)
+    existing = regimes.get(key)
+    if isinstance(existing, dict):
+        if not _existing_regime_matches_digest(existing, digest):
+            raise ValueError(f"regime replay key collision with different digest: {key}")
+        return existing
+
+    report = dict(report)
+    report["report_digest"] = digest
+    copy_path = root / "regimes" / f"{key}.json"
+    _atomic_write_json(copy_path, report)
+    entry = build_regime_entry(
+        report,
+        regime_path=regime_path,
+        regime_copy_path=copy_path,
+    )
+    _append_jsonl(root / "regimes.jsonl", entry)
+    regimes[key] = entry
+    index["schema_version"] = LEDGER_SCHEMA_VERSION
+    _atomic_write_json(index_path, index)
+    _atomic_write_json(root / "latest_regime.json", entry)
     return entry

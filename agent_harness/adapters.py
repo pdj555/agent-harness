@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import importlib
 import io
+import json
 import os
 import subprocess
 import sys
@@ -27,6 +28,21 @@ MONTE_CARLO_MODULES = (
     "simulate_cli",
     "simulation",
     "viz",
+)
+
+STOCK_SENTIMENT_MODULES = (
+    "stock_sentiment",
+    "stock_sentiment.ai_credentials",
+    "stock_sentiment.cache",
+    "stock_sentiment.cli",
+    "stock_sentiment.env",
+    "stock_sentiment.errors",
+    "stock_sentiment.google_rss",
+    "stock_sentiment.newsapi",
+    "stock_sentiment.openai_client",
+    "stock_sentiment.runtime",
+    "stock_sentiment.sentiment",
+    "stock_sentiment.types",
 )
 
 
@@ -197,7 +213,7 @@ class MonteCarloAdapter:
                 available=False,
                 repo_path=self.repo_path,
                 reason="repository not found",
-                command=self.default_command(("AAPL", "MSFT")),
+                command=self.default_command(("AAPL", "MSFT", "GOOGL", "JPM", "XOM")),
                 capabilities=("simulation", "backtest", "risk_guardrails", "allocation"),
                 **fingerprint,
             )
@@ -212,7 +228,7 @@ class MonteCarloAdapter:
                 available=False,
                 repo_path=self.repo_path,
                 reason=f"missing expected files: {', '.join(missing)}",
-                command=self.default_command(("AAPL", "MSFT")),
+                command=self.default_command(("AAPL", "MSFT", "GOOGL", "JPM", "XOM")),
                 capabilities=("simulation", "backtest", "risk_guardrails", "allocation"),
                 **fingerprint,
             )
@@ -221,7 +237,7 @@ class MonteCarloAdapter:
             available=True,
             repo_path=self.repo_path,
             reason="public_cli execution functions found",
-            command=self.default_command(("AAPL", "MSFT")),
+            command=self.default_command(("AAPL", "MSFT", "GOOGL", "JPM", "XOM")),
             capabilities=("simulation", "backtest", "risk_guardrails", "allocation"),
             **fingerprint,
         )
@@ -489,18 +505,40 @@ class StockSentimentAdapter:
     def __init__(self, repo_path: Path) -> None:
         self.repo_path = repo_path.expanduser().resolve()
 
-    def status(self) -> AdapterStatus:
-        fingerprint = _repo_fingerprint(self.repo_path)
-        command = (
+    def default_command(
+        self,
+        ticker: str,
+        *,
+        days: int = 3,
+        max_articles: int = 10,
+        source: str = "auto",
+        half_life_hours: float = 24.0,
+        include_reasons: bool = False,
+    ) -> tuple[str, ...]:
+        command = [
             "python3",
             "-m",
             "stock_sentiment",
             "analyze",
-            "AAPL",
+            ticker,
             "--format",
             "json",
-            "--include-reasons",
-        )
+            "--days",
+            str(days),
+            "--max-articles",
+            str(max_articles),
+            "--source",
+            source,
+            "--half-life-hours",
+            str(half_life_hours),
+        ]
+        if include_reasons:
+            command.append("--include-reasons")
+        return tuple(command)
+
+    def status(self) -> AdapterStatus:
+        fingerprint = _repo_fingerprint(self.repo_path)
+        command = self.default_command("AAPL", include_reasons=True)
         if not self.repo_path.exists():
             return AdapterStatus(
                 name="stock-sentiment-analysis",
@@ -508,7 +546,7 @@ class StockSentimentAdapter:
                 repo_path=self.repo_path,
                 reason="repository not found",
                 command=command,
-                required_env=("OPENAI_API_KEY",),
+                required_env=("OPENAI_API_KEY", "OLLAMA_API_KEY"),
                 capabilities=("news", "sentiment", "catalyst_overlay"),
                 **fingerprint,
             )
@@ -519,18 +557,18 @@ class StockSentimentAdapter:
                 repo_path=self.repo_path,
                 reason="stock_sentiment CLI package not found",
                 command=command,
-                required_env=("OPENAI_API_KEY",),
+                required_env=("OPENAI_API_KEY", "OLLAMA_API_KEY"),
                 capabilities=("news", "sentiment", "catalyst_overlay"),
                 **fingerprint,
             )
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not (os.environ.get("OPENAI_API_KEY") or os.environ.get("OLLAMA_API_KEY")):
             return AdapterStatus(
                 name="stock-sentiment-analysis",
                 available=False,
                 repo_path=self.repo_path,
-                reason="OPENAI_API_KEY not set; sentiment is configured but not live",
+                reason="OPENAI_API_KEY or OLLAMA_API_KEY not set; sentiment is configured but not live",
                 command=command,
-                required_env=("OPENAI_API_KEY",),
+                required_env=("OPENAI_API_KEY", "OLLAMA_API_KEY"),
                 capabilities=("news", "sentiment", "catalyst_overlay"),
                 **fingerprint,
             )
@@ -538,12 +576,111 @@ class StockSentimentAdapter:
             name="stock-sentiment-analysis",
             available=True,
             repo_path=self.repo_path,
-            reason="CLI package found and OPENAI_API_KEY is set",
+            reason="CLI package found and an OpenAI-compatible API key is set",
             command=command,
-            required_env=("OPENAI_API_KEY",),
+            required_env=("OPENAI_API_KEY", "OLLAMA_API_KEY"),
             capabilities=("news", "sentiment", "catalyst_overlay"),
             **fingerprint,
         )
+
+    def run_analysis(
+        self,
+        ticker: str,
+        *,
+        days: int = 3,
+        max_articles: int = 10,
+        source: str = "auto",
+        half_life_hours: float = 24.0,
+        include_reasons: bool = False,
+    ) -> EngineRun:
+        """Run the sibling stock-sentiment JSON CLI and normalize the result."""
+
+        status = self.status()
+        command = self.default_command(
+            ticker,
+            days=days,
+            max_articles=max_articles,
+            source=source,
+            half_life_hours=half_life_hours,
+            include_reasons=include_reasons,
+        )
+        if not status.available:
+            return EngineRun(
+                name="stock-sentiment-analysis",
+                ok=False,
+                summary=status.reason,
+                diagnostics=(status.reason,),
+                command=command,
+                repo_sha=status.repo_sha,
+                repo_dirty=status.repo_dirty,
+            )
+
+        argv = list(command[3:])
+        started = time.perf_counter()
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+        try:
+            with _isolated_modules(STOCK_SENTIMENT_MODULES):
+                with _module_context(self.repo_path):
+                    sentiment_cli = importlib.import_module("stock_sentiment.cli")
+                    with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(
+                        stderr_buffer
+                    ):
+                        exit_code = int(sentiment_cli.main(argv) or 0)
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            diagnostics = tuple(
+                line.strip()
+                for line in stderr_buffer.getvalue().splitlines()
+                if line.strip()
+            )
+            if exit_code != 0:
+                return EngineRun(
+                    name="stock-sentiment-analysis",
+                    ok=False,
+                    summary=f"stock sentiment exited with code {exit_code}",
+                    diagnostics=diagnostics,
+                    command=command,
+                    duration_ms=duration_ms,
+                    repo_sha=status.repo_sha,
+                    repo_dirty=status.repo_dirty,
+                )
+            payload = json.loads(stdout_buffer.getvalue())
+            if not isinstance(payload, dict):
+                raise ValueError("stock sentiment JSON output must be an object")
+            summary = (
+                f"{payload.get('ticker', ticker)} sentiment "
+                f"score={payload.get('score')} label={payload.get('label')} "
+                f"confidence={payload.get('confidence')} signal={payload.get('signal')} "
+                f"articles={payload.get('articles_analyzed')}"
+            )
+            return EngineRun(
+                name="stock-sentiment-analysis",
+                ok=True,
+                summary=summary,
+                payload=_to_builtin(payload),
+                diagnostics=diagnostics,
+                command=command,
+                duration_ms=duration_ms,
+                repo_sha=status.repo_sha,
+                repo_dirty=status.repo_dirty,
+            )
+        except Exception as exc:  # pragma: no cover - exercised by local smoke
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            diagnostics = tuple(
+                line.strip()
+                for line in stderr_buffer.getvalue().splitlines()
+                if line.strip()
+            )
+            return EngineRun(
+                name="stock-sentiment-analysis",
+                ok=False,
+                summary=f"stock sentiment execution failed: {exc}",
+                diagnostics=(type(exc).__name__, str(exc), *diagnostics),
+                command=command,
+                duration_ms=duration_ms,
+                repo_sha=status.repo_sha,
+                repo_dirty=status.repo_dirty,
+            )
 
 
 class LocalLedgerAdapter:
@@ -575,7 +712,7 @@ class ResearchRunPlatformAdapter:
 
     def status(self) -> AdapterStatus:
         fingerprint = _repo_fingerprint(self.repo_path)
-        command = ("agent-harness", "ledger", "sync", "research-run-platform")
+        command = ("research-run-platform", "ingest", "<export-dir>")
         if not self.repo_path.exists():
             return AdapterStatus(
                 name="research-run-platform",
@@ -583,7 +720,14 @@ class ResearchRunPlatformAdapter:
                 repo_path=self.repo_path,
                 reason="repository not found locally; local ledger remains active",
                 command=command,
-                capabilities=("provenance", "run_explorer", "duckdb", "audit"),
+                capabilities=(
+                    "provenance",
+                    "run_explorer",
+                    "run_evidence_api",
+                    "aggregate_evidence",
+                    "sqlite",
+                    "http_read_api",
+                ),
                 **fingerprint,
             )
         missing = [
@@ -598,15 +742,32 @@ class ResearchRunPlatformAdapter:
                 repo_path=self.repo_path,
                 reason=f"repository found but missing expected markers: {', '.join(missing)}",
                 command=command,
-                capabilities=("provenance", "run_explorer", "duckdb", "audit"),
+                capabilities=(
+                    "provenance",
+                    "run_explorer",
+                    "run_evidence_api",
+                    "aggregate_evidence",
+                    "sqlite",
+                    "http_read_api",
+                ),
                 **fingerprint,
             )
         return AdapterStatus(
             name="research-run-platform",
             available=True,
             repo_path=self.repo_path,
-            reason="repository found; ready for future ledger sync adapter",
+            reason=(
+                "repository found; ingest validated bundles and expose run evidence "
+                "with research-run-platform evidence"
+            ),
             command=command,
-            capabilities=("provenance", "run_explorer", "duckdb", "audit"),
+            capabilities=(
+                "provenance",
+                "run_explorer",
+                "run_evidence_api",
+                "aggregate_evidence",
+                "sqlite",
+                "http_read_api",
+            ),
             **fingerprint,
         )

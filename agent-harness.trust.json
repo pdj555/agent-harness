@@ -1,0 +1,97 @@
+{
+  "schema_version": "agent-harness.trust-policy.v1",
+  "allowed_dirty": [
+    {
+      "id": "agent-harness-docs-only",
+      "repo": "agent-harness-ledger",
+      "patterns": [
+        "README.md",
+        "docs/*.md",
+        "docs/*.json"
+      ],
+      "statuses": [
+        "M",
+        "??"
+      ],
+      "reason": "Operator-facing docs and examples do not alter capital calculations or promotion logic.",
+      "expires_at": "2027-01-01"
+    }
+  ],
+  "blocked_dirty": [
+    {
+      "id": "agent-harness-code-tests-config",
+      "repo": "agent-harness-ledger",
+      "patterns": [
+        "agent_harness/*.py",
+        "tests/*.py",
+        "pyproject.toml",
+        "*.lock",
+        ".github/*",
+        "agent-harness.trust.json"
+      ],
+      "statuses": [
+        "*"
+      ],
+      "reason": "Harness code, tests, dependency files, CI, and trust policy changes must be committed before promotion."
+    },
+    {
+      "id": "monte-carlo-capital-engine",
+      "repo": "monte-carlo",
+      "patterns": [
+        "*.py",
+        "tests/*.py",
+        "api/*.py",
+        "app/*",
+        "components/*",
+        "lib/*",
+        "data/*",
+        "fixtures/*",
+        "package.json",
+        "package-lock.json",
+        "pyproject.toml",
+        "requirements*.txt"
+      ],
+      "statuses": [
+        "*"
+      ],
+      "reason": "Capital simulation, allocation, data, tests, and dependency changes must be committed before promotion."
+    },
+    {
+      "id": "stock-sentiment-signal-engine",
+      "repo": "stock-sentiment-analysis",
+      "patterns": [
+        "*.py",
+        "tests/*.py",
+        "src/*",
+        "data/*",
+        "fixtures/*",
+        "pyproject.toml",
+        "requirements*.txt",
+        "package.json",
+        "package-lock.json"
+      ],
+      "statuses": [
+        "*"
+      ],
+      "reason": "Sentiment signal code, data, tests, and dependencies must be committed before promotion."
+    },
+    {
+      "id": "research-run-platform-ingest-surface",
+      "repo": "research-run-platform",
+      "patterns": [
+        "*.py",
+        "tests/*.py",
+        "research_run_platform/*.py",
+        "tools/*.py",
+        "migrations/*",
+        "schema/*",
+        "pyproject.toml",
+        "requirements*.txt"
+      ],
+      "statuses": [
+        "*"
+      ],
+      "reason": "Run-platform ingest, schema, and dependency changes must be committed before promotion."
+    }
+  ]
+}

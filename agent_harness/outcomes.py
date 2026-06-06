@@ -105,6 +105,14 @@ def _action_plan(packet: dict[str, Any]) -> dict[str, Any]:
     return action_plan if isinstance(action_plan, dict) else {}
 
 
+def _monte_carlo_payload(packet: dict[str, Any]) -> dict[str, Any]:
+    run = packet.get("engine_runs", {}).get("monte_carlo")
+    if not isinstance(run, dict):
+        return {}
+    payload = run.get("payload", {})
+    return payload if isinstance(payload, dict) else {}
+
+
 def _allocations(packet: dict[str, Any]) -> dict[str, float]:
     run = packet.get("engine_runs", {}).get("monte_carlo")
     payload = run.get("payload", {}) if isinstance(run, dict) else {}
@@ -351,6 +359,86 @@ def _attribution(
     }
 
 
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _sentiment_outcome(
+    packet: dict[str, Any],
+    *,
+    primary_ticker: str | None,
+    primary_return: float | None,
+) -> dict[str, Any]:
+    run = packet.get("engine_runs", {}).get("stock_sentiment")
+    if not isinstance(run, dict):
+        return {
+            "present": False,
+            "ok": False,
+            "reason": "stock sentiment was not run",
+        }
+    payload = run.get("payload", {}) if isinstance(run.get("payload"), dict) else {}
+    ticker = str(payload.get("ticker") or "") or None
+    signal = str(payload.get("signal") or "hold").lower()
+    score = _float_or_none(payload.get("score"))
+    confidence = _float_or_none(payload.get("confidence"))
+    direction = {"buy": 1, "sell": -1, "hold": 0}.get(signal, 0)
+    ticker_matches_primary = bool(ticker and primary_ticker and ticker == primary_ticker)
+    realized_direction = (
+        1
+        if primary_return is not None and primary_return > 0
+        else -1
+        if primary_return is not None and primary_return < 0
+        else 0
+        if primary_return is not None
+        else None
+    )
+    directional_hit = None
+    signed_realized_return = None
+    if bool(run.get("ok")) and ticker_matches_primary and primary_return is not None and direction:
+        signed_realized_return = direction * primary_return
+        directional_hit = signed_realized_return >= 0
+
+    score_return_alignment = (
+        score * primary_return
+        if score is not None and primary_return is not None and ticker_matches_primary
+        else None
+    )
+    confidence_weighted_alignment = (
+        score_return_alignment * confidence
+        if score_return_alignment is not None and confidence is not None
+        else None
+    )
+    return {
+        "present": True,
+        "ok": bool(run.get("ok")),
+        "ticker": ticker,
+        "ticker_matches_primary": ticker_matches_primary,
+        "score": score,
+        "label": payload.get("label"),
+        "confidence": confidence,
+        "signal": signal,
+        "signal_direction": direction,
+        "articles_analyzed": payload.get("articles_analyzed"),
+        "source": payload.get("source"),
+        "source_label": payload.get("source_label"),
+        "classification_degraded": bool(payload.get("classification_degraded")),
+        "classification_warnings": payload.get("classification_warnings", []),
+        "primary_ticker": primary_ticker,
+        "primary_realized_return": primary_return,
+        "realized_direction": realized_direction,
+        "directional_hit": directional_hit,
+        "signed_realized_return": signed_realized_return,
+        "score_return_alignment": score_return_alignment,
+        "confidence_weighted_alignment": confidence_weighted_alignment,
+    }
+
+
 def evaluate_outcome(
     packet: dict[str, Any],
     *,
@@ -402,13 +490,26 @@ def evaluate_outcome(
         cash_weight=cash_weight,
         cash_return=cash_return,
     )
+    monte_payload = _monte_carlo_payload(packet)
     primary = _action_plan(packet).get("primary_pick", {})
     primary_ticker = str(primary.get("ticker")) if isinstance(primary, dict) and primary.get("ticker") else None
     primary_return = ticker_returns.get(primary_ticker) if primary_ticker else None
+    primary_weight = (
+        allocations.get(primary_ticker)
+        if primary_ticker is not None and primary_ticker in allocations
+        else float(primary.get("weight"))
+        if isinstance(primary, dict) and primary.get("weight") is not None
+        else None
+    )
     expected_return = (
         float(primary["expected_return"])
         if isinstance(primary, dict) and primary.get("expected_return") is not None
         else None
+    )
+    allocation_repair = (
+        monte_payload.get("allocation_repair")
+        if isinstance(monte_payload.get("allocation_repair"), dict)
+        else {}
     )
 
     curve: list[dict[str, Any]] = []
@@ -425,6 +526,11 @@ def evaluate_outcome(
     hit = primary_return is not None and primary_return >= 0.0
     beat_cash = allocation_return >= cash_return
     beat_equal_weight = allocation_return >= equal_weight_return
+    primary_hit_required = not (
+        bool(allocation_repair.get("applied"))
+        and primary_weight is not None
+        and float(primary_weight) <= 0.10
+    )
     forecast_error = (
         primary_return - expected_return
         if primary_return is not None and expected_return is not None
@@ -454,6 +560,7 @@ def evaluate_outcome(
         },
         "primary_pick": {
             "ticker": primary_ticker,
+            "weight": primary_weight,
             "expected_return": expected_return,
             "realized_return": primary_return,
             "forecast_error": forecast_error,
@@ -471,11 +578,22 @@ def evaluate_outcome(
             "realized_max_drawdown": realized_max_drawdown,
         },
         "attribution": attribution,
+        "sentiment": _sentiment_outcome(
+            packet,
+            primary_ticker=primary_ticker,
+            primary_return=primary_return,
+        ),
         "scorecard": {
             "beat_cash": beat_cash,
             "beat_equal_weight": beat_equal_weight,
             "primary_hit": hit,
-            "ok": beat_cash and beat_equal_weight and hit,
+            "primary_hit_required": primary_hit_required,
+            "primary_hit_waived_reason": (
+                "allocation_repair_de_minimis_primary_weight"
+                if not primary_hit_required
+                else None
+            ),
+            "ok": beat_cash and beat_equal_weight and (hit or not primary_hit_required),
         },
         "curve": curve,
     }
@@ -502,3 +620,206 @@ def write_outcome(outcome: dict[str, Any], output_dir: Path | None = None) -> Pa
     _atomic_write_json(path, outcome)
     _atomic_write_json(root / "latest.json", outcome)
     return path
+
+
+def _candidate_windows(
+    packet: dict[str, Any],
+    *,
+    price_dir: Path,
+    start_date: str | None,
+    end_date: str | None,
+    horizon_rows: int | None,
+    rolling: bool,
+    stride_rows: int,
+    max_windows: int | None,
+) -> list[dict[str, Any]]:
+    if not rolling:
+        return [
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "horizon_rows": horizon_rows,
+            }
+        ]
+    if end_date is not None:
+        raise ValueError("rolling outcome backfill cannot use --end-date")
+    if stride_rows < 1:
+        raise ValueError("rolling outcome backfill stride must be at least 1")
+    if max_windows is not None and max_windows < 1:
+        raise ValueError("rolling outcome backfill max_windows must be at least 1")
+
+    allocations = _allocations(packet)
+    tickers = _input_tickers(packet, allocations)
+    if not tickers:
+        raise ValueError("packet has no tickers to evaluate")
+    series_by_ticker = {
+        ticker: load_price_series(price_dir, ticker)
+        for ticker in tickers
+    }
+    dates = _common_dates(series_by_ticker)
+    resolved_horizon = horizon_rows if horizon_rows is not None else _default_horizon_rows(packet)
+    scoped_horizon = max(1, int(resolved_horizon or 1))
+    if len(dates) <= scoped_horizon:
+        raise ValueError("not enough common price dates for rolling outcome backfill")
+    start_index = dates.index(start_date) if start_date is not None else 0
+    windows: list[dict[str, Any]] = []
+    for index in range(start_index, len(dates) - scoped_horizon, stride_rows):
+        windows.append(
+            {
+                "start_date": dates[index],
+                "end_date": dates[index + scoped_horizon],
+                "horizon_rows": scoped_horizon,
+            }
+        )
+        if max_windows is not None and len(windows) >= max_windows:
+            break
+    return windows
+
+
+def backfill_ledger_outcomes(
+    *,
+    ledger_dir: Path,
+    price_dir: Path,
+    output_dir: Path | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    horizon_rows: int | None = None,
+    cash_return: float = 0.0,
+    run_ids: set[str] | None = None,
+    limit: int | None = None,
+    rolling: bool = False,
+    stride_rows: int = 1,
+    max_windows: int | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Evaluate and ingest realized outcomes for ledger packet copies."""
+
+    from agent_harness.ledger import ingest_outcome, read_ledger_entries, read_outcome_entries
+
+    entries = read_ledger_entries(ledger_dir)
+    if run_ids:
+        entries = [entry for entry in entries if str(entry.get("run_id")) in run_ids]
+    if limit is not None and limit >= 0:
+        entries = entries[-limit:] if limit else []
+
+    existing_digests = {
+        str(entry.get("outcome_digest"))
+        for entry in read_outcome_entries(ledger_dir)
+        if entry.get("outcome_digest")
+    }
+    root_output_dir = output_dir or default_outcome_dir()
+    rows: list[dict[str, Any]] = []
+    created = 0
+    skipped_existing = 0
+    would_create = 0
+    failed = 0
+    evaluated = 0
+
+    for entry in entries:
+        run_id = str(entry.get("run_id") or "")
+        packet_path_raw = entry.get("packet_copy_path")
+        if not isinstance(packet_path_raw, str) or not packet_path_raw:
+            failed += 1
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "status": "failed",
+                    "error": "ledger entry has no packet_copy_path",
+                }
+            )
+            continue
+        try:
+            packet = json.loads(Path(packet_path_raw).read_text(encoding="utf-8"))
+            if not isinstance(packet, dict):
+                raise ValueError("packet copy must be a JSON object")
+            windows = _candidate_windows(
+                packet,
+                price_dir=price_dir,
+                start_date=start_date,
+                end_date=end_date,
+                horizon_rows=horizon_rows,
+                rolling=rolling,
+                stride_rows=stride_rows,
+                max_windows=max_windows,
+            )
+        except Exception as exc:
+            failed += 1
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "status": "failed",
+                    "error": str(exc),
+                }
+            )
+            continue
+
+        for window in windows:
+            try:
+                outcome = evaluate_outcome(
+                    packet,
+                    price_dir=price_dir,
+                    start_date=window["start_date"],
+                    end_date=window["end_date"],
+                    horizon_rows=window["horizon_rows"],
+                    cash_return=cash_return,
+                )
+                evaluated += 1
+                digest = str(outcome["outcome_digest"])
+                row = {
+                    "run_id": run_id,
+                    "window": outcome["window"],
+                    "outcome_digest": digest,
+                    "scorecard_ok": outcome["scorecard"]["ok"],
+                    "excess_vs_cash": outcome["returns"]["excess_vs_cash"],
+                    "excess_vs_equal_weight": outcome["returns"]["excess_vs_equal_weight"],
+                    "realized_max_drawdown": outcome["risk"]["realized_max_drawdown"],
+                }
+                if digest in existing_digests:
+                    skipped_existing += 1
+                    rows.append({**row, "status": "skipped_existing"})
+                    continue
+                if dry_run:
+                    would_create += 1
+                    rows.append({**row, "status": "would_create"})
+                    continue
+                path = write_outcome(outcome, root_output_dir)
+                ledger_entry = ingest_outcome(
+                    outcome,
+                    outcome_path=path,
+                    ledger_dir=ledger_dir,
+                )
+                existing_digests.add(digest)
+                created += 1
+                rows.append(
+                    {
+                        **row,
+                        "status": "created",
+                        "outcome_path": str(path),
+                        "ledger_outcome_digest": ledger_entry.get("outcome_digest"),
+                    }
+                )
+            except Exception as exc:
+                failed += 1
+                rows.append(
+                    {
+                        "run_id": run_id,
+                        "window": window,
+                        "status": "failed",
+                        "error": str(exc),
+                    }
+                )
+
+    return {
+        "ledger_dir": str(ledger_dir.expanduser().resolve()),
+        "price_dir": str(price_dir.expanduser().resolve()),
+        "output_dir": str(root_output_dir.expanduser().resolve()),
+        "dry_run": dry_run,
+        "rolling": rolling,
+        "run_count": len(entries),
+        "evaluated": evaluated,
+        "created": created,
+        "skipped_existing": skipped_existing,
+        "would_create": would_create,
+        "failed": failed,
+        "rows": rows,
+    }

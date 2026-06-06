@@ -1,0 +1,37 @@
+{
+  "min_runs": 3,
+  "outcomes": {
+    "max_avg_abs_forecast_error": 0.16994,
+    "max_realized_drawdown": 0.0115,
+    "min_avg_excess_cash": 0.0,
+    "min_avg_excess_equal_weight": 0.0,
+    "min_avg_sentiment_alignment": null,
+    "min_ok_rate": 0.561111,
+    "min_outcomes": 20,
+    "min_sentiment_directional_count": 0,
+    "min_sentiment_hit_rate": null
+  },
+  "regimes": {
+    "max_fragile_count": 0,
+    "max_worst_drawdown": 0.08,
+    "min_regime_replays": 1,
+    "min_worst_excess_cash": 0.0,
+    "require_latest_run": true,
+    "require_ok": true
+  },
+  "schema_version": "agent-harness.promotion-gates.v1",
+  "source": {
+    "calibrated_ready": true,
+    "method": "agent-harness ledger calibrate-outcomes",
+    "min_sample": 20,
+    "rationale": {
+      "max_avg_abs_forecast_error": "p75 absolute forecast error",
+      "max_realized_drawdown": "max observed realized drawdown",
+      "min_avg_excess_cash": "p25 realized excess vs cash, floored at 0",
+      "min_avg_excess_equal_weight": "p25 realized excess vs equal weight, floored at 0",
+      "min_ok_rate": "observed ok rate minus 5 percentage points"
+    },
+    "sample_count": 54,
+    "sentiment_min_sample": 10
+  }
+}
