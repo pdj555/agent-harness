@@ -47,7 +47,7 @@ def _packet(tmp_path: Path, *, run_suffix: str = "a") -> dict:
                     "value_at_risk_95_pct": 0.03,
                 },
             },
-            "rankings": {"AAPL": {"max_drawdown_q95": 0.08}},
+            "rankings": {"AAPL": {"max_drawdown_q95": 0.03}},
             "errors": [],
         },
         repo_sha="abc",
@@ -98,6 +98,64 @@ def test_ingest_packet_is_idempotent(tmp_path: Path) -> None:
     assert len(read_ledger_entries(tmp_path / "ledger")) == 1
     assert (tmp_path / "ledger" / "packets" / "run_test_a.json").exists()
     assert first["backtest"]["excess_return_vs_cash"] == 0.02
+    assert first["stress"]["ok"]
+
+
+def test_ingest_packet_records_repo_trust_details(tmp_path: Path) -> None:
+    packet = _packet(tmp_path)
+    packet["adapters"]["monte-carlo"].update(
+        {
+            "repo_branch": "main",
+            "repo_dirty": True,
+            "repo_status": [" M decision.py", "?? scratch.ipynb"],
+            "repo_status_count": 2,
+            "repo_status_truncated": False,
+        }
+    )
+    packet["content_digest"] = packet_digest(packet)
+
+    entry = ingest_packet(packet, ledger_dir=tmp_path / "ledger")
+
+    assert entry["dirty_repos"] == ["monte-carlo"]
+    assert entry["repo_trust"]["dirty_count"] == 1
+    assert entry["repo_trust"]["dirty_details"][0]["repo_branch"] == "main"
+    assert entry["repo_trust"]["dirty_details"][0]["repo_status"] == [
+        " M decision.py",
+        "?? scratch.ipynb",
+    ]
+
+
+def test_ingest_packet_records_sentiment_overlay(tmp_path: Path) -> None:
+    packet = _packet(tmp_path)
+    packet["engine_runs"]["stock_sentiment"] = {
+        "name": "stock-sentiment-analysis",
+        "ok": True,
+        "summary": "AAPL sentiment",
+        "payload": {
+            "ticker": "AAPL",
+            "score": 0.4,
+            "label": "positive",
+            "confidence": 0.7,
+            "signal": "buy",
+            "articles_analyzed": 5,
+            "source": "google-rss",
+            "source_label": "Google News RSS",
+            "classification_degraded": False,
+            "classification_warnings": [],
+        },
+        "diagnostics": [],
+        "command": ["stock-sentiment", "analyze", "AAPL"],
+        "duration_ms": 12,
+        "repo_sha": "def",
+        "repo_dirty": False,
+    }
+    packet["content_digest"] = packet_digest(packet)
+
+    entry = ingest_packet(packet, ledger_dir=tmp_path / "ledger")
+
+    assert entry["stock_sentiment_ok"]
+    assert entry["sentiment"]["score"] == 0.4
+    assert entry["sentiment"]["signal"] == "buy"
 
 
 def test_ingest_rejects_run_id_digest_collision(tmp_path: Path) -> None:

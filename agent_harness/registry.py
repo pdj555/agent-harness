@@ -109,8 +109,15 @@ def known_repo_specs(namespace_root: Path) -> list[RepoSpec]:
         RepoSpec(
             name="research-run-platform",
             path=root / "research-run-platform",
-            purpose="Parquet/DuckDB/FastAPI research-run provenance and run exploration.",
+            purpose="SQLite-backed research-run provenance receiver and evidence API.",
             stack="Python",
-            capabilities=("provenance", "run_ledger", "duckdb", "audit"),
+            capabilities=(
+                "provenance",
+                "run_ledger",
+                "run_evidence_api",
+                "aggregate_evidence",
+                "sqlite",
+                "http_read_api",
+            ),
         ),
     ]

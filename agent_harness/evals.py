@@ -11,6 +11,22 @@ def _check(name: str, passed: bool, detail: str) -> dict[str, Any]:
     return {"name": name, "passed": passed, "detail": detail}
 
 
+def _allocation_weights(monte_run: dict[str, Any] | None, primary_pick: dict[str, Any] | None) -> dict[str, float]:
+    if not isinstance(monte_run, dict):
+        return {}
+    payload = monte_run.get("payload", {})
+    payload = payload if isinstance(payload, dict) else {}
+    raw_allocations = payload.get("allocations", {})
+    weights: dict[str, float] = {}
+    if isinstance(raw_allocations, dict):
+        for ticker, row in raw_allocations.items():
+            if isinstance(row, dict) and row.get("weight") is not None:
+                weights[str(ticker)] = float(row["weight"])
+    if not weights and isinstance(primary_pick, dict) and primary_pick.get("ticker"):
+        weights[str(primary_pick["ticker"])] = float(primary_pick.get("weight") or 0.0)
+    return weights
+
+
 def evaluate_packet(packet: dict[str, Any]) -> dict[str, Any]:
     """Evaluate whether a packet is production-usable."""
 
@@ -84,6 +100,17 @@ def evaluate_packet(packet: dict[str, Any]) -> dict[str, Any]:
                 )
             )
 
+    stress_tests = packet.get("stress_tests")
+    checks.append(
+        _check(
+            "stress_tests_passed",
+            isinstance(stress_tests, dict) and bool(stress_tests.get("ok")),
+            f"worst_margin={stress_tests.get('worst_margin')}"
+            if isinstance(stress_tests, dict)
+            else "stress tests missing",
+        )
+    )
+
     risk_controls = packet.get("risk_controls", {})
     max_position = risk_controls.get("max_position_weight", 0.0)
     concentration_weight = risk_controls.get("concentration_weight", 0.50)
@@ -95,11 +122,26 @@ def evaluate_packet(packet: dict[str, Any]) -> dict[str, Any]:
             action_plan = payload.get("action_plan", {}) if isinstance(payload.get("action_plan"), dict) else {}
     primary_pick = action_plan.get("primary_pick") if isinstance(action_plan, dict) else None
     weight = primary_pick.get("weight") if isinstance(primary_pick, dict) else None
+    allocation_weights = _allocation_weights(monte_run, primary_pick)
     checks.append(
         _check(
             "position_cap_respected",
             weight is None or float(weight) <= float(max_position),
             f"primary weight {weight}, max {max_position}",
+        )
+    )
+    row_violations = {
+        ticker: row_weight
+        for ticker, row_weight in sorted(allocation_weights.items())
+        if row_weight > float(max_position) + 1e-9
+    }
+    checks.append(
+        _check(
+            "allocation_rows_cap_respected",
+            not row_violations,
+            f"violations={row_violations}, max={max_position}"
+            if row_violations
+            else f"all allocation rows <= {max_position}",
         )
     )
     cash_weight = action_plan.get("cash_weight") if isinstance(action_plan, dict) else None
@@ -109,6 +151,24 @@ def evaluate_packet(packet: dict[str, Any]) -> dict[str, Any]:
             "cash_buffer_respected",
             not concentrated or (cash_weight is not None and float(cash_weight) >= float(min_cash_buffer)),
             f"cash {cash_weight}, minimum {min_cash_buffer} when weight >= {concentration_weight}",
+        )
+    )
+    concentrated_rows = {
+        ticker: row_weight
+        for ticker, row_weight in sorted(allocation_weights.items())
+        if row_weight >= float(concentration_weight)
+    }
+    row_cash_ok = (
+        not concentrated_rows
+        or (cash_weight is not None and float(cash_weight) >= float(min_cash_buffer))
+    )
+    checks.append(
+        _check(
+            "allocation_rows_cash_buffer_respected",
+            row_cash_ok,
+            f"concentrated_rows={concentrated_rows}, cash={cash_weight}, minimum={min_cash_buffer}"
+            if not row_cash_ok
+            else f"cash {cash_weight}, concentrated_rows={concentrated_rows}",
         )
     )
 
@@ -122,10 +182,16 @@ def evaluate_packet(packet: dict[str, Any]) -> dict[str, Any]:
         _check(
             "repo_fingerprints_present",
             all(
-                isinstance(adapter, dict) and "repo_sha" in adapter and "repo_dirty" in adapter
+                isinstance(adapter, dict)
+                and "repo_sha" in adapter
+                and "repo_branch" in adapter
+                and "repo_dirty" in adapter
+                and "repo_status" in adapter
+                and "repo_status_count" in adapter
+                and "repo_status_truncated" in adapter
                 for adapter in adapters.values()
             ),
-            "all adapters include repo_sha/repo_dirty"
+            "all adapters include repo sha, branch, dirty flag, and status lines"
             if adapters
             else "no adapter fingerprints present",
         )

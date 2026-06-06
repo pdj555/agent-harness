@@ -72,3 +72,65 @@ def test_build_capital_loops_promotes_successful_monte_carlo_run() -> None:
 
     assert loops[0].name == "risk-first allocation loop"
     assert any("Concentrate in AAPL" in item for item in loops[0].evidence)
+
+
+def test_sentiment_overlay_bounded_inside_risk_first_loop() -> None:
+    statuses = {
+        "monte-carlo": AdapterStatus(
+            name="monte-carlo",
+            available=True,
+            repo_path=Path("/tmp/monte-carlo"),
+            reason="ready",
+        ),
+        "stock-sentiment-analysis": AdapterStatus(
+            name="stock-sentiment-analysis",
+            available=True,
+            repo_path=Path("/tmp/stock"),
+            reason="ready",
+        ),
+    }
+    monte = EngineRun(
+        name="monte-carlo",
+        ok=True,
+        summary="ok",
+        payload={
+            "action_plan": {
+                "cash_weight": 0.4,
+                "primary_pick": {
+                    "ticker": "AAPL",
+                    "expected_return": 0.18,
+                    "prob_above_current": 0.75,
+                    "value_at_risk_95_pct": 0.04,
+                },
+            },
+            "rankings": {"AAPL": {"max_drawdown_q95": 0.08}},
+            "errors": [],
+        },
+    )
+    sentiment = EngineRun(
+        name="stock-sentiment-analysis",
+        ok=True,
+        summary="AAPL sentiment",
+        payload={
+            "ticker": "AAPL",
+            "score": 1.0,
+            "label": "positive",
+            "confidence": 1.0,
+            "signal": "buy",
+            "articles_analyzed": 25,
+            "classification_degraded": False,
+        },
+    )
+
+    loops = build_capital_loops(
+        statuses,
+        monte_carlo_run=monte,
+        stock_sentiment_run=sentiment,
+    )
+
+    risk_loop = next(loop for loop in loops if loop.name == "risk-first allocation loop")
+    sentiment_loop = next(loop for loop in loops if loop.name == "sentiment catalyst overlay")
+    assert loops[0].name == "risk-first allocation loop"
+    assert risk_loop.confidence <= 0.94
+    assert sentiment_loop.expected_edge <= 0.34
+    assert any("bounded_mc_confidence_adjustment=+0.040" in item for item in risk_loop.evidence)

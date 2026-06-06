@@ -140,11 +140,53 @@ def _backtest_signal(run: EngineRun | None) -> tuple[float, tuple[str, ...]]:
     return _bounded(adjustment, -0.12, 0.10), (evidence,)
 
 
+def _sentiment_signal(run: EngineRun | None) -> tuple[float, float, float, tuple[str, ...]]:
+    """Return bounded Monte Carlo adjustment and sentiment-loop inputs."""
+
+    if run is None:
+        return 0.0, 0.22, 0.34, ()
+    if not run.ok:
+        return (
+            -0.02,
+            0.18,
+            0.25,
+            (f"sentiment overlay unavailable: {run.summary}",),
+        )
+
+    score = float(run.payload.get("score", 0.0) or 0.0)
+    confidence = float(run.payload.get("confidence", 0.0) or 0.0)
+    articles = float(run.payload.get("articles_analyzed", 0.0) or 0.0)
+    signal = str(run.payload.get("signal") or "hold")
+    label = str(run.payload.get("label") or "neutral")
+    degraded = bool(run.payload.get("classification_degraded"))
+
+    signed_adjustment = _bounded(score * confidence * 0.06, -0.05, 0.04)
+    if degraded:
+        signed_adjustment = min(signed_adjustment, 0.0) - 0.02
+    if signal == "hold":
+        signed_adjustment *= 0.35
+    signed_adjustment = _bounded(signed_adjustment, -0.05, 0.04)
+
+    sentiment_edge = _bounded(0.18 + abs(score) * confidence * 0.12, 0.12, 0.34)
+    sentiment_confidence = _bounded(
+        0.34 + confidence * 0.36 + min(articles, 25.0) / 250.0 - (0.16 if degraded else 0.0),
+        0.20,
+        0.82,
+    )
+    evidence = (
+        f"sentiment overlay: score={score:+.3f}, label={label}, signal={signal}, "
+        f"confidence={confidence:.2f}, articles={articles:.0f}, "
+        f"bounded_mc_confidence_adjustment={signed_adjustment:+.3f}"
+    )
+    return signed_adjustment, sentiment_edge, sentiment_confidence, (evidence,)
+
+
 def build_capital_loops(
     statuses: dict[str, AdapterStatus],
     *,
     monte_carlo_run: EngineRun | None = None,
     monte_carlo_backtest: EngineRun | None = None,
+    stock_sentiment_run: EngineRun | None = None,
 ) -> list[CapitalLoop]:
     """Build ranked capital loops from discovered sibling engines."""
 
@@ -153,7 +195,14 @@ def build_capital_loops(
 
     monte_edge, monte_confidence, monte_signal_evidence = _monte_carlo_signal(monte_carlo_run)
     backtest_confidence_adjustment, backtest_evidence = _backtest_signal(monte_carlo_backtest)
-    monte_confidence = _bounded(monte_confidence + backtest_confidence_adjustment, 0.25, 0.94)
+    sentiment_adjustment, sentiment_edge, sentiment_run_confidence, sentiment_run_evidence = _sentiment_signal(
+        stock_sentiment_run
+    )
+    monte_confidence = _bounded(
+        monte_confidence + backtest_confidence_adjustment + sentiment_adjustment,
+        0.25,
+        0.94,
+    )
     if not (monte_status and monte_status.available):
         monte_confidence = 0.25
     monte_evidence = ["monte-carlo exposes simulation, ranking, allocation, and guardrails"]
@@ -163,11 +212,15 @@ def build_capital_loops(
             monte_evidence.append(str(action_plan["headline"]))
         monte_evidence.extend(monte_signal_evidence)
     monte_evidence.extend(backtest_evidence)
+    monte_evidence.extend(sentiment_run_evidence)
 
-    sentiment_confidence = 0.62 if sentiment_status and sentiment_status.available else 0.34
+    sentiment_confidence = sentiment_run_confidence if stock_sentiment_run is not None else (
+        0.62 if sentiment_status and sentiment_status.available else 0.34
+    )
     sentiment_evidence = ["sentiment repo has JSON CLI for ticker-level catalyst scoring"]
     if sentiment_status and not sentiment_status.available:
         sentiment_evidence.append(sentiment_status.reason)
+    sentiment_evidence.extend(sentiment_run_evidence)
 
     return rank_loops(
         [
@@ -192,7 +245,7 @@ def build_capital_loops(
                     "Treat news sentiment as a short-half-life catalyst overlay on top "
                     "of simulated base rates, not as a standalone buy signal."
                 ),
-                expected_edge=0.22,
+                expected_edge=sentiment_edge,
                 confidence=sentiment_confidence,
                 max_loss=0.08,
                 implementation_effort=2.5,
@@ -211,7 +264,9 @@ def build_capital_loops(
                 max_loss=0.03,
                 implementation_effort=3.0,
                 half_life_days=90.0,
-                evidence=("remote repo describes Parquet, DuckDB, FastAPI, provenance, and run explorer",),
+                evidence=(
+                    "local receiver ingests validated platform bundles into SQLite and exposes run evidence",
+                ),
             ),
             CapitalLoop(
                 name="energy-market basis scanner",

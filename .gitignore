@@ -1,4 +1,5 @@
 .agent-harness/
+.ci-production/
 __pycache__/
 *.py[cod]
 .pytest_cache/
