@@ -1,6 +1,6 @@
 # Architecture
 
-The public harness is a single Python package with hard boundaries. It is not a
+The harness is a single Python package with hard boundaries. It is not a
 platform of many agents. One principal agent does the work. Everything else
 exists to give that agent authority, isolation, and proof.
 
@@ -29,6 +29,8 @@ browser  ->  auth  ->  app  ->  runtime  ->  agent (claude | codex | harness loo
 | `harness/runtime.py` | principal loop, stop, repair |
 | `harness/verification.py` | parent-run checks |
 | `harness/review.py` | software review gate plus the cross-vendor model reviewer |
+| `harness/triage.py` | reads tests, TODO markers, and recent commits for Suggest a fix |
+| `harness/accounts.py` | operator-created accounts (`harness user add`) |
 | `harness/demo.py` | sample-repo demo entry |
 
 ## Authority

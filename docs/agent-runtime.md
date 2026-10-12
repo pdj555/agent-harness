@@ -37,7 +37,7 @@ blanked. Paths starting with `~` or containing `$` are denied by the Claude hook
 ## Loop
 
 1. Load the run, resolve the allowlisted repository, create a stage.
-2. Hand the objective and the software leverage scan to the engine. It works
+2. Hand the objective and the software scan to the engine. It works
    until it stops. Every tool use is recorded as an event; stop and stage
    safety are checked around each one.
 3. **Ignore any claim of success** and run `run_checks`.

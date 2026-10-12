@@ -5,20 +5,29 @@ description = "Run frontier coding agents unattended. Nothing lands unless your 
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
-authors = [{ name = "agent-harness contributors" }]
-keywords = ["agent", "coding-agent", "harness", "verification"]
+authors = [{ name = "Preston Jones" }]
+keywords = ["agent", "coding-agent", "harness", "verification", "llm", "evals"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Testing",
+]
 dependencies = [
   "claude-agent-sdk>=0.2.165",
-  "fastapi>=0.115",
+  "fastapi>=0.143.0",
   "openai-codex>=0.162.1",
-  "uvicorn[standard]>=0.32",
+  "uvicorn[standard]>=0.54.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "httpx>=0.28",
   "pytest>=8.3",
-  "ruff>=0.9",
+  "ruff>=0.17.0",
 ]
 
 [project.scripts]
@@ -26,7 +35,8 @@ harness = "harness.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/pdj555/agent-harness"
-Documentation = "https://github.com/pdj555/agent-harness/blob/main/README.md"
+Documentation = "https://github.com/pdj555/agent-harness/tree/main/docs"
+Issues = "https://github.com/pdj555/agent-harness/issues"
 
 [build-system]
 requires = ["hatchling"]

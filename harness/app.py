@@ -11,7 +11,7 @@ from harness.agents import AGENT_NAMES, describe
 from harness.auth import new_session_token, verify_password
 from harness.config import Config, load_config
 from harness.isolation import IsolationError, Stage
-from harness.runtime import NEXT_DOLLAR, execute_run
+from harness.runtime import SUGGESTED_OBJECTIVE, execute_run
 from harness.store import Store, User
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -113,7 +113,7 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     def _provider_public() -> dict:
         info = describe(getattr(provider, "name", None) or config.provider_name)
-        return {"provider": info, "mission": NEXT_DOLLAR}
+        return {"provider": info, "mission": SUGGESTED_OBJECTIVE}
 
     @app.get("/api/me")
     def me(request: Request) -> dict:

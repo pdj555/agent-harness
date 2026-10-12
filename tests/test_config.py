@@ -8,7 +8,7 @@ from harness.provider import get_provider
 
 
 def test_add_extra_root_is_merged_into_loaded_workspace(tmp_path: Path, monkeypatch):
-    repo = tmp_path / "money-repo"
+    repo = tmp_path / "service-repo"
     repo.mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("HARNESS_PROVIDER", raising=False)
