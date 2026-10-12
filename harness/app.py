@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 from pathlib import Path
 
@@ -8,10 +7,10 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from harness.agents import AGENT_NAMES, describe
 from harness.auth import new_session_token, verify_password
 from harness.config import Config, load_config
 from harness.isolation import IsolationError, Stage
-from harness.provider import get_provider
 from harness.runtime import SUGGESTED_OBJECTIVE, execute_run
 from harness.store import Store, User
 
@@ -34,7 +33,9 @@ def create_app(config: Config | None = None) -> FastAPI:
     config.data_dir.mkdir(parents=True, exist_ok=True)
     store = Store(config.data_dir / "harness.db")
     store.initialize()
-    provider = config.provider_instance or get_provider(config.provider_name)
+    provider = config.provider_instance
+    if provider is None and config.provider_name not in (*AGENT_NAMES, "deterministic", "scripted"):
+        raise ValueError(f"unknown provider: {config.provider_name}")
 
     app = FastAPI(title="Agent Harness", docs_url=None, redoc_url=None)
     app.state.config = config
@@ -111,22 +112,8 @@ def create_app(config: Config | None = None) -> FastAPI:
         return {"ok": True}
 
     def _provider_public() -> dict:
-        from harness.provider import live_endpoint, reasoning_effort_for
-
-        name = getattr(provider, "name", config.provider_name)
-        model = None
-        reasoning = None
-        if name != "deterministic":
-            try:
-                model = live_endpoint(getattr(provider, "selection", None))[2]
-            except RuntimeError:
-                model = os.environ.get("HARNESS_MODEL")
-            if model:
-                reasoning = reasoning_effort_for(model)
-        return {
-            "provider": {"name": name, "model": model, "reasoning": reasoning},
-            "mission": SUGGESTED_OBJECTIVE,
-        }
+        info = describe(getattr(provider, "name", None) or config.provider_name)
+        return {"provider": info, "mission": SUGGESTED_OBJECTIVE}
 
     @app.get("/api/me")
     def me(request: Request) -> dict:

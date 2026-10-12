@@ -10,7 +10,7 @@
 | Tools | Trusted code. Enforce role, path, and stop. |
 | Stage | The only tree the model may edit. |
 | Source repository | Read-only until a verified publish. |
-| Environment | Holds API keys. Stripped from tool subprocesses and redacted from events. |
+| Environment | Holds API keys. Stripped from tool subprocesses, replaced for vendor agents (each keeps only its own key), and redacted from events. |
 
 Git stages overlay tracked and nonignored untracked files only. Ignored local
 credentials and dependency trees do not enter the agent worktree. The non-Git
@@ -50,6 +50,16 @@ directory beside the stage so nothing a command writes there enters the diff.
 The timeout is `workspace.check_timeout` (default 300 seconds); a timed-out
 command is reported to the model as a failure. Git subprocesses use a filtered
 environment and `core.hooksPath=/dev/null`.
+
+That describes the harness loop. The vendor engines run their own shells:
+Claude Code's `Bash` runs in the stage, behind a `PreToolUse` hook that denies
+paths outside it, git internals, and anything after stop. Codex runs in its own
+`workspace-write` sandbox rooted at the stage, with approvals denied. Each
+engine's subprocess gets a replacement environment: every host variable is
+blanked except PATH, locale, proxy and certificate settings, HOME points beside
+the stage, and only its own vendor key is present because the engine needs it
+to call its model. Codex keeps its login under that HOME, never in `~/.codex`.
+Codex's sandbox restricts writes to the stage but still allows reads elsewhere.
 
 This is not an OS sandbox. A live model that can run Python can still touch
 the host as the same user. Treat live vendors as code execution. Bind to

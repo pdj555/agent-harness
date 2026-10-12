@@ -1,26 +1,27 @@
 from __future__ import annotations
 
-import os
-
-from harness.authority import PathDenied, PermissionDenied
+from harness.agents import (
+    AGENT_NAMES,
+    Agent,
+    AgentFailed,
+    RunStopped,
+    StepLimit,
+    TurnContext,
+    UnsafeStage,
+    describe,
+    loop_helper,
+    make_agent,
+    make_reviewer,
+    redact,
+    review_prompt,
+)
 from harness.config import Config
 from harness.isolation import IsolationError, create_stage
-from harness.provider import SECRET_ENV, Completion, Provider
+from harness.provider import Provider
 from harness.review import run_review
 from harness.store import TERMINAL_STATUSES, Store
-from harness.tools import ToolError, execute, software_helper, tool_specs
 from harness.triage import scan as triage_scan
 from harness.verification import run_checks
-
-SYSTEM = """You are the principal engineer on one objective in one repository.
-
-Make the smallest change that fully meets the objective. Skip drive-by refactors and work nobody asked for.
-If the objective is open-ended, pick the defect that blocks users or breaks tests first, and say why.
-Inspect the repository with tools until you can name the change, then make it in the isolated worktree.
-Never claim tests passed. Software verifies. If you cannot prove the result, you are not done.
-Ask the user only when evidence cannot decide, or when a decision has a cost they should own.
-Do not request credentials. Do not touch files outside the worktree.
-"""
 
 DEFAULT_PLAN = [
     "Name the change",
@@ -36,37 +37,30 @@ SUGGESTED_OBJECTIVE = (
 )
 
 
-def configuration_answer(objective: str, provider: Provider) -> str | None:
+def configuration_answer(objective: str, engine: str) -> str | None:
     text = " ".join((objective or "").lower().split())
     if not any(
         phrase in text
         for phrase in ("what model", "which model", "what provider", "which provider", "what llm")
     ):
         return None
-    if provider.name == "deterministic":
+    info = describe(engine)
+    if engine in {"deterministic", "scripted"}:
         return (
-            "This run uses the deterministic provider: a local scripted agent for "
-            "tests and the sample demo. It is not a live model. Start Ollama or set "
-            "OPENAI_API_KEY for a real model."
+            f"This run uses the {engine} provider: {info['engine']}. It is not a live model. "
+            "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY for a real model."
         )
-    from harness.provider import live_endpoint, reasoning_effort_for
-
-    try:
-        _key, _base, model = live_endpoint(getattr(provider, "selection", None))
-    except RuntimeError:
-        model = os.environ.get("HARNESS_MODEL")
-    if model:
-        effort = reasoning_effort_for(model)
-        if effort:
-            return (
-                f"This run uses the {provider.name} provider with model {model} "
-                f"({effort} reasoning)."
-            )
-        return f"This run uses the {provider.name} provider with model {model}."
-    return f"This run uses the {provider.name} provider."
+    model = f" with model {info['model']}" if info["model"] else ""
+    return f"This run uses the {engine} provider ({info['engine']}){model}."
 
 
-def execute_run(run_id: str, *, store: Store, config: Config, provider: Provider) -> None:
+def execute_run(
+    run_id: str,
+    *,
+    store: Store,
+    config: Config,
+    provider: Provider | Agent | None = None,
+) -> None:
     """Drive one run to a terminal status.
 
     Every exit path lands in ``completed``, ``failed``, or ``stopped``. An
@@ -88,11 +82,14 @@ def execute_run(run_id: str, *, store: Store, config: Config, provider: Provider
         )
 
 
-def _execute_run(run_id: str, *, store: Store, config: Config, provider: Provider) -> None:
+def _execute_run(
+    run_id: str, *, store: Store, config: Config, provider: Provider | Agent | None
+) -> None:
     run = store.get_run(run_id)
     if run is None:
         return
-    answer = configuration_answer(run.objective, provider)
+    engine = getattr(provider, "name", None) or config.provider_name
+    answer = configuration_answer(run.objective, engine)
     if answer:
         store.update_run(
             run_id,
@@ -145,105 +142,70 @@ def _execute_run(run_id: str, *, store: Store, config: Config, provider: Provide
     )
     store.add_event(run_id, "evidence", scan_text[:2000])
 
-    messages: list[dict] = [
-        {"role": "system", "content": SYSTEM},
-        {
-            "role": "user",
-            "content": (
-                f"{run.objective}\n\n"
-                "SOFTWARE LEVERAGE SCAN (not model output):\n"
-                f"{scan_text}\n"
-                "Act on the most important item. Call set_plan with a live plan before editing."
-            ),
-        },
-    ]
-    tools = tool_specs("principal")
-    repairs = 0
+    ctx = TurnContext(
+        stage=stage,
+        store=store,
+        run_id=run_id,
+        max_steps=config.max_steps,
+        check_timeout=config.check_timeout,
+        helper=loop_helper(store, run_id, stage),
+    )
+    try:
+        agent = make_agent(engine, provider)
+        reviewer = make_reviewer(engine) if engine in AGENT_NAMES else None
+    except Exception as exc:
+        store.update_run(run_id, status="failed", result=f"Provider failed: {exc}", blockers=["provider"])
+        return
+    store.add_event(run_id, "decision", _engine_line(agent, reviewer))
+    try:
+        _drive(run_id, store=store, config=config, stage=stage, ctx=ctx, agent=agent, reviewer=reviewer,
+               objective=run.objective, scan_text=scan_text)
+    except RunStopped:
+        store.update_run(run_id, status="stopped", result="Stopped by the user.", active_work="")
+    except UnsafeStage as exc:
+        _fail_unsafe_stage(store, run_id, exc.phase, exc.error)
+    except AgentFailed as exc:
+        store.update_run(run_id, status="failed", result=f"Provider failed: {exc}", blockers=["provider"])
+    except StepLimit:
+        store.update_run(
+            run_id,
+            status="failed",
+            result="Reached the step limit without verification evidence.",
+            blockers=["step limit"],
+        )
+    finally:
+        for backend in (agent, reviewer):
+            if backend is not None:
+                backend.close()
 
-    def helper(objective: str) -> str:
-        store.add_event(run_id, "action", f"delegate: {objective}")
-        return software_helper(objective, stage)
 
-    for _ in range(config.max_steps):
-        current = store.get_run(run_id)
-        if current is None:
-            return
-        if current.stop_requested:
-            store.update_run(run_id, status="stopped", result="Stopped by the user.")
-            return
-        if not _require_safe_stage(store, run_id, stage, "continuing the run"):
-            return
+def _engine_line(agent: Agent, reviewer: object | None) -> str:
+    model = f" ({agent.model})" if getattr(agent, "model", None) else ""
+    review = f"; {reviewer.name} reviews the diff" if reviewer is not None else ""
+    return f"Principal agent: {agent.name}{model}{review}."
 
-        try:
-            completion = provider.complete(messages, tools)
-        except Exception as exc:
-            store.update_run(run_id, status="failed", result=f"Provider failed: {exc}", blockers=["provider"])
-            return
 
-        current = store.get_run(run_id)
-        if current and current.stop_requested:
-            store.update_run(run_id, status="stopped", result="Stopped by the user.")
-            return
-
-        if completion.tool_calls:
-            messages.append(_assistant_message(completion))
-            for call in completion.tool_calls:
-                current = store.get_run(run_id)
-                if current and current.stop_requested:
-                    store.add_event(run_id, "decision", f"{call.name} skipped because stop was requested")
-                    store.update_run(run_id, status="stopped", result="Stopped by the user.")
-                    return
-                store.update_run(run_id, active_work=_human_action(call.name, call.arguments))
-                try:
-                    if call.name == "set_plan":
-                        _apply_plan(store, run_id, call.arguments or {})
-                    output = execute(
-                        call.name,
-                        call.arguments or {},
-                        stage=stage,
-                        role="principal",
-                        helper=helper,
-                        stopped=bool(current and current.stop_requested),
-                        timeout=config.check_timeout,
-                    )
-                    store.add_event(
-                        run_id, "action", _human_action(call.name, call.arguments)
-                    )
-                    if call.name in {"edit_file", "run_shell", "git_diff", "git_status"}:
-                        store.update_run(
-                            run_id,
-                            files_changed=stage.changed_files(),
-                            diff=stage.diff(),
-                        )
-                    if call.name in {"git_diff", "git_status"}:
-                        store.add_event(run_id, "artifact", output[:2000])
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "name": call.name,
-                            "tool_call_id": call.id,
-                            "arguments": call.arguments or {},
-                            "content": _redact(output)[:8000],
-                        }
-                    )
-                except (PathDenied, PermissionDenied, ToolError) as exc:
-                    detail = f"{call.name} denied: {exc}"
-                    store.add_event(run_id, "decision", detail)
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "name": call.name,
-                            "tool_call_id": call.id,
-                            "arguments": call.arguments or {},
-                            "content": detail,
-                        }
-                    )
-                    if not _require_safe_stage(store, run_id, stage, "continuing after a tool call"):
-                        return
-            continue
-
-        if not _require_safe_stage(store, run_id, stage, "verification"):
-            return
+def _drive(
+    run_id: str,
+    *,
+    store: Store,
+    config: Config,
+    stage,
+    ctx: TurnContext,
+    agent: Agent,
+    reviewer,
+    objective: str,
+    scan_text: str,
+) -> None:
+    prompt = (
+        f"{objective}\n\n"
+        "SOFTWARE SCAN (not model output):\n"
+        f"{scan_text}\n"
+        "Act on the most important item. Record a live plan before editing."
+    )
+    for attempt in range(config.max_repairs + 1):
+        final_text = agent.turn(prompt, ctx)
+        ctx.check("verification")
         store.update_run(run_id, active_work="Running verification.")
         checked_digest = stage.content_digest()
         evidence = run_checks(
@@ -252,13 +214,11 @@ def _execute_run(run_id: str, *, store: Store, config: Config, provider: Provide
             timeout=config.check_timeout,
             command=config.check_command,
         )
-        files = stage.changed_files()
-        diff = stage.diff()
         store.update_run(
             run_id,
             verification=evidence.as_dict(),
-            files_changed=files,
-            diff=diff,
+            files_changed=stage.changed_files(),
+            diff=stage.diff(),
             checks=[evidence.as_dict()],
         )
         store.add_event(
@@ -266,36 +226,33 @@ def _execute_run(run_id: str, *, store: Store, config: Config, provider: Provide
             "evidence",
             f"verification passed={evidence.passed} exit={evidence.exit_code}",
         )
-        if not _require_safe_stage(store, run_id, stage, "independent review"):
-            return
+        ctx.check("independent review")
         if stage.content_digest() != checked_digest:
-            store.update_run(
-                run_id,
-                status="failed",
-                result="The isolated stage changed during verification; run it again.",
-                blockers=["stage changed during verification"],
-                active_work="",
-            )
+            _fail_changed(store, run_id, "The isolated stage changed during verification; run it again.",
+                          "stage changed during verification")
             return
         verification = {**evidence.as_dict(), "stage_digest": checked_digest}
         store.update_run(run_id, verification=verification, checks=[verification])
-        review = run_review(stage, evidence, provider)
+        review_with = None
+        if reviewer is not None and evidence.passed:
+            store.update_run(run_id, active_work=f"Independent review by {reviewer.name}.")
+
+            def review_with(diff: str, _reviewer=reviewer, _evidence=evidence) -> dict:
+                return _reviewer.review(
+                    review_prompt(objective, diff, _evidence.exit_code, _evidence.output), ctx
+                )
+
+        review = run_review(stage, evidence, review_with)
         store.update_run(run_id, review=review)
         store.add_event(run_id, "decision", review["summary"])
 
         if evidence.passed and review.get("passed"):
             if stage.content_digest() != checked_digest:
-                store.update_run(
-                    run_id,
-                    status="failed",
-                    result="The isolated stage changed since verification; run it again.",
-                    blockers=["stage changed since verification"],
-                    active_work="",
-                )
+                _fail_changed(store, run_id, "The isolated stage changed since verification; run it again.",
+                              "stage changed since verification")
                 return
             if config.auto_publish:
-                if not _require_safe_stage(store, run_id, stage, "publish"):
-                    return
+                ctx.check("publish")
                 try:
                     stage.publish(expected_digest=checked_digest)
                 except IsolationError as exc:
@@ -303,56 +260,41 @@ def _execute_run(run_id: str, *, store: Store, config: Config, provider: Provide
                     return
                 store.mark_published(run_id)
                 store.add_event(run_id, "result", "Published verified files into the selected repository.")
-            result_text = (
-                completion.text.strip()
-                if completion.text
-                else "Verified changes are in the isolated worktree."
-            )
             store.update_run(
                 run_id,
                 status="completed",
-                result=result_text,
+                result=final_text.strip() or "Verified changes are in the isolated worktree.",
                 active_work="",
                 investigating="Checks passed. Independent review recorded.",
             )
             return
 
-        repairs += 1
-        if repairs > config.max_repairs:
-            store.update_run(
-                run_id,
-                status="failed",
-                result="Checks did not pass.",
-                blockers=["verification failed"],
-                active_work="",
-            )
-            return
+        if attempt == config.max_repairs:
+            break
         store.update_run(run_id, active_work="Repairing after failed checks.")
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "Software verification failed. The model cannot mark this passed. "
-                    f"Output:\n{evidence.output[-4000:]}\nRepair the defect."
-                ),
-            }
-        )
+        if not evidence.passed:
+            prompt = (
+                "Software verification failed. The model cannot mark this passed. "
+                f"Output:\n{evidence.output[-4000:]}\nRepair the defect."
+            )
+        else:
+            prompt = (
+                "An independent reviewer blocked the change:\n- "
+                + "\n- ".join(review.get("findings") or ["no reason given"])
+                + "\nFix these defects."
+            )
 
     store.update_run(
         run_id,
         status="failed",
-        result="Reached the step limit without verification evidence.",
-        blockers=["step limit"],
+        result="Checks did not pass." if not evidence.passed else "Independent review blocked the change.",
+        blockers=["verification failed"] if not evidence.passed else ["review blocked"],
+        active_work="",
     )
 
 
-def _require_safe_stage(store: Store, run_id: str, stage, phase: str) -> bool:
-    try:
-        stage.assert_safe()
-    except IsolationError as exc:
-        _fail_unsafe_stage(store, run_id, phase, exc)
-        return False
-    return True
+def _fail_changed(store: Store, run_id: str, result: str, blocker: str) -> None:
+    store.update_run(run_id, status="failed", result=result, blockers=[blocker], active_work="")
 
 
 def _fail_unsafe_stage(store: Store, run_id: str, phase: str, exc: IsolationError) -> None:
@@ -372,57 +314,4 @@ def _fail_unsafe_stage(store: Store, run_id: str, phase: str, exc: IsolationErro
     )
 
 
-def _assistant_message(completion: Completion) -> dict:
-    return {
-        "role": "assistant",
-        "content": completion.text,
-        "tool_calls": [
-            {"id": call.id, "name": call.name, "arguments": call.arguments}
-            for call in completion.tool_calls
-        ],
-    }
-
-
-def _apply_plan(store: Store, run_id: str, arguments: dict) -> None:
-    raw_steps = arguments.get("steps") or []
-    steps = [str(step).strip() for step in raw_steps if str(step).strip()][:12]
-    if not steps:
-        return
-    why = str(arguments.get("why") or "").strip()
-    store.update_run(
-        run_id,
-        plan=steps,
-        investigating=why or "Live plan recorded from evidence.",
-        active_work=steps[0],
-    )
-
-
-def _human_action(name: str, arguments: dict | None) -> str:
-    args = arguments or {}
-    if name == "list_files":
-        return f"Listed files ({args.get('pattern') or '*'})"
-    if name == "read_file":
-        return f"Read {args.get('path') or 'a file'}"
-    if name == "search":
-        return f"Searched for {args.get('query') or 'a pattern'}"
-    if name == "edit_file":
-        return f"Edited {args.get('path') or 'a file'}"
-    if name == "run_shell":
-        return f"Ran {str(args.get('command') or 'a command')[:80]}"
-    if name == "git_status":
-        return "Inspected git status"
-    if name == "git_diff":
-        return "Inspected git diff"
-    if name == "set_plan":
-        return "Updated the live plan"
-    if name == "delegate":
-        return f"Delegated: {str(args.get('objective') or '')[:80]}"
-    return name
-
-
-def _redact(text: str) -> str:
-    for name in SECRET_ENV:
-        key = os.environ.get(name)
-        if key:
-            text = text.replace(key, "[redacted]")
-    return text
+_redact = redact
