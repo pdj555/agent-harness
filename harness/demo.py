@@ -6,7 +6,6 @@ from pathlib import Path
 
 from harness.config import DEFAULT_SAMPLE, Config
 from harness.isolation import ensure_git_repo
-from harness.provider import get_provider
 from harness.runtime import execute_run
 from harness.store import Run, Store
 
@@ -23,8 +22,7 @@ def run_demo(config: Config, objective: str = "Fix the failing tests and prove i
     if not repos:
         raise RuntimeError("no allowlisted repositories")
     run = store.create_run(user.id, repos[0].id, objective)
-    provider = config.provider_instance or get_provider(config.provider_name)
-    execute_run(run.id, store=store, config=config, provider=provider)
+    execute_run(run.id, store=store, config=config, provider=config.provider_instance)
     finished = store.get_run(run.id)
     if finished is None:
         raise RuntimeError("demo run disappeared")

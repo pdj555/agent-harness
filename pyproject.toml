@@ -1,14 +1,16 @@
 [project]
-name = "agent-harness-oss"
+name = "agent-harness"
 version = "0.1.0"
-description = "A local coding-agent harness: one objective, isolated changes, evidence-gated results."
+description = "Run frontier coding agents unattended. Nothing lands unless your tests pass and a second model approves."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
-authors = [{ name = "agent-harness-oss contributors" }]
+authors = [{ name = "agent-harness contributors" }]
 keywords = ["agent", "coding-agent", "harness", "verification"]
 dependencies = [
+  "claude-agent-sdk>=0.2.165",
   "fastapi>=0.115",
+  "openai-codex>=0.162.1",
   "uvicorn[standard]>=0.32",
 ]
 
@@ -23,8 +25,8 @@ dev = [
 harness = "harness.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/pdj555/agent-harness-oss"
-Documentation = "https://github.com/pdj555/agent-harness-oss/blob/main/README.md"
+Homepage = "https://github.com/pdj555/agent-harness"
+Documentation = "https://github.com/pdj555/agent-harness/blob/main/README.md"
 
 [build-system]
 requires = ["hatchling"]

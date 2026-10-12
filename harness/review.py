@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
-from harness.isolation import Stage
-from harness.provider import Provider
+from harness.agents import RunStopped, UnsafeStage
+from harness.isolation import Stage, _git
 from harness.verification import Verification
 
 TEST_DIR_NAMES = {"tests", "test", "__tests__", "spec"}
@@ -48,14 +49,62 @@ def inspect_change(stage: Stage) -> list[str]:
     return findings
 
 
-def run_review(stage: Stage, verification: Verification, provider: Provider) -> dict:
-    """Software-gated review. Check results are context, not the verdict."""
-    del provider
+MAX_REVIEW_DIFF = 60_000
+MAX_NEW_FILE = 20_000
+
+
+def review_diff(stage: Stage) -> str:
+    """Everything that would publish: tracked edits plus every new file, in full or marked as cut."""
+    parts = [stage.diff() or ""]
+    untracked = _git(["ls-files", "--others", "--exclude-standard", "-z", "--", "."], stage.root)
+    for rel in sorted(name for name in (untracked.stdout or "").split("\0") if name):
+        path = stage.root / rel
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            parts.append(f"new file {rel} (binary or unreadable; read it if it matters)\n")
+            continue
+        body = text[:MAX_NEW_FILE]
+        cut = "" if len(text) <= MAX_NEW_FILE else f"\n[... {len(text) - MAX_NEW_FILE} more characters]"
+        parts.append(f"new file {rel}\n+++ b/{rel}\n{body}{cut}\n")
+    diff = "\n".join(part for part in parts if part)
+    if len(diff) > MAX_REVIEW_DIFF:
+        omitted = len(diff) - MAX_REVIEW_DIFF
+        diff = (
+            diff[:MAX_REVIEW_DIFF]
+            + f"\n[DIFF TRUNCATED: {omitted} characters not shown. Read the changed files before approving.]"
+        )
+    return diff
+
+
+def run_review(
+    stage: Stage,
+    verification: Verification,
+    review_with: Callable[[str], dict] | None = None,
+) -> dict:
+    """Software-gated review, plus an independent model when one is configured.
+
+    Software findings block on their own. The model reviewer only sees changes
+    software already accepts, and an unreadable verdict blocks.
+    """
     files = stage.changed_files()
     findings = inspect_change(stage)
+    reviewer = "software"
+    if not findings and review_with is not None:
+        try:
+            verdict = review_with(review_diff(stage))
+        except (RunStopped, UnsafeStage):
+            raise
+        except Exception as exc:  # a reviewer that cannot answer must not approve
+            verdict = {"ship": False, "findings": [f"reviewer failed: {exc}"]}
+        reviewer = "software + model"
+        if not verdict.get("ship"):
+            findings = list(verdict.get("findings") or ["reviewer blocked the change"])
     passed = not findings
     if passed:
         summary = "Implementation changed. Tests remain. No blocking findings."
+        if reviewer != "software":
+            summary += " Independent model approved."
     else:
         summary = "Review blocked: " + "; ".join(findings)
     return {
@@ -65,4 +114,5 @@ def run_review(stage: Stage, verification: Verification, provider: Provider) -> 
         "findings": findings,
         "files_reviewed": files,
         "checks_passed": bool(verification.passed),
+        "reviewer": reviewer,
     }

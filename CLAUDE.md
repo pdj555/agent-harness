@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Instructions for Claude Code and other delegated agents working in
-`agent-harness-oss`.
+`agent-harness`.
 
 ## Product
 

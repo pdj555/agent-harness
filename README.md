@@ -1,64 +1,69 @@
 # Agent Harness
 
-A local coding agent you hire against an outcome, not a chat pane.
+Hand a coding agent an objective and walk away. It works in an isolated copy of your repo. Nothing lands unless your tests pass and a model from a different vendor approves the diff.
 
-You allowlist a real Git repository, state the change that makes money, and watch one principal agent inspect the code, edit in an isolated worktree, run the project's tests, and take independent review. **Apply is explicit.** An agent saying "done" is not completion. Software verifies.
+Claude and GPT run in their vendors' own coding agents, Claude Code and Codex, because that is where the frontier work happens. Every other model runs on the harness's own loop through OpenRouter. The harness owns what none of them do: isolation, a test gate no model can override, and cross-vendor review.
 
-Cursor is a copilot in your editor. This is an operator: isolated execution, proof, then a decision to land the diff.
+## Engines
 
-## How it works
+| `HARNESS_PROVIDER` | Runs | Needs |
+| --- | --- | --- |
+| `claude` | Claude Code, via the Claude Agent SDK | `ANTHROPIC_API_KEY` |
+| `codex` | Codex, via the Codex SDK | `OPENAI_API_KEY` or `CODEX_API_KEY` |
+| `openrouter` | Any OpenRouter model: Grok, DeepSeek, Qwen, Llama, and the rest | `OPENROUTER_API_KEY` and `HARNESS_MODEL` |
 
-1. **Scope.** You pick an allowlisted repository and state the objective. Software scans tests, TODO markers, and recent commits first.
-2. **Isolate.** All mutating work happens in a Git worktree. The source tree does not move until you apply a verified delta.
-3. **Verify.** The agent runs the project's checks and takes independent review. Pytest and review decide; models propose.
-4. **Apply.** You land the diff. Explicit, deliberate, reversible.
+Leave `HARNESS_PROVIDER` unset and the first key found wins, in that order. `HARNESS_MODEL` picks the model for any engine.
 
-The browser cannot create accounts or open arbitrary files. Stop ends mutating work. History is durable.
+## Review
+
+Every diff that passes the tests goes to the other vendor, with read-only access:
+
+- Claude's work is reviewed by Codex, and Codex's by Claude.
+- OpenRouter runs are reviewed by Claude, else Codex.
+- `HARNESS_REVIEWER=claude|codex|none` overrides the pick, and `HARNESS_REVIEWER_MODEL` sets its model.
+
+A block goes back to the agent as findings to fix, in the same session. A reviewer that crashes or answers in anything but a verdict blocks the change. With only one vendor's key configured, review is software-only.
+
+## How a run works
+
+1. **Scope.** Pick an allowlisted repository and state the objective. Software scans tests, TODO markers, and recent commits first.
+2. **Isolate.** The agent works in a Git worktree. Your source tree does not move.
+3. **Verify.** The project's own checks run after the agent stops. Their exit code is the verdict; the agent's "done" is ignored.
+4. **Review.** Software checks the diff (tests still exist, implementation changed), then the second model reviews it.
+5. **Apply.** You land the verified diff. Explicit and reversible.
+
+Stop ends all further work. History is durable.
 
 ## Run it
 
-Cheapest live path: local Ollama, already installed.
-
 ```bash
-# ollama serve && ollama pull gpt-oss:20b
 uv sync --extra dev
-uv run harness user add preston --password 'choose-your-own'
-uv run harness repo add /path/to/the/repo/that/prints/money
+export ANTHROPIC_API_KEY=...   # and OPENAI_API_KEY for cross-vendor review
+uv run harness user add you --password 'choose-your-own'
+uv run harness repo add /path/to/your/repo
 uv run harness serve
 ```
 
-Open `http://127.0.0.1:7465`, log in, pick that repository, and click **Next dollar**. Software scans tests, TODO markers, and recent commits; the agent writes a live plan from that evidence, ships in isolation, and stops when checks pass. You can still type a specific objective.
+Open `http://127.0.0.1:7465`, log in, pick the repository, and click **Next dollar** or type an objective.
 
-No API key, no cost:
+No key, no cost:
 
 ```bash
 uv run harness demo
 ```
 
-The demo runs a scripted sample agent so CI needs no vendor. It repairs a known defect in `examples/sample-repo`; it is not the product.
-
-## Model routing
-
-Serve prefers **local Ollama** when it is running (`gpt-oss:20b` if installed, never a `:cloud` tag unless you set `HARNESS_MODEL`). That is $0.
-
-- **Ollama Cloud:** set `OLLAMA_API_KEY` in `.env` (runs `gpt-oss:120b` unless you set `HARNESS_MODEL`). Local $0 stays available with `HARNESS_PROVIDER=ollama`.
-- **OpenAI:** pin `OPENAI_API_KEY` and `HARNESS_PROVIDER=openai`. Daily driver is **GPT-5.6 Luna** at `reasoning_effort=xhigh` ($0.20 / $1.20 per 1M). `HARNESS_MODEL=gpt-5.6-sol` for the close.
-- **xAI:** pin `XAI_API_KEY` and `HARNESS_PROVIDER=xai` (default `grok-4.6`), or override with `HARNESS_MODEL`.
+The demo runs a scripted agent that repairs a known defect in `examples/sample-repo`, so CI needs no vendor.
 
 ## Configure
 
-Copy [harness.example.toml](harness.example.toml) to `harness.toml` to bind a different port, add roots, extend `check_timeout`, or set a `check_command` other than pytest (`npm test`, `go test ./...`). The command's exit code is the verdict. Add repositories:
+Copy [harness.example.toml](harness.example.toml) to `harness.toml` to change the port, add roots, extend `check_timeout`, or set a `check_command` other than pytest (`npm test`, `go test ./...`). See [.env.example](.env.example) for every variable.
 
-```bash
-uv run harness repo add ~/code/your-repo
-```
+## Guarantees
 
-## Why this is not a chat demo
-
-- Models propose. Pytest and independent review decide.
-- Mutating work happens in a Git worktree. The source tree does not move until you apply a verified delta.
-- The browser cannot create accounts or open arbitrary files.
-- Stop ends mutating work. History is durable.
+- Models propose. The project's checks and independent review decide.
+- Claude's file tools are confined to the worktree by a hook. Codex runs in its own workspace sandbox. The OpenRouter loop goes through the harness's permission checks.
+- Each agent runs with a stripped environment: its own vendor key, proxy and certificate settings, and a HOME beside the worktree. Host secrets and your real HOME never reach it. Codex keeps its login there too, so your own `~/.codex` is untouched.
+- This is not an OS sandbox. Shell commands run in the worktree with your user's permissions. See [docs/security.md](docs/security.md).
 
 ## Tests
 
