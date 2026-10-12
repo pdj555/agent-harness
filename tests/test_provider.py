@@ -74,7 +74,7 @@ def test_gpt56_luna_payload_defaults_to_xhigh_reasoning(monkeypatch):
     payload = OpenAICompatProvider.build_responses_payload(
         [
             {"role": "system", "content": "principal"},
-            {"role": "user", "content": "next dollar"},
+            {"role": "user", "content": "fix the classifier"},
             {
                 "role": "assistant",
                 "content": "",
