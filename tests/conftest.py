@@ -10,14 +10,14 @@ from harness.config import Config
 from tests.helpers import copy_sample, git_init
 
 _LIVE_ENV = (
-    "XAI_API_KEY",
+    "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
-    "HARNESS_API_KEY",
-    "OLLAMA_API_KEY",
+    "CODEX_API_KEY",
+    "OPENROUTER_API_KEY",
     "HARNESS_PROVIDER",
     "HARNESS_MODEL",
     "HARNESS_REASONING",
-    "HARNESS_API_BASE",
+    "HARNESS_REVIEWER",
 )
 
 

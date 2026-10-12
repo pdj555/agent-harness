@@ -46,13 +46,11 @@ class Config:
     provider_instance: Any = None
 
 
+LIVE_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY")
+
+
 def has_live_key() -> bool:
-    return bool(
-        os.environ.get("XAI_API_KEY")
-        or os.environ.get("OPENAI_API_KEY")
-        or os.environ.get("HARNESS_API_KEY")
-        or os.environ.get("OLLAMA_API_KEY")
-    )
+    return any(os.environ.get(name) for name in LIVE_KEYS)
 
 
 def extra_repos_path(data_dir: Path) -> Path:
@@ -119,10 +117,9 @@ def load_config(path: Path | None = None, *, prefer_live: bool = True) -> Config
     if env_provider:
         config.provider_name = env_provider
     elif prefer_live and config.provider_name == "deterministic":
-        from harness.provider import ollama_available
+        from harness.agents import default_agent_name
 
-        if has_live_key() or ollama_available():
-            config.provider_name = "openai_compat"
+        config.provider_name = default_agent_name()
     config.data_dir = config.data_dir.expanduser()
     if not config.data_dir.is_absolute():
         config.data_dir = Path.cwd() / config.data_dir

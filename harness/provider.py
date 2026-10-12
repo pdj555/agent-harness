@@ -7,7 +7,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Protocol
 
-SECRET_ENV = ("HARNESS_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "OLLAMA_API_KEY")
+SECRET_ENV = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY")
 
 
 @dataclass
@@ -111,35 +111,41 @@ class DeterministicProvider:
         return Completion(text="The isolated change is ready for software verification.")
 
 
-REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
+REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 
 
-def reasoning_effort_for(model: str) -> str | None:
-    """Chat Completions `reasoning_effort`. GPT-5.6 defaults to xhigh."""
-    raw = os.environ.get("HARNESS_REASONING")
-    if raw is not None:
-        value = raw.strip().lower()
-        if value in {"", "off"}:
-            return None
-        return value if value in REASONING_EFFORTS else None
-    if model.lower().startswith("gpt-5"):
-        return "xhigh"
-    return None
+def reasoning_effort() -> str | None:
+    """OpenRouter `reasoning.effort`, set with HARNESS_REASONING. Off unless asked for."""
+    value = (os.environ.get("HARNESS_REASONING") or "").strip().lower()
+    return value if value in REASONING_EFFORTS else None
 
 
-class OpenAICompatProvider:
-    name = "openai_compat"
+def openrouter_endpoint() -> tuple[str, str]:
+    """Return (api_key, model) for OpenRouter, or fail with the one line that fixes it."""
+    key = os.environ.get("OPENROUTER_API_KEY")
+    if not key:
+        raise RuntimeError("HARNESS_PROVIDER=openrouter requires OPENROUTER_API_KEY")
+    model = os.environ.get("HARNESS_MODEL")
+    if not model:
+        raise RuntimeError("HARNESS_PROVIDER=openrouter requires HARNESS_MODEL, e.g. qwen/qwen3-coder")
+    return key, model
 
-    def __init__(self, selection: str | None = None) -> None:
-        self.selection = selection
-        if selection:
-            self.name = selection
+
+class OpenRouterProvider:
+    """Every model that is not Claude or GPT, through OpenRouter's Chat Completions API."""
+
+    name = "openrouter"
+
+    @property
+    def model(self) -> str | None:
+        return os.environ.get("HARNESS_MODEL") or None
 
     @staticmethod
     def build_payload(messages: list[dict], tools: list[dict], model: str) -> dict:
         payload = {
             "model": model,
-            "messages": _openai_messages(messages),
+            "messages": _chat_messages(messages),
             "tools": [
                 {
                     "type": "function",
@@ -152,76 +158,17 @@ class OpenAICompatProvider:
                 }
                 for spec in tools
             ],
+            "tool_choice": "auto",
         }
-        effort = reasoning_effort_for(model)
-        if effort:
-            payload["reasoning_effort"] = effort
-        return payload
-
-    @staticmethod
-    def build_responses_payload(messages: list[dict], tools: list[dict], model: str) -> dict:
-        instructions = ""
-        input_items: list[dict] = []
-        for message in _openai_messages(messages):
-            role = message.get("role")
-            if role == "system":
-                extra = message.get("content") or ""
-                instructions = f"{instructions}\n{extra}".strip() if extra else instructions
-            elif role == "assistant" and message.get("tool_calls"):
-                if message.get("content"):
-                    input_items.append({"role": "assistant", "content": message["content"]})
-                for call in message["tool_calls"]:
-                    function = call.get("function") or {}
-                    input_items.append(
-                        {
-                            "type": "function_call",
-                            "call_id": call.get("id") or "call",
-                            "name": function.get("name") or "",
-                            "arguments": function.get("arguments") or "{}",
-                        }
-                    )
-            elif role == "tool":
-                input_items.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": message.get("tool_call_id") or "call",
-                        "output": message.get("content") or "",
-                    }
-                )
-            else:
-                input_items.append({"role": role, "content": message.get("content") or ""})
-        payload = {
-            "model": model,
-            "input": input_items,
-            "tools": [
-                {
-                    "type": "function",
-                    "name": spec["name"],
-                    "description": spec.get("description", ""),
-                    "parameters": spec.get("parameters")
-                    or {"type": "object", "properties": {}},
-                    "strict": False,
-                }
-                for spec in tools
-            ],
-        }
-        if instructions:
-            payload["instructions"] = instructions
-        effort = reasoning_effort_for(model)
+        effort = reasoning_effort()
         if effort:
             payload["reasoning"] = {"effort": effort}
         return payload
 
     def complete(self, messages: list[dict], tools: list[dict]) -> Completion:
-        api_key, base, model = live_endpoint(self.selection)
-        if model.lower().startswith("gpt-5") and "openai.com" in base:
-            payload = self.build_responses_payload(messages, tools, model)
-            body = _post_json(f"{base}/responses", payload, api_key, timeout=600)
-            return _completion_from_responses(body)
+        api_key, model = openrouter_endpoint()
         payload = self.build_payload(messages, tools, model)
-        payload["tool_choice"] = "auto"
-        timeout = 600 if payload.get("reasoning_effort") or "ollama.com" in base else 120
-        body = _post_json(f"{base}/chat/completions", payload, api_key, timeout=timeout)
+        body = _post_json(f"{OPENROUTER_BASE}/chat/completions", payload, api_key, timeout=600)
         return _completion_from_chat(body)
 
 
@@ -232,6 +179,7 @@ def _post_json(url: str, payload: dict, api_key: str, *, timeout: int) -> dict:
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
+            "X-Title": "agent-harness",
         },
         method="POST",
     )
@@ -246,7 +194,11 @@ def _post_json(url: str, payload: dict, api_key: str, *, timeout: int) -> dict:
 
 
 def _completion_from_chat(body: dict) -> Completion:
-    message = body["choices"][0]["message"]
+    choices = body.get("choices") or []
+    if not choices:
+        error = body.get("error") or body
+        raise RuntimeError(f"provider returned no choices: {str(error)[:600]}")
+    message = choices[0].get("message") or {}
     calls = []
     for item in message.get("tool_calls") or []:
         function = item.get("function") or {}
@@ -265,150 +217,13 @@ def _completion_from_chat(body: dict) -> Completion:
     return Completion(text=message.get("content") or "", tool_calls=calls)
 
 
-def _completion_from_responses(body: dict) -> Completion:
-    calls = []
-    for item in body.get("output") or []:
-        if item.get("type") != "function_call":
-            continue
-        raw_args = item.get("arguments") or "{}"
-        try:
-            arguments = json.loads(raw_args)
-        except json.JSONDecodeError:
-            arguments = {}
-        calls.append(
-            ToolCall(
-                id=item.get("call_id") or item.get("id") or "call",
-                name=item.get("name") or "",
-                arguments=arguments if isinstance(arguments, dict) else {},
-            )
-        )
-    if calls:
-        return Completion(text="", tool_calls=calls)
-    return Completion(text=body.get("output_text") or "", tool_calls=[])
-
-
-def ollama_host() -> str:
-    return os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
-
-
-def ollama_available() -> bool:
-    try:
-        with urllib.request.urlopen(ollama_host() + "/api/tags", timeout=0.4) as response:
-            return response.status == 200
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return False
-
-
-def ollama_models() -> list[str]:
-    try:
-        with urllib.request.urlopen(ollama_host() + "/api/tags", timeout=1.5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
-        return []
-    return [str(item.get("name")) for item in payload.get("models") or [] if item.get("name")]
-
-
-def pick_ollama_model(names: list[str]) -> str:
-    explicit = os.environ.get("HARNESS_MODEL") or os.environ.get("OLLAMA_MODEL")
-    if explicit:
-        return explicit
-    local = [name for name in names if ":cloud" not in name]
-    pool = local or names
-    for needle in ("gpt-oss:20b", "qwen2.5-coder", "qwen3-coder", "gpt-oss", "coder"):
-        for name in pool:
-            if needle in name:
-                return name
-    return pool[0] if pool else "gpt-oss:20b"
-
-
-def _openai_key() -> str | None:
-    return os.environ.get("OPENAI_API_KEY") or os.environ.get("HARNESS_API_KEY")
-
-
-def _is_openai_model(model: str | None) -> bool:
-    if not model:
-        return False
-    name = model.lower()
-    return name.startswith("gpt-5") or name.startswith("gpt-4")
-
-
-def live_endpoint(provider_name: str | None = None) -> tuple[str, str, str]:
-    """Return (api_key, base_url, model) for a live vendor."""
-    provider = (provider_name or os.environ.get("HARNESS_PROVIDER") or "").lower()
-    explicit_model = os.environ.get("HARNESS_MODEL")
-    openai_key = _openai_key()
-    openai_base = os.environ.get("HARNESS_API_BASE", "https://api.openai.com/v1").rstrip("/")
-    if provider == "openai":
-        if not openai_key:
-            raise RuntimeError("HARNESS_PROVIDER=openai requires OPENAI_API_KEY or HARNESS_API_KEY")
-        return openai_key, openai_base, explicit_model or "gpt-5.6-luna"
-    if provider == "ollama-cloud":
-        if not os.environ.get("OLLAMA_API_KEY"):
-            raise RuntimeError("HARNESS_PROVIDER=ollama-cloud requires OLLAMA_API_KEY")
-        return (
-            os.environ["OLLAMA_API_KEY"],
-            os.environ.get("HARNESS_API_BASE", "https://ollama.com/v1").rstrip("/"),
-            explicit_model or "gpt-oss:120b",
-        )
-    if provider == "ollama":
-        if not ollama_available():
-            raise RuntimeError("HARNESS_PROVIDER=ollama requires a running local Ollama server")
-        model = pick_ollama_model(ollama_models())
-        return "ollama", ollama_host() + "/v1", model
-    if provider == "xai":
-        if not os.environ.get("XAI_API_KEY"):
-            raise RuntimeError("HARNESS_PROVIDER=xai requires XAI_API_KEY")
-        return (
-            os.environ["XAI_API_KEY"],
-            os.environ.get("HARNESS_API_BASE", "https://api.x.ai/v1").rstrip("/"),
-            explicit_model or "grok-4.6",
-        )
-
-    if openai_key and _is_openai_model(explicit_model):
-        return openai_key, openai_base, explicit_model or "gpt-5.6-luna"
-    if os.environ.get("OLLAMA_API_KEY"):
-        return (
-            os.environ["OLLAMA_API_KEY"],
-            os.environ.get("HARNESS_API_BASE", "https://ollama.com/v1").rstrip("/"),
-            explicit_model or "gpt-oss:120b",
-        )
-    if ollama_available():
-        model = pick_ollama_model(ollama_models())
-        return "ollama", ollama_host() + "/v1", model
-    if os.environ.get("XAI_API_KEY"):
-        return (
-            os.environ["XAI_API_KEY"],
-            os.environ.get("HARNESS_API_BASE", "https://api.x.ai/v1").rstrip("/"),
-            explicit_model or "grok-4.6",
-        )
-    if openai_key:
-        return openai_key, openai_base, explicit_model or "gpt-5.6-luna"
-    raise RuntimeError("start Ollama or set OPENAI_API_KEY / XAI_API_KEY / HARNESS_API_KEY")
-
-
 def get_provider(name: str) -> Provider:
     if name == "deterministic":
         return DeterministicProvider()
     if name == "scripted":
         return ScriptedProvider([])
-    if name in {"openai_compat", "openai", "ollama", "ollama-cloud", "xai"}:
-        selection = None if name == "openai_compat" else name
-        provider = OpenAICompatProvider(selection)
-        try:
-            key, base, _model = live_endpoint(selection)
-        except RuntimeError:
-            return provider
-        if selection:
-            return provider
-        if "ollama.com" in base:
-            provider.name = "ollama-cloud"
-        elif key == "ollama" or "11434" in base:
-            provider.name = "ollama"
-        elif "openai.com" in base:
-            provider.name = "openai"
-        elif "x.ai" in base:
-            provider.name = "xai"
-        return provider
+    if name == "openrouter":
+        return OpenRouterProvider()
     raise ValueError(f"unknown provider: {name}")
 
 
@@ -461,7 +276,7 @@ def _shell_passed(content: str) -> bool:
     return first.strip() == "exit 0"
 
 
-def _openai_messages(messages: list[dict]) -> list[dict]:
+def _chat_messages(messages: list[dict]) -> list[dict]:
     secrets = []
     for name in SECRET_ENV:
         value = os.environ.get(name)

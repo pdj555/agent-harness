@@ -1,16 +1,14 @@
 # agent-harness
 
-A local coding agent that can't mark its own work done.
+Hand a coding agent an objective and walk away. It works in an isolated copy of your repo. Nothing lands unless your tests pass and a model from a different vendor approves the diff.
 
-You allowlist a Git repository and give it one objective. The agent reads the code and edits an isolated worktree. It runs the project's tests. A separate reviewer looks at the diff. The run completes only when the test command exits 0 and review passes, and your repository doesn't change until you click **Apply**.
-
-The rule everything follows: the model proposes, software decides. There is no tool, field, or string the model can use to set `passed`.
+Claude and GPT run in their vendors' own coding agents, Claude Code and Codex, because that is where the frontier work happens. Every other model runs on the harness's own loop through OpenRouter. The harness owns what none of them do: isolation, a test gate no model can override, and cross-vendor review.
 
 [![ci](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml)
 
 ## Try it in one minute
 
-No API key. A scripted agent fixes a seeded bug in `examples/sample-repo`:
+No key, no cost. A scripted agent fixes a seeded bug in `examples/sample-repo`:
 
 ```bash
 uv sync --extra dev
@@ -25,47 +23,54 @@ files:
   tracker.py
 ```
 
-Run it twice. Each run resets the demo copy, so both should complete with a real diff.
-
 ## Run it on your own code
 
 ```bash
+export ANTHROPIC_API_KEY=...   # and OPENAI_API_KEY for cross-vendor review
 uv run harness user add <you> --password '<password>'
 uv run harness repo add ~/code/your-repo
 uv run harness serve
 ```
 
-Open http://127.0.0.1:7465 and log in. Pick the repository, type an objective, and watch the plan, tool calls, diff, and test output stream in. If you don't know what to ask for, **Suggest a fix** reads the tests, open TODOs, and recent commits and picks something.
+Open http://127.0.0.1:7465, log in, pick the repository, and type an objective. If you don't know what to ask for, **Suggest a fix** reads the tests, open TODOs, and recent commits and picks something. When the run is green you get the diff, the check output, and both reviews. **Apply** copies exactly the files that were verified.
 
-When the run is green you get a diff, the check output, and the review. **Apply** copies exactly the files that were verified. **Stop** ends mutating work at the next tool boundary.
+## Engines
+
+| `HARNESS_PROVIDER` | Runs | Needs |
+| --- | --- | --- |
+| `claude` | Claude Code, via the Claude Agent SDK | `ANTHROPIC_API_KEY` |
+| `codex` | Codex, via the Codex SDK | `OPENAI_API_KEY` or `CODEX_API_KEY` |
+| `openrouter` | Any OpenRouter model: Grok, DeepSeek, Qwen, Llama, and the rest | `OPENROUTER_API_KEY` and `HARNESS_MODEL` |
+
+Leave `HARNESS_PROVIDER` unset and the first key found wins, in that order. `HARNESS_MODEL` picks the model for any engine.
+
+## Review
+
+Every diff that passes the tests goes to the other vendor, with read-only access:
+
+- Claude's work is reviewed by Codex, and Codex's by Claude.
+- OpenRouter runs are reviewed by Claude, else Codex.
+- `HARNESS_REVIEWER=claude|codex|none` overrides the pick, and `HARNESS_REVIEWER_MODEL` sets its model.
+
+A block goes back to the agent as findings to fix, in the same session. A reviewer that crashes or answers in anything but a verdict blocks the change. With only one vendor's key configured, review is software-only.
 
 ## How a run works
 
-1. The repository is staged in a detached Git worktree under `.harness/stages/<run>/`. Ignored files (`.env`, `node_modules`, caches) never enter it.
-2. The principal agent works with a small tool set: list, search, read, edit, shell, git status and diff, and a read-only helper it can delegate to.
-3. When the agent stops calling tools, the harness ignores whatever it said and runs the project's check command itself. The exit code is the verdict.
-4. An independent review checks the diff. Tests still exist, something actually changed, and tests didn't change without an implementation change.
-5. If checks or review fail, the output goes back to the agent for repair, up to `max_repairs` times. Then the run fails.
-6. Verification fingerprints the staged tree. Apply re-checks that fingerprint before copying, so the files that land are the files that passed.
+1. **Scope.** Pick an allowlisted repository and state the objective. Software scans tests, TODO markers, and recent commits first.
+2. **Isolate.** The agent works in a Git worktree under `.harness/stages/<run>/`. Ignored files (`.env`, `node_modules`, caches) never enter it. Your source tree does not move.
+3. **Verify.** The project's own checks run after the agent stops. Their exit code is the verdict; the agent's "done" is ignored.
+4. **Review.** Software checks the diff (tests still exist, implementation changed), then the second model reviews it.
+5. **Repair.** Failed checks or review findings go back to the agent, up to `max_repairs` times. Then the run fails.
+6. **Apply.** Verification fingerprints the staged tree. Apply re-checks that fingerprint, so the files that land are the files that passed.
 
-Every exit is terminal: `completed`, `failed`, or `stopped`. A provider error or a hung test suite fails the run with a blocker. Nothing sits in `running` forever.
+Every exit is terminal: `completed`, `failed`, or `stopped`. Stop ends all further work. History is durable.
 
-## What it does not protect you from
+## Guarantees and limits
 
-This is not an OS sandbox. A live model that can run Python can reach the host as your user. The allowlist and the worktree are the boundary, not the prompt. Bind to loopback, keep `workspace.roots` small, and read [docs/security.md](docs/security.md) before pointing it at anything you care about.
-
-## Models
-
-`harness serve` picks a live provider from the environment. Pin one with `HARNESS_PROVIDER` and it fails closed instead of falling back.
-
-| `HARNESS_PROVIDER` | Needs | Default model |
-| --- | --- | --- |
-| `ollama` | a running local Ollama | `gpt-oss:20b` if installed |
-| `ollama-cloud` | `OLLAMA_API_KEY` | `gpt-oss:120b` |
-| `openai` | `OPENAI_API_KEY` | `gpt-5.6-luna` |
-| `xai` | `XAI_API_KEY` | `grok-4.6` |
-
-Override the model with `HARNESS_MODEL` and the endpoint with `HARNESS_API_BASE`. See [.env.example](.env.example).
+- Models propose. The project's checks and independent review decide.
+- Claude's file tools are confined to the worktree by a hook. Codex runs in its own workspace sandbox. The OpenRouter loop goes through the harness's permission checks.
+- Each agent runs with a stripped environment: its own vendor key, proxy and certificate settings, and a HOME beside the worktree. Host secrets and your real HOME never reach it. Codex keeps its login there too, so your own `~/.codex` is untouched.
+- This is not an OS sandbox. Shell commands run in the worktree with your user's permissions. Bind to loopback, keep `workspace.roots` small, and read [docs/security.md](docs/security.md).
 
 ## Configure
 
@@ -75,19 +80,20 @@ Copy [harness.example.toml](harness.example.toml) to `harness.toml`. The setting
 - `workspace.check_command`: the verdict command. Defaults to `python -m pytest -q`. Use `npm test` or `go test ./...` for other stacks. It's split with `shlex` and never handed to a shell.
 - `workspace.check_timeout`: seconds before a check counts as failed. Default 300.
 
-If the repository has its own `.venv`, checks and `python` in shell calls use that interpreter, so the project's real dependencies get tested.
+See [.env.example](.env.example) for every variable.
 
 ## Layout
 
 ```text
 harness/
-  runtime.py        the principal loop: plan, act, verify, review, repair
+  agents.py         Claude Code, Codex, and OpenRouter engines behind one Agent interface
+  runtime.py        the run: scan, drive the engine, verify, review, repair
   verification.py   runs the check command; the only source of `passed`
-  review.py         independent review record
+  review.py         software review gate plus the cross-vendor model reviewer
   isolation.py      worktree staging, fingerprints, apply
   authority.py      role and path checks every tool call goes through
-  tools.py          the agent's tool set
-  provider.py       deterministic, scripted, and OpenAI-compatible providers
+  tools.py          the OpenRouter loop's tool set
+  provider.py       deterministic, scripted, and OpenRouter providers
   triage.py         reads tests, TODOs, and commits for Suggest a fix
   app.py            FastAPI server and the web client in static/
   store.py          SQLite users, sessions, and durable runs

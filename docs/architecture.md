@@ -5,7 +5,7 @@ platform of many agents. One principal agent does the work. Everything else
 exists to give that agent authority, isolation, and proof.
 
 ```text
-browser  ->  auth  ->  app  ->  runtime  ->  provider
+browser  ->  auth  ->  app  ->  runtime  ->  agent (claude | codex | harness loop)
                               |          ->  tools (authority)
                               |          ->  isolation (worktree)
                               |          ->  verification (pytest)
@@ -24,10 +24,11 @@ browser  ->  auth  ->  app  ->  runtime  ->  provider
 | `harness/authority.py` | path and role checks |
 | `harness/isolation.py` | Git worktree / copied git stage, publish |
 | `harness/tools.py` | list, search, read, edit, shell, git, delegate |
-| `harness/provider.py` | provider protocol; deterministic and OpenAI-compatible |
+| `harness/agents.py` | engines: Claude Agent SDK, Codex SDK, harness loop; reviewer pick |
+| `harness/provider.py` | model-step protocol for the harness loop; deterministic and OpenRouter |
 | `harness/runtime.py` | principal loop, stop, repair |
 | `harness/verification.py` | parent-run checks |
-| `harness/review.py` | independent reviewer record |
+| `harness/review.py` | software review gate plus the cross-vendor model reviewer |
 | `harness/triage.py` | reads tests, TODO markers, and recent commits for Suggest a fix |
 | `harness/accounts.py` | operator-created accounts (`harness user add`) |
 | `harness/demo.py` | sample-repo demo entry |
@@ -111,9 +112,12 @@ common Python, JavaScript, Go, and Ruby layouts: `test_*`, `*_test.*`,
 
 ## Provider boundary
 
-`get_provider(name)` is the only factory. Tests inject `ScriptedProvider`. The
-demo uses `DeterministicProvider`. A live vendor implements the same
-`complete(messages, tools)` method. Credentials stay in environment variables.
+`make_agent(name)` builds the engine for a run. Claude and Codex run their
+vendors' own agent loops; any other model runs the harness loop, which wraps a
+`Provider` with `complete(messages, tools)`. Tests inject `ScriptedProvider`, the
+demo uses `DeterministicProvider`. `make_reviewer(name)` picks the other vendor
+to review the diff. Credentials stay in environment variables, and each agent's
+subprocess sees only its own vendor's key.
 
 ## Persistence
 

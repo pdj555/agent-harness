@@ -1,7 +1,7 @@
 [project]
 name = "agent-harness"
 version = "0.1.0"
-description = "A local coding agent that can't mark its own work done. Isolated worktree, tests decide, explicit apply."
+description = "Run frontier coding agents unattended. Nothing lands unless your tests pass and a second model approves."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
@@ -17,7 +17,9 @@ classifiers = [
   "Topic :: Software Development :: Testing",
 ]
 dependencies = [
+  "claude-agent-sdk>=0.2.165",
   "fastapi>=0.143.0",
+  "openai-codex>=0.162.1",
   "uvicorn[standard]>=0.54.0",
 ]
 

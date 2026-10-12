@@ -29,9 +29,9 @@ def _setup(tmp_path: Path) -> tuple[Store, Config, str]:
     return store, config, run.id
 
 
-def test_runtime_redacts_ollama_cloud_key(monkeypatch):
-    secret = "ollama-cloud-secret-value"
-    monkeypatch.setenv("OLLAMA_API_KEY", secret)
+def test_runtime_redacts_openrouter_key(monkeypatch):
+    secret = "openrouter-secret-value"
+    monkeypatch.setenv("OPENROUTER_API_KEY", secret)
 
     redacted = _redact(f"tool output contained {secret}")
 
@@ -337,3 +337,95 @@ def test_stage_change_during_checks_or_review_prevents_completion(tmp_path: Path
     assert any("stage changed" in blocker for blocker in run.blockers)
     assert run.published_at is None
     assert (source / "tracker.py").read_bytes() == original
+
+
+def _fix_calls() -> list[Completion]:
+    return [
+        Completion(
+            tool_calls=[
+                ToolCall(
+                    name="edit_file",
+                    arguments={
+                        "path": "tracker.py",
+                        "old": '        return "low"\n    if impact',
+                        "new": '        return "high"\n    if impact',
+                    },
+                )
+            ]
+        ),
+        Completion(
+            tool_calls=[
+                ToolCall(
+                    name="edit_file",
+                    arguments={
+                        "path": "tracker.py",
+                        "old": '"medium"\n    return "high"\n',
+                        "new": '"medium"\n    return "low"\n',
+                    },
+                )
+            ]
+        ),
+        Completion(text="Fixed."),
+    ]
+
+
+class _Reviewer:
+    name = "codex"
+
+    def __init__(self, verdicts):
+        self.verdicts = list(verdicts)
+        self.prompts = []
+
+    def review(self, prompt, ctx):
+        self.prompts.append(prompt)
+        return self.verdicts.pop(0)
+
+    def close(self):
+        pass
+
+
+def test_cross_vendor_reviewer_blocks_then_approves_after_repair(tmp_path: Path, monkeypatch):
+    store, config, run_id = _setup(tmp_path)
+    reviewer = _Reviewer(
+        [{"ship": False, "findings": ["missing edge case"]}, {"ship": True, "findings": []}]
+    )
+    monkeypatch.setattr("harness.runtime.make_reviewer", lambda _name: reviewer)
+    provider = ScriptedProvider([*_fix_calls(), Completion(text="Handled the edge case.")])
+    provider.name = "openrouter"
+
+    execute_run(run_id, store=store, config=config, provider=provider)
+
+    run = store.get_run(run_id)
+    assert run.status == "completed"
+    assert len(reviewer.prompts) == 2
+    assert "tracker.py" in reviewer.prompts[0]
+    assert "Independent model approved" in run.review["summary"]
+    assert run.result == "Handled the edge case."
+    assert any("codex reviews the diff" in event["detail"] for event in run.events)
+
+
+def test_reviewer_that_never_approves_fails_the_run(tmp_path: Path, monkeypatch):
+    store, config, run_id = _setup(tmp_path)
+    reviewer = _Reviewer([{"ship": False, "findings": ["unsafe"]}] * 3)
+    monkeypatch.setattr("harness.runtime.make_reviewer", lambda _name: reviewer)
+    provider = ScriptedProvider(_fix_calls())
+    provider.name = "openrouter"
+
+    execute_run(run_id, store=store, config=config, provider=provider)
+
+    run = store.get_run(run_id)
+    assert run.status == "failed"
+    assert run.blockers == ["review blocked"]
+    assert run.verification["passed"] is True
+    assert run.published_at is None
+
+
+def test_offline_engines_get_no_model_reviewer(tmp_path: Path, monkeypatch):
+    store, config, run_id = _setup(tmp_path)
+
+    def forbidden(_name):
+        raise AssertionError("deterministic runs must stay offline")
+
+    monkeypatch.setattr("harness.runtime.make_reviewer", forbidden)
+    execute_run(run_id, store=store, config=config, provider=DeterministicProvider())
+    assert store.get_run(run_id).status == "completed"
