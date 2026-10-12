@@ -17,15 +17,15 @@ classifiers = [
   "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-  "fastapi>=0.115",
-  "uvicorn[standard]>=0.32",
+  "fastapi>=0.143.0",
+  "uvicorn[standard]>=0.54.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "httpx>=0.28",
   "pytest>=8.3",
-  "ruff>=0.9",
+  "ruff>=0.17.0",
 ]
 
 [project.scripts]
