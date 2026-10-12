@@ -41,7 +41,7 @@ def test_account_request_is_mailto_not_self_serve_signup():
         encoding="utf-8"
     )
     js = JS.read_text(encoding="utf-8")
-    assert "mailto:preston@pallara.xyz" in html
+    assert "mailto:p@pdj.dev" in html
     assert "Harness account request" in html.replace("%20", " ")
     assert "/api/signup" not in js
 

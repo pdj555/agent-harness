@@ -39,8 +39,8 @@ A live vendor is optional. The gating demo is the deterministic path.
 uv run harness serve
 ```
 
-Open `http://127.0.0.1:7465`, create an account, select `sample-repo`, and
-submit one objective. Watch plan, events, changed files, checks, and proof.
+Add yourself with `uv run harness user add <you> --password <password>`, open
+`http://127.0.0.1:7465`, log in, select `sample-repo`, and submit one objective. Watch plan, events, changed files, checks, and proof.
 Press **Stop** to end an in-flight run.
 
 Without `auto_publish`, the verified edit stays in the worktree. The UI still

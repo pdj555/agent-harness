@@ -121,10 +121,10 @@
     });
   });
 
-  document.getElementById("next-dollar").addEventListener("click", function () {
+  document.getElementById("suggest-button").addEventListener("click", function () {
     objectiveInput.value = window.__mission || (
-      "Find the highest-leverage change that increases revenue or stops a loss, "
-      + "ship it in isolation, and prove it with the project's tests."
+      "Find the most important broken or missing behavior in this repository, "
+      + "fix it in isolation, and prove it with the project's tests."
     );
     if (typeof composer.requestSubmit === "function") composer.requestSubmit();
     else composer.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));

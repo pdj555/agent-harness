@@ -5,35 +5,34 @@ import os
 from harness.authority import PathDenied, PermissionDenied
 from harness.config import Config
 from harness.isolation import IsolationError, create_stage
-from harness.leverage import scan as leverage_scan
 from harness.provider import SECRET_ENV, Completion, Provider
 from harness.review import run_review
 from harness.store import TERMINAL_STATUSES, Store
 from harness.tools import ToolError, execute, software_helper, tool_specs
+from harness.triage import scan as triage_scan
 from harness.verification import run_checks
 
-SYSTEM = """You are a principal software agent hired to make the user more money.
+SYSTEM = """You are the principal engineer on one objective in one repository.
 
-Do the smallest change that ships, unblocks revenue, stops a loss, or removes a production risk.
-Do not do demo theater, drive-by refactors, or work the user did not ask for.
-If several defects exist, pick the one with the highest dollar or shipping leverage and prove it.
-Inspect the repository with tools until you can name that change, then make it in the isolated worktree.
-Never claim tests passed. Software verifies. If you cannot prove the result, do not stop as if you were done.
-Ask the user only when a decision would spend money or cannot be resolved from evidence.
+Make the smallest change that fully meets the objective. Skip drive-by refactors and work nobody asked for.
+If the objective is open-ended, pick the defect that blocks users or breaks tests first, and say why.
+Inspect the repository with tools until you can name the change, then make it in the isolated worktree.
+Never claim tests passed. Software verifies. If you cannot prove the result, you are not done.
+Ask the user only when evidence cannot decide, or when a decision has a cost they should own.
 Do not request credentials. Do not touch files outside the worktree.
 """
 
 DEFAULT_PLAN = [
-    "Find the highest-leverage outcome",
+    "Name the change",
     "Inspect the repository",
-    "Change only what pays",
+    "Make the smallest change that does it",
     "Prove it with the project's tests",
     "Independent review",
 ]
 
-NEXT_DOLLAR = (
-    "Find the highest-leverage change that increases revenue or stops a loss, "
-    "ship it in isolation, and prove it with the project's tests."
+SUGGESTED_OBJECTIVE = (
+    "Find the most important broken or missing behavior in this repository, "
+    "fix it in isolation, and prove it with the project's tests."
 )
 
 
@@ -135,13 +134,13 @@ def _execute_run(run_id: str, *, store: Store, config: Config, provider: Provide
         store.update_run(run_id, status="failed", result=str(exc), blockers=["isolation"])
         return
 
-    scan_text = leverage_scan(stage.root)
+    scan_text = triage_scan(stage.root)
     store.update_run(
         run_id,
         status="running",
         stage_path=str(stage.root),
         plan=list(DEFAULT_PLAN),
-        investigating="Ranking leverage from tests, markers, and recent commits.",
+        investigating="Reading tests, open markers, and recent commits.",
         active_work="Software scan",
     )
     store.add_event(run_id, "evidence", scan_text[:2000])
@@ -154,7 +153,7 @@ def _execute_run(run_id: str, *, store: Store, config: Config, provider: Provide
                 f"{run.objective}\n\n"
                 "SOFTWARE LEVERAGE SCAN (not model output):\n"
                 f"{scan_text}\n"
-                "Act on the highest-leverage item. Call set_plan with a live plan before editing."
+                "Act on the most important item. Call set_plan with a live plan before editing."
             ),
         },
     ]

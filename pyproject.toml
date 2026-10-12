@@ -1,12 +1,21 @@
 [project]
-name = "agent-harness-oss"
+name = "agent-harness"
 version = "0.1.0"
-description = "A local coding-agent harness: one objective, isolated changes, evidence-gated results."
+description = "A local coding agent that can't mark its own work done. Isolated worktree, tests decide, explicit apply."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
-authors = [{ name = "agent-harness-oss contributors" }]
-keywords = ["agent", "coding-agent", "harness", "verification"]
+authors = [{ name = "Preston Jones" }]
+keywords = ["agent", "coding-agent", "harness", "verification", "llm", "evals"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Testing",
+]
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.32",
@@ -23,8 +32,9 @@ dev = [
 harness = "harness.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/pdj555/agent-harness-oss"
-Documentation = "https://github.com/pdj555/agent-harness-oss/blob/main/README.md"
+Homepage = "https://github.com/pdj555/agent-harness"
+Documentation = "https://github.com/pdj555/agent-harness/tree/main/docs"
+Issues = "https://github.com/pdj555/agent-harness/issues"
 
 [build-system]
 requires = ["hatchling"]

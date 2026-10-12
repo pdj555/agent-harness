@@ -1,75 +1,119 @@
-# Agent Harness
+# agent-harness
 
-A local coding agent you hire against an outcome, not a chat pane.
+A local coding agent that can't mark its own work done.
 
-You allowlist a real Git repository, state the change that makes money, and watch one principal agent inspect the code, edit in an isolated worktree, run the project's tests, and take independent review. **Apply is explicit.** An agent saying "done" is not completion. Software verifies.
+You allowlist a Git repository and give it one objective. The agent reads the code and edits an isolated worktree. It runs the project's tests. A separate reviewer looks at the diff. The run completes only when the test command exits 0 and review passes, and your repository doesn't change until you click **Apply**.
 
-Cursor is a copilot in your editor. This is an operator: isolated execution, proof, then a decision to land the diff.
+The rule everything follows: the model proposes, software decides. There is no tool, field, or string the model can use to set `passed`.
 
-## How it works
+[![ci](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml)
 
-1. **Scope.** You pick an allowlisted repository and state the objective. Software scans tests, TODO markers, and recent commits first.
-2. **Isolate.** All mutating work happens in a Git worktree. The source tree does not move until you apply a verified delta.
-3. **Verify.** The agent runs the project's checks and takes independent review. Pytest and review decide; models propose.
-4. **Apply.** You land the diff. Explicit, deliberate, reversible.
+## Try it in one minute
 
-The browser cannot create accounts or open arbitrary files. Stop ends mutating work. History is durable.
-
-## Run it
-
-Cheapest live path: local Ollama, already installed.
+No API key. A scripted agent fixes a seeded bug in `examples/sample-repo`:
 
 ```bash
-# ollama serve && ollama pull gpt-oss:20b
 uv sync --extra dev
-uv run harness user add preston --password 'choose-your-own'
-uv run harness repo add /path/to/the/repo/that/prints/money
-uv run harness serve
-```
-
-Open `http://127.0.0.1:7465`, log in, pick that repository, and click **Next dollar**. Software scans tests, TODO markers, and recent commits; the agent writes a live plan from that evidence, ships in isolation, and stops when checks pass. You can still type a specific objective.
-
-No API key, no cost:
-
-```bash
 uv run harness demo
 ```
 
-The demo runs a scripted sample agent so CI needs no vendor. It repairs a known defect in `examples/sample-repo`; it is not the product.
+```text
+status: completed
+verification_passed: True
+review: Implementation changed. Tests remain. No blocking findings.
+files:
+  tracker.py
+```
 
-## Model routing
+Run it twice. Each run resets the demo copy, so both should complete with a real diff.
 
-Serve prefers **local Ollama** when it is running (`gpt-oss:20b` if installed, never a `:cloud` tag unless you set `HARNESS_MODEL`). That is $0.
+## Run it on your own code
 
-- **Ollama Cloud:** set `OLLAMA_API_KEY` in `.env` (runs `gpt-oss:120b` unless you set `HARNESS_MODEL`). Local $0 stays available with `HARNESS_PROVIDER=ollama`.
-- **OpenAI:** pin `OPENAI_API_KEY` and `HARNESS_PROVIDER=openai`. Daily driver is **GPT-5.6 Luna** at `reasoning_effort=xhigh` ($0.20 / $1.20 per 1M). `HARNESS_MODEL=gpt-5.6-sol` for the close.
-- **xAI:** pin `XAI_API_KEY` and `HARNESS_PROVIDER=xai` (default `grok-4.6`), or override with `HARNESS_MODEL`.
+```bash
+uv run harness user add <you> --password '<password>'
+uv run harness repo add ~/code/your-repo
+uv run harness serve
+```
+
+Open http://127.0.0.1:7465 and log in. Pick the repository, type an objective, and watch the plan, tool calls, diff, and test output stream in. If you don't know what to ask for, **Suggest a fix** reads the tests, open TODOs, and recent commits and picks something.
+
+When the run is green you get a diff, the check output, and the review. **Apply** copies exactly the files that were verified. **Stop** ends mutating work at the next tool boundary.
+
+## How a run works
+
+1. The repository is staged in a detached Git worktree under `.harness/stages/<run>/`. Ignored files (`.env`, `node_modules`, caches) never enter it.
+2. The principal agent works with a small tool set: list, search, read, edit, shell, git status and diff, and a read-only helper it can delegate to.
+3. When the agent stops calling tools, the harness ignores whatever it said and runs the project's check command itself. The exit code is the verdict.
+4. An independent review checks the diff. Tests still exist, something actually changed, and tests didn't change without an implementation change.
+5. If checks or review fail, the output goes back to the agent for repair, up to `max_repairs` times. Then the run fails.
+6. Verification fingerprints the staged tree. Apply re-checks that fingerprint before copying, so the files that land are the files that passed.
+
+Every exit is terminal: `completed`, `failed`, or `stopped`. A provider error or a hung test suite fails the run with a blocker. Nothing sits in `running` forever.
+
+## What it does not protect you from
+
+This is not an OS sandbox. A live model that can run Python can reach the host as your user. The allowlist and the worktree are the boundary, not the prompt. Bind to loopback, keep `workspace.roots` small, and read [docs/security.md](docs/security.md) before pointing it at anything you care about.
+
+## Models
+
+`harness serve` picks a live provider from the environment. Pin one with `HARNESS_PROVIDER` and it fails closed instead of falling back.
+
+| `HARNESS_PROVIDER` | Needs | Default model |
+| --- | --- | --- |
+| `ollama` | a running local Ollama | `gpt-oss:20b` if installed |
+| `ollama-cloud` | `OLLAMA_API_KEY` | `gpt-oss:120b` |
+| `openai` | `OPENAI_API_KEY` | `gpt-5.6-luna` |
+| `xai` | `XAI_API_KEY` | `grok-4.6` |
+
+Override the model with `HARNESS_MODEL` and the endpoint with `HARNESS_API_BASE`. See [.env.example](.env.example).
 
 ## Configure
 
-Copy [harness.example.toml](harness.example.toml) to `harness.toml` to bind a different port, add roots, extend `check_timeout`, or set a `check_command` other than pytest (`npm test`, `go test ./...`). The command's exit code is the verdict. Add repositories:
+Copy [harness.example.toml](harness.example.toml) to `harness.toml`. The settings that matter:
 
-```bash
-uv run harness repo add ~/code/your-repo
+- `workspace.roots`: the only repositories the app will open.
+- `workspace.check_command`: the verdict command. Defaults to `python -m pytest -q`. Use `npm test` or `go test ./...` for other stacks. It's split with `shlex` and never handed to a shell.
+- `workspace.check_timeout`: seconds before a check counts as failed. Default 300.
+
+If the repository has its own `.venv`, checks and `python` in shell calls use that interpreter, so the project's real dependencies get tested.
+
+## Layout
+
+```text
+harness/
+  runtime.py        the principal loop: plan, act, verify, review, repair
+  verification.py   runs the check command; the only source of `passed`
+  review.py         independent review record
+  isolation.py      worktree staging, fingerprints, apply
+  authority.py      role and path checks every tool call goes through
+  tools.py          the agent's tool set
+  provider.py       deterministic, scripted, and OpenAI-compatible providers
+  triage.py         reads tests, TODOs, and commits for Suggest a fix
+  app.py            FastAPI server and the web client in static/
+  store.py          SQLite users, sessions, and durable runs
+docs/               architecture, runtime, security, demo
+examples/           the seeded sample repository
+skills/             guidance for agents working on this repo
 ```
 
-## Why this is not a chat demo
-
-- Models propose. Pytest and independent review decide.
-- Mutating work happens in a Git worktree. The source tree does not move until you apply a verified delta.
-- The browser cannot create accounts or open arbitrary files.
-- Stop ends mutating work. History is durable.
-
-## Tests
+## Develop
 
 ```bash
+uv sync --extra dev
 uv run pytest
 uv run ruff check harness tests scripts
 uv run python scripts/scan_secrets.py
-uvx pip-audit
-uv build
-uv run python scripts/scan_secrets.py dist/*.whl
-uv run python scripts/smoke_wheel.py dist/*.whl
 ```
 
-Apache License 2.0. See [LICENSE](LICENSE).
+CI also runs `pip-audit`, builds the wheel, scans it for secrets, and runs the demo from the installed wheel. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Docs
+
+- [Architecture](docs/architecture.md)
+- [Agent runtime](docs/agent-runtime.md)
+- [Security model](docs/security.md)
+- [Demo walkthrough](docs/demo.md)
+
+## License
+
+Apache 2.0. See [LICENSE](LICENSE).
