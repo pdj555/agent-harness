@@ -62,13 +62,8 @@ stop that arrived from the HTTP thread.
 
 ## Providers
 
-- `deterministic` — used by tests and `harness demo`. It calls the same tools.
-- `scripted` — test double with a programmed list of completions.
-- `openai_compat` — HTTP `chat/completions` with tool calls. `OLLAMA_API_KEY`
-  routes to Ollama Cloud. Else local Ollama if it is running, else
-  `XAI_API_KEY` (default `grok-4.6`) or `OPENAI_API_KEY` (default
-  `gpt-5.6-luna`, `xhigh`). Explicit provider selections from the environment
-  or `harness.toml` are pinned and fail closed. `HARNESS_PROVIDER=ollama`
-  keeps the local `$0` path.
+- `deterministic`: used by tests and `harness demo`. It calls the same tools a live model would.
+- `scripted`: a test double that replays a programmed list of completions.
+- `openai_compat`: any OpenAI-compatible `chat/completions` endpoint with tool calls. Routing order without a pin is Ollama Cloud (`OLLAMA_API_KEY`), then local Ollama if it's running, then xAI, then OpenAI. An OpenAI model name in `HARNESS_MODEL` with an OpenAI key goes straight to OpenAI. A pin from `HARNESS_PROVIDER` or `harness.toml` fails closed instead of falling back.
 
-Swap providers without changing the runtime.
+Swapping providers never touches the runtime. Every provider implements the same `complete(messages, tools)` method.

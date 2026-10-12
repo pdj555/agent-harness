@@ -1,58 +1,35 @@
-# Agent operating principles
+# AGENTS.md
 
-This file is the contract for any coding agent working **in this public
-repository**.
+The contract for any coding agent working in this repository. CLAUDE.md points here.
 
-## Purpose
+## What this is
 
-Build software that makes one user dramatically more capable. A user gives the
-harness a software objective and should watch it inspect, plan, edit in
-isolation, test, review, repair, and return verified results.
+A local coding agent with one rule: models propose, software verifies. A user picks an allowlisted repository and gives one objective. The principal agent inspects the code, edits an isolated Git worktree, and runs the project's checks. A separate review looks at the diff. Completion is decided by a process exit code and a review record, never by model text.
 
-## Public boundary
+## Rules you can't bend
 
-This tree will be read by strangers and competitors.
-
-Never add proprietary orchestration, private prompts or skills, company names
-or internal terminology, capital/trading/energy/customer workflows, secrets,
-private endpoints, credential maps, personal filesystem paths, historical run
-data, or comments that reveal some other system's architecture.
-
-If publishing a change would reveal an advantage that should stay private,
-implement a simpler public equivalent instead.
-
-## Verification rules
-
-- Models propose. Software verifies.
-- An agent saying "done" is not completion.
-- Model output cannot mark verification passed.
-- Model output cannot bypass permission checks.
-- Do not claim a fix without running the relevant tests.
-- Do not merge or publish unverified work.
+- `harness.verification.run_checks` is the only source of `passed`. Don't add a parameter, tool, or JSON field that lets model output set it.
+- Every tool call goes through `harness.authority`. Nothing skips the role, path, or stop checks.
+- Mutating work happens in the stage. The source repository changes only through an explicit apply of a verified fingerprint.
+- After stop, mutating tools are rejected and recorded as skipped.
+- Don't claim a fix you haven't run the tests for.
 
 ## How to work here
 
-1. Understand the objective.
-2. Inspect the repository.
-3. Identify uncertainty and research only what matters.
-4. Make a concrete plan.
-5. Delegate independent work only when it increases capability.
-6. Execute changes in an isolated git worktree.
-7. Test continuously.
-8. Review assumptions. Use independent review for important work.
-9. Repair failures without waiting for the user.
-10. Return only decisions that genuinely need the user.
+Inspect before you plan. Make the smallest change that does the job and keep it isolated. Run the tests as you go, and repair failures yourself instead of handing them back. Ask the user only when evidence can't decide.
 
-Act decisively. Do not ask the user to manage agents. Ask only when a decision
-cannot safely be made from evidence.
+Write tests that drive the shipped entry points and would fail if the behavior broke. Prefer a small architecture someone can read in an afternoon over a clever one.
 
-## Quality standard
+## Public boundary
 
-Prefer a small, understandable architecture over a clever one. Keep
-implementation tasks narrowly owned. Write tests that would fail if the shipped
-behavior were broken. Keep credentials out of prompts, fixtures, and run
-artifacts.
+This repository is public. Keep it general-purpose: no secrets, credentials, private endpoints, personal paths, customer data, or historical run output. If something only makes sense for one private setup, leave it out. `tests/test_boundary.py` and `scripts/scan_secrets.py` enforce part of this.
 
-## Skills
+## Before you say done
 
-Project skills live in [`skills/`](skills/). Use them when the work matches.
+```bash
+uv run pytest
+uv run ruff check harness tests scripts
+uv run python scripts/scan_secrets.py
+```
+
+Project skills in [`skills/`](skills/) cover verification, isolation, and the public boundary. Read the one that matches your change.
