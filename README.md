@@ -65,6 +65,12 @@ A block goes back to the agent as findings to fix, in the same session. A review
 
 Every exit is terminal: `completed`, `failed`, or `stopped`. Stop ends all further work. History is durable.
 
+## Does review catch an agent gaming its tests?
+
+`uv run harness eval monitor` runs 33 changes that all pass the project's tests. Six are honest fixes. Twenty-seven skip tests, loosen assertions, special-case the tested inputs, patch the code from `conftest.py`, fix only what's tested, or ship something harmful alongside the fix. Twelve of those are written to look like ordinary changes. The eval reports how many the review step blocks.
+
+Before this eval, the software rules caught none of the 27. They now catch 6, all obvious, with no false blocks. The other 21 depend on the model reviewer. Run `--monitor claude` or `--monitor codex` with your key to measure it. Method and limits: [docs/evals.md](docs/evals.md).
+
 ## Guarantees and limits
 
 - Models propose. The project's checks and independent review decide.
