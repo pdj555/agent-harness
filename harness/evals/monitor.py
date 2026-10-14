@@ -18,7 +18,9 @@ import random
 import secrets
 import shutil
 import tempfile
+import threading
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -86,23 +88,32 @@ class _QuietStore:
 
 
 def model_monitor(name: str, model: str | None = None) -> Monitor:
-    """The live reviewer: the same agent, prompt, and diff a real run uses."""
+    """The live reviewer: the same agent, prompt, and diff a real run uses.
+
+    Each review gets a fresh reviewer object. Codex binds its client and home to the
+    first stage it sees, and every case's stage is deleted when the case finishes;
+    a fresh reviewer per call is also what makes parallel reviews safe.
+    """
     from harness.agents import ClaudeAgent, CodexAgent, TurnContext, review_prompt
 
     if name == "claude":
-        reviewer = ClaudeAgent(model, reviewer=True)
+        make = ClaudeAgent
     elif name == "codex":
-        reviewer = CodexAgent(model, reviewer=True)
+        make = CodexAgent
     else:
         raise ValueError(f"unknown monitor: {name}")
+    make(model, reviewer=True)  # fail now, before any case runs, if the key is missing
 
     def monitor(_case: Case, stage: Stage, verification: Verification, objective: str) -> dict:
         ctx = TurnContext(stage=stage, store=_QuietStore(), run_id=stage.id, quiet=True)
         prompt = review_prompt(objective, review_diff(stage), verification.exit_code, verification.output)
+        reviewer = make(model, reviewer=True)
         try:
             verdict = reviewer.review(prompt, ctx)
         except Exception as exc:  # a reviewer that cannot answer must not approve
             return {"ship": False, "findings": [f"reviewer failed: {exc}"], "error": True}
+        finally:
+            reviewer.close()
         return {**verdict, "error": is_error(verdict)}
 
     return monitor
@@ -164,6 +175,78 @@ class CaseResult:
         return len(set(self.verdicts)) <= 1
 
 
+class _ErrorGuard:
+    """Stops a run once the reviewer has failed ``limit`` times in a row with no judgment.
+
+    A bad key or a dead endpoint fails every call; there is no point paying for the rest.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.streak = 0
+        self.tripped = False
+        self._lock = threading.Lock()
+
+    def record(self, error: bool) -> None:
+        with self._lock:
+            self.streak = self.streak + 1 if error else 0
+            if self.limit and self.streak >= self.limit:
+                self.tripped = True
+
+
+def _run_case(
+    case: Case,
+    monitor: Monitor,
+    *,
+    trials: int,
+    parent: Path,
+    salt: str,
+    guard: _ErrorGuard,
+    progress: Callable[[str], None] | None,
+) -> CaseResult:
+    # Each case gets its own empty directory, deleted when the case is done, so a
+    # reviewer that looks around its working directory cannot list or diff other cases.
+    with tempfile.TemporaryDirectory(prefix="work-", dir=parent) as temp:
+        stage = build_case(case, Path(temp), salt=salt)
+        verification = run_checks(stage.root, python=stage.python(), timeout=120)
+        result = CaseResult(
+            id=case.id,
+            repo=case.repo,
+            label=case.label,
+            note=case.note,
+            difficulty=case.difficulty,
+            checks_passed=verification.passed,
+            software_blocked=bool(inspect_change(stage)),
+        )
+        if not verification.passed:
+            return result  # invalid case: the test gate decides, so the reviewer is never asked
+        objective = REPOS[case.repo].objective
+        for trial in range(trials):
+            if guard.tripped:
+                break
+            verdict = monitor(case, stage, verification, objective)
+            result.findings.append([str(item) for item in verdict.get("findings") or []][:5])
+            error = is_error(verdict)
+            guard.record(error)
+            if error:
+                result.errors += 1
+                shown = "error: " + (result.findings[-1][0] if result.findings[-1] else "unknown")[:120]
+            else:
+                result.verdicts.append(not verdict.get("ship"))
+                shown = "block" if result.verdicts[-1] else "ship"
+            if progress:
+                progress(f"{case.id} [{trial + 1}/{trials}] {shown}")
+    return result
+
+
+class EvalAborted(RuntimeError):
+    """The reviewer kept failing; ``results`` holds what finished before the stop."""
+
+    def __init__(self, results: list[CaseResult], limit: int) -> None:
+        super().__init__(f"stopped after {limit} reviewer errors in a row")
+        self.results = results
+
+
 def run_eval(
     monitor: Monitor,
     *,
@@ -171,41 +254,35 @@ def run_eval(
     cases: Iterable[Case] = CASES,
     workdir: Path | None = None,
     progress: Callable[[str], None] | None = None,
+    jobs: int = 1,
+    max_consecutive_errors: int = 0,
 ) -> list[CaseResult]:
+    """Run every case. ``jobs`` reviews cases in parallel; results keep case order.
+
+    ``max_consecutive_errors`` (0 = off) stops the run early and raises ``EvalAborted``.
+    """
     if trials < 1:
         raise ValueError("trials must be at least 1")
-    results: list[CaseResult] = []
+    if jobs < 1:
+        raise ValueError("jobs must be at least 1")
+    cases = list(cases)
     salt = secrets.token_hex(8)
     parent = workdir or Path(tempfile.gettempdir())
     parent.mkdir(parents=True, exist_ok=True)
-    for case in cases:
-        # Each case gets its own empty directory, deleted before the next one is
-        # built, so a reviewer that looks around cannot list or diff other cases.
-        with tempfile.TemporaryDirectory(prefix="work-", dir=parent) as temp:
-            stage = build_case(case, Path(temp), salt=salt)
-            verification = run_checks(stage.root, python=stage.python(), timeout=120)
-            result = CaseResult(
-                id=case.id,
-                repo=case.repo,
-                label=case.label,
-                note=case.note,
-                difficulty=case.difficulty,
-                checks_passed=verification.passed,
-                software_blocked=bool(inspect_change(stage)),
-            )
-            objective = REPOS[case.repo].objective
-            for trial in range(trials):
-                verdict = monitor(case, stage, verification, objective)
-                result.findings.append([str(item) for item in verdict.get("findings") or []][:5])
-                if is_error(verdict):
-                    result.errors += 1
-                    shown = "error"
-                else:
-                    result.verdicts.append(not verdict.get("ship"))
-                    shown = "block" if result.verdicts[-1] else "ship"
-                if progress:
-                    progress(f"{case.id} [{trial + 1}/{trials}] {shown}")
-            results.append(result)
+    guard = _ErrorGuard(max_consecutive_errors)
+
+    def one(case: Case) -> CaseResult:
+        return _run_case(
+            case, monitor, trials=trials, parent=parent, salt=salt, guard=guard, progress=progress
+        )
+
+    if jobs == 1:
+        results = [one(case) for case in cases]
+    else:
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            results = list(pool.map(one, cases))
+    if guard.tripped:
+        raise EvalAborted(results, max_consecutive_errors)
     return results
 
 

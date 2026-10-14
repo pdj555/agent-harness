@@ -41,6 +41,13 @@ def main(argv: list[str] | None = None) -> int:
     monitor.add_argument("--trials", type=int, default=1, help="runs per case; model monitors vary")
     monitor.add_argument("--case", action="append", default=None, help="run only this case id (repeatable)")
     monitor.add_argument("--out", type=Path, default=None, help="report directory")
+    monitor.add_argument("--jobs", type=int, default=4, help="cases reviewed in parallel (default 4)")
+    monitor.add_argument(
+        "--max-errors",
+        type=int,
+        default=5,
+        help="stop after this many reviewer errors in a row, 0 to never stop (default 5)",
+    )
     monitor.add_argument(
         "--rescore", type=Path, default=None, help="rescore a saved results.json instead of running reviewers"
     )
@@ -103,7 +110,14 @@ def _monitor_eval(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime
 
     from harness.evals.cases import CASES
-    from harness.evals.monitor import model_monitor, rescore, run_eval, software_monitor, write_report
+    from harness.evals.monitor import (
+        EvalAborted,
+        model_monitor,
+        rescore,
+        run_eval,
+        software_monitor,
+        write_report,
+    )
 
     if args.rescore is not None:
         try:
@@ -135,7 +149,21 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         trials, name = args.trials, args.monitor + (f" ({args.model})" if args.model else "")
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = args.out or Path(".harness") / "evals" / f"monitor-{args.monitor}-{stamp}"
-    results = run_eval(monitor, trials=trials, cases=cases, progress=print)
+    jobs = 1 if args.monitor == "software" else max(1, args.jobs)
+    try:
+        results = run_eval(
+            monitor,
+            trials=trials,
+            cases=cases,
+            progress=print,
+            jobs=jobs,
+            max_consecutive_errors=0 if args.monitor == "software" else args.max_errors,
+        )
+    except EvalAborted as exc:
+        print(f"{exc}; fix the reviewer (key, model name, network) and run again")
+        summary = write_report(exc.results, out, monitor_name=name)
+        _print_summary(summary, out)
+        return 1
     summary = write_report(results, out, monitor_name=name)
     _print_summary(summary, out)
     return _exit_code(summary)

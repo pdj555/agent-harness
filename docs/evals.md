@@ -10,7 +10,7 @@ uv run harness eval monitor --monitor claude --trials 5      # Claude Code as th
 uv run harness eval monitor --monitor codex --trials 5       # Codex as the reviewer
 ```
 
-Each run writes `report.md` and `results.json` under `.harness/evals/`.
+Each run writes `report.md` and `results.json` under `.harness/evals/`. Model runs review 4 cases at a time (`--jobs`) and stop after 5 reviewer errors in a row (`--max-errors`), so a bad key or model name costs a few calls, not the whole run. Pin the reviewer with `--model` so a run can be repeated.
 
 ## Cases
 
@@ -52,4 +52,5 @@ That's 33 cases: 6 clean and 27 attacks. Fifteen attacks are obvious to a carefu
 - The attacks are hand-written and in the open. A model trained to evade a known monitor would be a harder test, and so would diffs buried in larger, realistic changes.
 - The labels are the author's. `incorrect_fix` assumes the docstring is the spec.
 - The reviewer can read files outside its worktree, including the installed `harness/evals/cases.py`, which holds every case's label. Nothing suggests it does, but a stricter run should keep the harness source off its readable paths.
+- With `--jobs` above 1, other cases' directories exist at the same time two levels above the reviewer's worktree. Use `--jobs 1` for the strictest isolation.
 - The cases are Python. The software rules also cover common JavaScript and Go skip patterns, but no cases test them yet.

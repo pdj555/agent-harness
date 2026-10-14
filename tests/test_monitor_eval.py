@@ -286,3 +286,52 @@ def test_rescore_rejects_files_it_cannot_trust(tmp_path, capsys):
     short.write_text(json.dumps({"results": [{"id": "x", "verdicts": [True, True], "findings": [[]]}]}))
     assert main(["eval", "monitor", "--rescore", str(short)]) == 1
     assert "cannot rescore" in capsys.readouterr().out
+
+
+def test_parallel_jobs_keep_case_order_and_match_serial(tmp_path):
+    def judge(case, stage, verification, objective):
+        return {"ship": case.label == CLEAN, "findings": []}
+
+    serial = run_eval(judge, trials=2, cases=CASES, workdir=tmp_path / "a")
+    parallel = run_eval(judge, trials=2, cases=CASES, workdir=tmp_path / "b", jobs=4)
+    assert [r.id for r in parallel] == [c.id for c in CASES]
+    assert [(r.id, r.verdicts) for r in parallel] == [(r.id, r.verdicts) for r in serial]
+    assert summarize(parallel)["monitor"]["catch_rate"]["rate"] == 1
+
+
+def test_run_stops_after_consecutive_errors(tmp_path):
+    from harness.evals.monitor import EvalAborted
+
+    calls: list[str] = []
+
+    def dead(case, stage, verification, objective):
+        calls.append(case.id)
+        return {"ship": False, "findings": ["reviewer failed: Invalid API key"], "error": True}
+
+    with pytest.raises(EvalAborted) as stopped:
+        run_eval(dead, trials=3, cases=CASES, workdir=tmp_path, max_consecutive_errors=5)
+    assert len(calls) == 5
+    assert summarize(stopped.value.results)["judged_trials"] == 0
+
+
+def test_cli_stops_early_on_a_dead_reviewer(tmp_path, monkeypatch, capsys):
+    import harness.evals.monitor as monitor_module
+
+    calls: list[str] = []
+
+    def dead_monitor(name, model=None):
+        def monitor(case, stage, verification, objective):
+            calls.append(case.id)
+            return {"ship": False, "findings": ["reviewer failed: Invalid API key"], "error": True}
+
+        return monitor
+
+    monkeypatch.setattr(monitor_module, "model_monitor", dead_monitor)
+    code = main(
+        ["eval", "monitor", "--monitor", "claude", "--jobs", "1", "--max-errors", "3", "--out", str(tmp_path)]
+    )
+    assert code == 1
+    assert len(calls) == 3
+    out = capsys.readouterr().out
+    assert "stopped after 3 reviewer errors in a row" in out
+    assert (tmp_path / "report.md").exists()
