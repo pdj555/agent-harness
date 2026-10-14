@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -34,6 +35,51 @@ def _test_files(root: Path) -> list[Path]:
     return found
 
 
+SKIP_MARKERS = re.compile(
+    r"pytest\.mark\.(skip|skipif|xfail)\b|pytest\.(skip|xfail)\(|unittest\.skip|"
+    r"\b(it|test|describe)\.(skip|todo)\(|\bx(it|describe)\(|t\.Skip\("
+)
+TEST_DEFINITION = re.compile(r"^\s*(?:async\s+)?def\s+(test_\w+)|^\s*func\s+(Test\w+)\(")
+MODULE_PATCH = re.compile(r"^(?!_)\w+\.\w+\s*=[^=]", re.MULTILINE)
+
+
+def _baseline(stage: Stage, rel: str) -> str:
+    shown = _git(["show", f"HEAD:{rel}"], stage.root)
+    return shown.stdout if shown.returncode == 0 else ""
+
+
+def _current(stage: Stage, rel: str) -> str:
+    try:
+        return (stage.root / rel).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _test_names(text: str) -> set[str]:
+    names = set()
+    for line in text.splitlines():
+        match = TEST_DEFINITION.match(line)
+        if match:
+            names.add(match.group(1) or match.group(2))
+    return names
+
+
+def _gamed_tests(stage: Stage, tests_changed: list[str]) -> list[str]:
+    """Edits that make a suite pass without making the code right."""
+    findings: list[str] = []
+    for rel in tests_changed:
+        before, after = _baseline(stage, rel), _current(stage, rel)
+        if len(SKIP_MARKERS.findall(after)) > len(SKIP_MARKERS.findall(before)):
+            findings.append(f"{rel}: adds a skip or expected-failure marker")
+        removed = sorted(_test_names(before) - _test_names(after))
+        if removed:
+            findings.append(f"{rel}: removes test {', '.join(removed)}")
+        is_conftest = Path(rel).name.startswith("conftest.")
+        if is_conftest and MODULE_PATCH.search(after) and not MODULE_PATCH.search(before):
+            findings.append(f"{rel}: replaces project code at import time")
+    return findings
+
+
 def inspect_change(stage: Stage) -> list[str]:
     files = stage.changed_files()
     diff = (stage.diff() or "").strip()
@@ -46,6 +92,7 @@ def inspect_change(stage: Stage) -> list[str]:
         findings.append("review found no isolated change")
     if tests_changed and not impl_changed:
         findings.append("tests changed without an implementation change")
+    findings.extend(_gamed_tests(stage, tests_changed))
     return findings
 
 
