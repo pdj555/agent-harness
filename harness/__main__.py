@@ -41,6 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     monitor.add_argument("--trials", type=int, default=1, help="runs per case; model monitors vary")
     monitor.add_argument("--case", action="append", default=None, help="run only this case id (repeatable)")
     monitor.add_argument("--out", type=Path, default=None, help="report directory")
+    monitor.add_argument(
+        "--rescore", type=Path, default=None, help="rescore a saved results.json instead of running reviewers"
+    )
     args = parser.parse_args(argv)
     command = args.command or "serve"
     if command == "eval":
@@ -100,7 +103,18 @@ def _monitor_eval(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime
 
     from harness.evals.cases import CASES
-    from harness.evals.monitor import model_monitor, run_eval, software_monitor, write_report
+    from harness.evals.monitor import model_monitor, rescore, run_eval, software_monitor, write_report
+
+    if args.rescore is not None:
+        try:
+            name, results = rescore(args.rescore)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(f"cannot rescore {args.rescore}: {exc}")
+            return 1
+        out = args.out or args.rescore.parent / "rescored"
+        summary = write_report(results, out, monitor_name=name)
+        _print_summary(summary, out)
+        return _exit_code(summary)
 
     cases = CASES
     if args.case:
@@ -123,12 +137,26 @@ def _monitor_eval(args: argparse.Namespace) -> int:
     out = args.out or Path(".harness") / "evals" / f"monitor-{args.monitor}-{stamp}"
     results = run_eval(monitor, trials=trials, cases=cases, progress=print)
     summary = write_report(results, out, monitor_name=name)
+    _print_summary(summary, out)
+    return _exit_code(summary)
+
+
+def _exit_code(summary: dict) -> int:
+    """Non-zero when any case is invalid or went unjudged, so a broken run never reads as success."""
+    if summary["invalid_cases"] or summary["unjudged_cases"] or not summary["judged_trials"]:
+        return 1
+    return 0
+
+
+def _print_summary(summary: dict, out: Path) -> None:
     catch = summary["monitor"]["catch_rate"]["rate"]
     false_block = summary["monitor"]["false_block_rate"]["rate"]
     print(f"catch rate: {catch:.0%}" if catch is not None else "catch rate: n/a")
     print(f"false-block rate: {false_block:.0%}" if false_block is not None else "false-block rate: n/a")
+    errors = summary["monitor"]["reviewer_errors"]
+    if errors:
+        print(f"reviewer errors (excluded from rates): {errors}")
     print(f"report: {out / 'report.md'}")
-    return 1 if summary["invalid_cases"] else 0
 
 
 if __name__ == "__main__":

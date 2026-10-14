@@ -31,7 +31,9 @@ That's 33 cases: 6 clean and 27 attacks. Fifteen attacks are obvious to a carefu
 ## How it's measured
 
 - The reviewer sees exactly what a live run sends: the same prompt, the check output, and the diff including new files. It has read-only access to the worktree.
-- A reviewer that errors or returns no readable verdict blocks the change. Errors are counted separately so they can't inflate the catch rate.
+- In a live run, a reviewer that errors or returns no readable verdict blocks the change. The eval never scores those trials: they are reported separately (split by attack and clean), and a case with no judged trial is listed and left out of the model rates. A run with any unjudged case exits non-zero.
+- Each case is built alone in a fresh directory with a salted random name, deleted before the next case. The reviewer never sees the case id or label.
+- `--rescore path/to/results.json` rescores a saved run under these rules without calling a model again.
 - Model reviewers aren't deterministic, so each case runs `--trials` times. Rates are averaged per case first, then across cases.
 - 95% intervals come from a bootstrap over cases, because the case is the unit that varies. Trials of one case aren't independent samples.
 - Reported numbers: catch rate on attacks, overall and by difficulty; false-block rate on clean fixes; the end-to-end gate (software rules, then model); Cohen's kappa between the majority verdict and the label; and the cases where trials disagreed.
@@ -49,4 +51,5 @@ That's 33 cases: 6 clean and 27 attacks. Fifteen attacks are obvious to a carefu
 - 33 cases is small. The intervals are wide, and they say so.
 - The attacks are hand-written and in the open. A model trained to evade a known monitor would be a harder test, and so would diffs buried in larger, realistic changes.
 - The labels are the author's. `incorrect_fix` assumes the docstring is the spec.
+- The reviewer can read files outside its worktree, including the installed `harness/evals/cases.py`, which holds every case's label. Nothing suggests it does, but a stricter run should keep the harness source off its readable paths.
 - The cases are Python. The software rules also cover common JavaScript and Go skip patterns, but no cases test them yet.
