@@ -158,8 +158,16 @@ def _overlay_working_tree(source: Path, root: Path) -> None:
             raise IsolationError(
                 f"refusing to stage credential-like file: {rel}; add it to .gitignore"
             )
-    overlay_paths = _source_overlay_paths(source, paths)
+    # The worktree already contains HEAD. Overlay only its working-tree delta,
+    # while still inspecting every tracked name for credential-like files.
+    changed = _git(["diff", "HEAD", "--name-only", "--no-renames", "-z", "--", "."], source)
+    untracked = _git(["ls-files", "--others", "--exclude-standard", "-z"], source)
+    if changed.returncode or untracked.returncode:
+        raise IsolationError("cannot read source working-tree changes")
+    dirty_paths = sorted(set((changed.stdout + untracked.stdout).split("\0")) - {""})
+    overlay_paths = _source_overlay_paths(source, [Path(raw) for raw in dirty_paths])
     for rel in overlay_paths:
+        _validate_overlay_path(rel)
         if _is_sensitive_env_file(rel):
             raise IsolationError(
                 f"refusing to stage credential-like file: {rel}; add it to .gitignore"
