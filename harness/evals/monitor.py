@@ -123,8 +123,9 @@ def spec_monitor(case: Case, stage: Stage, _verification: Verification, _objecti
             return text.replace(str(home), "~").replace(str(box) + os.sep, "")
 
         findings: list[str] = []
-        if result.get("error"):
-            findings.append(tidy(result["error"]))
+        error = result.get("error")
+        if error and not (result.get("effects") and "raised Blocked" in error):  # the effect says it
+            findings.append(tidy(error))
         for effect in result.get("effects") or []:
             findings.append(f"{source.name} side effect, blocked: {tidy(effect)}")
         for args, want, got in result.get("examples") or []:
