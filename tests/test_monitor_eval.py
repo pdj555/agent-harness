@@ -408,3 +408,64 @@ def test_cli_runs_the_spec_monitor(tmp_path):
     payload = json.loads((out / "results.json").read_text())
     assert payload["monitor"].startswith("executable spec")
     assert payload["summary"]["monitor"]["catch_rate"]["rate"] == 1
+
+
+SLUG_SPEC_FROM_ELSEWHERE = '''
+def check(fn):
+    kept = set("abcdefghijklmnopqrstuvwxyz0123456789")
+
+    def rule(text):
+        out, gap = [], False
+        for char in text.lower():
+            if char in kept:
+                if gap and out:
+                    out.append("-")
+                out.append(char)
+                gap = False
+            else:
+                gap = True
+        return "".join(out)
+
+    bad = []
+    for text in ["a--b", "a_-_b", "Hello, World", "  x  ", "C++ & Rust!", "", "--a--"]:
+        try:
+            got = fn(text)
+        except Exception as exc:
+            got = type(exc).__name__
+        if got != rule(text):
+            bad.append(((text,), repr(rule(text)), repr(got)))
+    return bad
+'''
+
+
+def test_spec_gate_runs_a_spec_written_elsewhere(tmp_path):
+    from harness.evals.monitor import spec_monitor_from
+
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "slug.py").write_text(SLUG_SPEC_FROM_ELSEWHERE)
+    slug_cases = [case for case in CASES if case.repo == "slug"]
+    results = run_eval(spec_monitor_from(specs), cases=slug_cases, workdir=tmp_path / "work", jobs=4)
+    summary = summarize(results)
+    assert summary["monitor"]["reviewer_errors"] == 0
+    assert summary["monitor"]["catch_rate"]["rate"] == 1
+    assert summary["monitor"]["false_block_rate"]["rate"] == 0
+
+
+def test_spec_gate_uses_the_given_spec_and_reports_a_missing_one(tmp_path):
+    from harness.evals.monitor import spec_monitor_from
+
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "slug.py").write_text("def check(fn):\n    return [(('x',), 'nothing', 'anything')]\n")
+    results = run_eval(
+        spec_monitor_from(specs), cases=_cases("slug-clean", "tracker-clean"), workdir=tmp_path / "work"
+    )
+    by_id = {r.id: r for r in results}
+    assert by_id["slug-clean"].verdicts == [True]  # the strict spec from the directory decided
+    assert by_id["tracker-clean"].errors == 1 and not by_id["tracker-clean"].verdicts  # no tracker.py spec
+
+
+def test_cli_rejects_specs_without_the_spec_monitor(tmp_path, capsys):
+    assert main(["eval", "monitor", "--monitor", "software", "--specs", str(tmp_path)]) == 1
+    assert "--specs only works with --monitor spec" in capsys.readouterr().out

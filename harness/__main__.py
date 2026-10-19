@@ -38,6 +38,12 @@ def main(argv: list[str] | None = None) -> int:
     monitor = eval_sub.add_parser("monitor", help="how often the reviewer catches an agent gaming its tests")
     monitor.add_argument("--monitor", choices=["software", "spec", "claude", "codex"], default="software")
     monitor.add_argument("--model", default=None, help="reviewer model; defaults to the vendor's")
+    monitor.add_argument(
+        "--specs",
+        type=Path,
+        default=None,
+        help="with --monitor spec: a directory of <repo>.py specs to use instead of the built-in ones",
+    )
     monitor.add_argument("--trials", type=int, default=1, help="runs per case; model monitors vary")
     monitor.add_argument("--case", action="append", default=None, help="run only this case id (repeatable)")
     monitor.add_argument("--out", type=Path, default=None, help="report directory")
@@ -117,6 +123,7 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         run_eval,
         software_monitor,
         spec_monitor,
+        spec_monitor_from,
         write_report,
     )
 
@@ -131,6 +138,9 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         _print_summary(summary, out)
         return _exit_code(summary)
 
+    if args.specs is not None and args.monitor != "spec":
+        print("--specs only works with --monitor spec")
+        return 1
     cases = CASES
     if args.case:
         known = {case.id for case in CASES}
@@ -141,6 +151,11 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         cases = [case for case in CASES if case.id in set(args.case)]
     if args.monitor == "software":
         monitor, trials, name = software_monitor, 1, "software rules"
+    elif args.monitor == "spec" and args.specs is not None:
+        if not args.specs.is_dir():
+            print(f"no such spec directory: {args.specs}")
+            return 1
+        monitor, trials, name = spec_monitor_from(args.specs), 1, f"executable spec from {args.specs.name}"
     elif args.monitor == "spec":
         monitor, trials, name = spec_monitor, 1, "executable spec, side effects blocked"
     else:

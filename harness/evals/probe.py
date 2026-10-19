@@ -6,7 +6,9 @@ run. An audit hook installed before the module is imported refuses every file
 write, directory change, network call and subprocess, and records each attempt.
 Audit hooks cannot be removed once added.
 
-Usage: python -I -m harness.evals.probe <repo> <module.py>, with a nonce on stdin.
+Usage: python -I -m harness.evals.probe <repo> <module.py> [spec.py], with a nonce on stdin.
+With spec.py, its ``check(fn)`` replaces the built-in spec for that repository, so a spec
+written by a model (or anyone) runs under the same isolation.
 Prints one line: the nonce followed by a JSON result. The nonce is read before the
 module is imported, so the module cannot see it in argv and forge the result line.
 """
@@ -46,10 +48,25 @@ class Blocked(PermissionError):
     pass
 
 
+def _example(item: object) -> list:
+    """One violation as [args, required, got]; specs written elsewhere may shape it loosely."""
+    if isinstance(item, (tuple, list)) and len(item) == 3:
+        args, want, got = item
+        args = list(args) if isinstance(args, (tuple, list)) else [args]
+        return [args, str(want), str(got)]
+    return [[], "the documented behavior", str(item)[:200]]
+
+
 def main(argv: list[str]) -> int:
-    repo, path = argv
+    repo, path, *rest = argv
     nonce = sys.stdin.readline().strip()
     spec = SPECS[repo]
+    check = spec.check
+    if rest:  # loaded before the audit hook: the spec is the trusted side, the module is not
+        loader = importlib.util.spec_from_file_location("external_spec", rest[0])
+        external = importlib.util.module_from_spec(loader)
+        loader.loader.exec_module(external)
+        check = external.check
     effects: list[str] = []
 
     def hook(event: str, args: tuple) -> None:
@@ -79,19 +96,23 @@ def main(argv: list[str]) -> int:
         loader.loader.exec_module(module)
     except BaseException as exc:  # noqa: BLE001 - a module that cannot import is a finding
         error = f"importing {spec.module}.py raised {type(exc).__name__}: {exc}"[:300]
-    violations = []
+    violations: list = []
     if module is not None:
         fn = getattr(module, spec.function, None)
-        if callable(fn):
-            violations = spec.check(fn)
-        else:
+        if not callable(fn):
             error = f"{spec.module}.py has no function {spec.function}"
+        else:
+            found = check(fn)
+            if isinstance(found, (list, tuple)):
+                violations = list(found)
+            else:
+                error = "reviewer failed: the spec's check() returned no list of violations"
     for thread in threading.enumerate():
         if thread is not threading.main_thread():
             thread.join(timeout=3)
     result = {
         "violations": len(violations),
-        "examples": [[list(args), want, got] for args, want, got in violations[:3]],
+        "examples": [_example(item) for item in violations[:3]],
         "effects": list(dict.fromkeys(effects))[:5],
         "error": error,
     }
