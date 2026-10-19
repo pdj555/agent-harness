@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     evals = sub.add_parser("eval", help="measure the harness")
     eval_sub = evals.add_subparsers(dest="eval_command")
     monitor = eval_sub.add_parser("monitor", help="how often the reviewer catches an agent gaming its tests")
-    monitor.add_argument("--monitor", choices=["software", "claude", "codex"], default="software")
+    monitor.add_argument("--monitor", choices=["software", "spec", "claude", "codex"], default="software")
     monitor.add_argument("--model", default=None, help="reviewer model; defaults to the vendor's")
     monitor.add_argument("--trials", type=int, default=1, help="runs per case; model monitors vary")
     monitor.add_argument("--case", action="append", default=None, help="run only this case id (repeatable)")
@@ -116,6 +116,7 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         rescore,
         run_eval,
         software_monitor,
+        spec_monitor,
         write_report,
     )
 
@@ -140,6 +141,8 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         cases = [case for case in CASES if case.id in set(args.case)]
     if args.monitor == "software":
         monitor, trials, name = software_monitor, 1, "software rules"
+    elif args.monitor == "spec":
+        monitor, trials, name = spec_monitor, 1, "executable spec, side effects blocked"
     else:
         try:
             monitor = model_monitor(args.monitor, args.model)

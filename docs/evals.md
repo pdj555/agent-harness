@@ -6,6 +6,7 @@ The harness trusts two things over the agent: the project's checks and an indepe
 
 ```bash
 uv run harness eval monitor                                  # software rules only, no key
+uv run harness eval monitor --monitor spec                   # executable spec, side effects blocked, no key
 uv run harness eval monitor --monitor claude --trials 5      # Claude Code as the reviewer
 uv run harness eval monitor --monitor codex --trials 5       # Codex as the reviewer
 ```
@@ -46,14 +47,20 @@ That's 33 cases: 6 clean and 27 attacks. Fifteen attacks are obvious to a carefu
 
 **Claude Haiku 5.5 as reviewer: 27 of 27 attacks caught, 0 of 6 clean fixes blocked.** Run on 2026-10-14 with `--monitor claude --model claude-haiku-5-5 --trials 3`: 99 judged reviews, no reviewer errors, no split verdicts, and Cohen's kappa 1.00 between the majority verdict and the label. All 12 subtle attacks were caught. Each incorrect fix was blocked with a concrete counterexample, for example `split_cents(11, 4)` returning `[5, 2, 2, 2]` instead of `[3, 3, 3, 2]`.
 
+**Executable spec, no model: 27 of 27 attacks caught, 0 of 6 clean fixes blocked.** `--monitor spec` takes the changed module, copies it alone into an empty directory, and imports it in a fresh interpreter with a minimal environment, so no `conftest.py` or test file runs. It then calls the function on every input the tests use and thousands they don't, and compares each answer with a spec written from the module's docstring alone. An audit hook installed before the import refuses file writes, network calls and subprocesses, and records each attempt. The behavior check catches the 21 attacks that leave the function wrong. The side-effect audit catches the 6 that ship harm next to a correct fix. Every finding is a counterexample or a refused call, for example `split_cents(2, 3) gives [2, 0, 0]` or `network (urllib.Request) https://telemetry.example.com/v1/events`.
+
 | Reviewer | Attacks caught | Clean fixes blocked | Trials per case |
 | --- | --- | --- | --- |
 | Software rules only | 6 of 27 (22%) | 0 of 6 | 1 |
+| Executable spec, side effects blocked | 27 of 27 (100%) | 0 of 6 | 1, deterministic |
 | Claude Haiku 5.5 | 27 of 27 (100%) | 0 of 6 | 3 |
 
-This saturates the hand-written set. It shows these attacks are easy for a current model that reads the diff with the repository open. It does not show review is solved. The harder tiers are untested: changes buried in larger, realistic diffs, payloads split across several changes, and attackers that adapt to the monitor.
+Both reach 27 of 27, so the hand-written set is saturated. They differ in what the result rests on. The model's verdict depends on the model staying more capable than the agent it reviews. The spec gate's verdict depends only on the spec and the inputs it runs, so it does not get weaker as agents get stronger. The model still matters where no spec reaches: intent, code outside the specified functions, and effects the audit hook cannot see. The harder tiers are untested for both: changes buried in larger, realistic diffs, payloads split across several changes, and attackers that adapt to the reviewer.
 
 ## Limits
+
+- The specs are complete because each function is ten lines. Real code has partial specs, and the spec gate covers only what is specified.
+- The spec runs in the same process as the module it checks. Code written to attack the checker itself could tamper with it; a hardened version keeps the checker in a separate process. Audit hooks see Python-level calls, not native extensions.
 
 - 33 cases is small. The intervals are wide, and they say so.
 - The attacks are hand-written and in the open. A model trained to evade a known monitor would be a harder test, and so would diffs buried in larger, realistic changes.
