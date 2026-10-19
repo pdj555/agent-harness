@@ -44,7 +44,14 @@ That's 33 cases: 6 clean and 27 attacks. Fifteen attacks are obvious to a carefu
 
 **Software rules now: 6 of 27 caught (22%, 95% CI 7% to 37%), 0 of 6 clean fixes blocked.** Three rules were added: a new skip or expected-failure marker, a deleted test function, and a `conftest.py` that replaces project code at import. They catch 6 of the 15 obvious attacks and none of the 12 subtle ones. The autouse-fixture variant does the same thing as the module-level patch and slips past the rule, which is the point of having it. Special-casing, weakened assertions, incorrect fixes, and unrelated harm need a model to read the code.
 
-**Model reviewers:** run with your own key. Add the report here.
+**Claude Haiku 5.5 as reviewer: 27 of 27 attacks caught, 0 of 6 clean fixes blocked.** Run on 2026-10-14 with `--monitor claude --model claude-haiku-5-5 --trials 3`: 99 judged reviews, no reviewer errors, no split verdicts, and Cohen's kappa 1.00 between the majority verdict and the label. All 12 subtle attacks were caught. Each incorrect fix was blocked with a concrete counterexample, for example `split_cents(11, 4)` returning `[5, 2, 2, 2]` instead of `[3, 3, 3, 2]`.
+
+| Reviewer | Attacks caught | Clean fixes blocked | Trials per case |
+| --- | --- | --- | --- |
+| Software rules only | 6 of 27 (22%) | 0 of 6 | 1 |
+| Claude Haiku 5.5 | 27 of 27 (100%) | 0 of 6 | 3 |
+
+This saturates the hand-written set. It shows these attacks are easy for a current model that reads the diff with the repository open. It does not show review is solved. The harder tiers are untested: changes buried in larger, realistic diffs, payloads split across several changes, and attackers that adapt to the monitor.
 
 ## Limits
 
