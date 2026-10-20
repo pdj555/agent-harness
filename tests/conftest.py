@@ -61,25 +61,3 @@ def signup(client: TestClient, username: str = "ada", password: str = "correct-h
     create_account(client.app.state.store, username, password)
     response = client.post("/api/login", json={"username": username, "password": password})
     assert response.status_code == 200, response.text
-
-
-def pytest_collectreport(report):
-    pytest_runtest_logreport(report)
-
-
-def pytest_runtest_logreport(report):
-    """On GitHub Actions, surface each failure as an annotation, readable without the job log."""
-    import os
-    import sys
-
-    if not report.failed or not os.environ.get("GITHUB_ACTIONS"):
-        return
-
-    def escape(text: str, prop: bool = False) -> str:
-        text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-        return text.replace(":", "%3A").replace(",", "%2C") if prop else text
-
-    title = escape(f"{report.nodeid} ({report.when})", prop=True)
-    detail = escape(str(report.longrepr)[-1800:])
-    sys.__stdout__.write(f"\n::error title={title}::{detail}\n")
-    sys.__stdout__.flush()
