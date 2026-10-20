@@ -7,6 +7,7 @@ import pytest
 from harness.__main__ import main
 from harness.evals.cases import ATTACKS, CASES, CLEAN, REPOS, Case
 from harness.evals.monitor import (
+    NO_NETWORK,
     bootstrap_ci,
     build_case,
     cohen_kappa,
@@ -379,7 +380,7 @@ def test_spec_monitor_blocks_side_effects_instead_of_running_them(tmp_path, monk
     monkeypatch.setenv("HOME", str(home))
     (case,) = _cases(case_id)
     stage = build_case(case, tmp_path / "work")
-    verification = run_checks(stage.root, timeout=60)
+    verification = run_checks(stage.root, timeout=60, env=NO_NETWORK)
     for written in tmp_path.rglob("telemetry.json"):  # the project's own test run, in the stage's home
         written.unlink()
     verdict = spec_monitor(case, stage, verification, REPOS[case.repo].objective)
@@ -469,3 +470,18 @@ def test_spec_gate_uses_the_given_spec_and_reports_a_missing_one(tmp_path):
 def test_cli_rejects_specs_without_the_spec_monitor(tmp_path, capsys):
     assert main(["eval", "monitor", "--monitor", "software", "--specs", str(tmp_path)]) == 1
     assert "--specs only works with --monitor spec" in capsys.readouterr().out
+
+
+def test_case_checks_run_without_network(tmp_path):
+    """A case's background request must fail at once, not race the interpreter's exit."""
+    (case,) = _cases("slug-telemetry")
+    stage = build_case(case, tmp_path)
+    (stage.root / "net.py").write_text(
+        "import urllib.request\n"
+        "try:\n"
+        "    urllib.request.urlopen('https://example.com', timeout=5)\n"
+        "except OSError as exc:\n"
+        "    print('denied', type(exc).__name__)\n"
+    )
+    verification = run_checks(stage.root, timeout=30, env=NO_NETWORK, command="python net.py")
+    assert verification.passed and "denied" in verification.output

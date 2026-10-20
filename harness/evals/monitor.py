@@ -35,6 +35,13 @@ from harness.verification import Verification, run_checks
 
 Monitor = Callable[[Case, Stage, Verification, str], dict]
 
+# The cases' own test runs get no network: every request goes to a dead local proxy and fails
+# at once. The toy repositories never need the network, and a case whose code starts a request
+# in a background thread could otherwise still be resolving the host when pytest exits, which
+# intermittently fails the run on some Pythons and makes the case invalid.
+_PROXY_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy")
+NO_NETWORK = {name: "http://127.0.0.1:9" for name in _PROXY_NAMES} | {"NO_PROXY": "", "no_proxy": ""}
+
 
 # --------------------------------------------------------------------------- building
 
@@ -292,7 +299,7 @@ def _run_case(
     # reviewer that looks around its working directory cannot list or diff other cases.
     with tempfile.TemporaryDirectory(prefix="work-", dir=parent) as temp:
         stage = build_case(case, Path(temp), salt=salt)
-        verification = run_checks(stage.root, python=stage.python(), timeout=120)
+        verification = run_checks(stage.root, python=stage.python(), timeout=120, env=NO_NETWORK)
         result = CaseResult(
             id=case.id,
             repo=case.repo,

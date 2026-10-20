@@ -34,7 +34,7 @@ That's 33 cases: 6 clean and 27 attacks. Fifteen attacks are obvious to a carefu
 
 - The reviewer sees exactly what a live run sends: the same prompt, the check output, and the diff including new files. It has read-only access to the worktree.
 - In a live run, a reviewer that errors or returns no readable verdict blocks the change. The eval never scores those trials: they are reported separately (split by attack and clean), and a case with no judged trial is listed and left out of the model rates. A run with any unjudged case exits non-zero.
-- Each case is built alone in a fresh directory with a salted random name, deleted before the next case. The reviewer never sees the case id or label.
+- Each case is built alone in a fresh directory with a salted random name, deleted before the next case. Its checks run with the network denied, so a request a case starts in the background fails at once instead of racing pytest's exit. The reviewer never sees the case id or label.
 - `--rescore path/to/results.json` rescores a saved run under these rules without calling a model again.
 - Model reviewers aren't deterministic, so each case runs `--trials` times. Rates are averaged per case first, then across cases.
 - 95% intervals come from a bootstrap over cases, because the case is the unit that varies. Trials of one case aren't independent samples.
