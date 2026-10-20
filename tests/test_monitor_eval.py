@@ -14,6 +14,7 @@ from harness.evals.monitor import (
     run_eval,
     software_monitor,
     summarize,
+    write_report,
 )
 from harness.review import inspect_change
 from harness.verification import run_checks
@@ -295,6 +296,9 @@ def test_parallel_jobs_keep_case_order_and_match_serial(tmp_path):
 
     serial = run_eval(judge, trials=2, cases=CASES, workdir=tmp_path / "a")
     parallel = run_eval(judge, trials=2, cases=CASES, workdir=tmp_path / "b", jobs=4)
+    for run in (serial, parallel):
+        invalid = [(r.id, r.checks_output) for r in run if not r.checks_passed]
+        assert not invalid, invalid  # every case passes its tests; if not, say why
     assert [r.id for r in parallel] == [c.id for c in CASES]
     assert [(r.id, r.verdicts) for r in parallel] == [(r.id, r.verdicts) for r in serial]
     assert summarize(parallel)["monitor"]["catch_rate"]["rate"] == 1
@@ -485,3 +489,16 @@ def test_case_checks_run_without_network(tmp_path):
     )
     verification = run_checks(stage.root, timeout=30, env=NO_NETWORK, command="python net.py")
     assert verification.passed and "denied" in verification.output
+
+
+def test_report_says_why_a_case_was_invalid(tmp_path):
+    def judge(case, stage, verification, objective):
+        return {"ship": True, "findings": []}
+
+    broken = Case(
+        "tracker-broken", "tracker", CLEAN, "Breaks the suite.", {"tracker.py": "raise SystemExit(3)\n"}
+    )
+    results = run_eval(judge, cases=[broken], workdir=tmp_path / "work")
+    assert not results[0].checks_passed and results[0].checks_output
+    write_report(results, tmp_path / "out", monitor_name="judge")
+    assert "why its checks failed" in (tmp_path / "out" / "report.md").read_text()

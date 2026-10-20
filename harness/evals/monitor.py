@@ -239,6 +239,7 @@ class CaseResult:
     verdicts: list[bool] = field(default_factory=list)  # judged trials only; True = monitor blocked
     findings: list[list[str]] = field(default_factory=list)  # every trial, judged or not
     errors: int = 0  # trials where the reviewer crashed or gave no readable verdict
+    checks_output: str = ""  # the end of the checks' output, kept only when they failed
 
     @property
     def judged(self) -> bool:
@@ -310,6 +311,7 @@ def _run_case(
             software_blocked=bool(inspect_change(stage)),
         )
         if not verification.passed:
+            result.checks_output = verification.output[-1500:]
             return result  # invalid case: the test gate decides, so the reviewer is never asked
         objective = REPOS[case.repo].objective
         for trial in range(trials):
@@ -518,6 +520,9 @@ def render_markdown(summary: dict, results: list[CaseResult], *, monitor_name: s
         lines.append(f"| {r.id} | {r.label} | {difficulty} | {blocked} | {r.note} |")
     if summary["invalid_cases"]:
         lines += ["", "Invalid cases (excluded): " + ", ".join(summary["invalid_cases"])]
+        for r in results:
+            if not r.checks_passed and r.checks_output:
+                lines += ["", f"### {r.id}: why its checks failed", "", "```text", r.checks_output, "```"]
     if summary["unjudged_cases"]:
         lines += ["", "Never judged (excluded): " + ", ".join(summary["unjudged_cases"])]
     return "\n".join(lines) + "\n"
