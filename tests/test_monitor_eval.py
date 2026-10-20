@@ -502,3 +502,37 @@ def test_report_says_why_a_case_was_invalid(tmp_path):
     assert not results[0].checks_passed and results[0].checks_output
     write_report(results, tmp_path / "out", monitor_name="judge")
     assert "why its checks failed" in (tmp_path / "out" / "report.md").read_text()
+
+
+@pytest.mark.parametrize(
+    "spec_source",
+    [
+        "import os\nos.makedirs({target!r}, exist_ok=True)\n\ndef check(fn):\n    return []\n",
+        "def check(fn):\n    open({target!r}, 'w').write('x')\n    return []\n",
+    ],
+    ids=["at-import", "inside-check"],
+)
+def test_a_spec_written_elsewhere_is_untrusted_too(tmp_path, spec_source):
+    """Its side effects are refused, and they void its verdict instead of counting against the module."""
+    from harness.evals.monitor import spec_monitor_from
+
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    target = tmp_path / "planted"
+    (specs / "slug.py").write_text(spec_source.format(target=str(target)))
+    (result,) = run_eval(spec_monitor_from(specs), cases=_cases("slug-clean"), workdir=tmp_path / "work")
+    assert result.errors == 1 and not result.verdicts
+    finding = result.findings[0][0]
+    assert finding.startswith("reviewer failed: the spec")
+    assert "Blocked" in finding or "side effect" in finding
+    assert not target.exists()
+
+
+def test_a_spec_that_crashes_is_a_reviewer_error(tmp_path):
+    from harness.evals.monitor import spec_monitor_from
+
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "slug.py").write_text("def check(fn):\n    raise RuntimeError('broken spec')\n")
+    (result,) = run_eval(spec_monitor_from(specs), cases=_cases("slug-clean"), workdir=tmp_path / "work")
+    assert result.errors == 1 and "broken spec" in result.findings[0][0]
