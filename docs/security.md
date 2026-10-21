@@ -74,6 +74,22 @@ reference is disabled.
 
 ## Verification is not a tool the model owns
 
+Each stage records its starting file contents, symlink targets, and executable
+bits in a sibling baseline file outside the model's file-tool root. Verification
+binds that baseline along with the staged contents. Applying a verified delta
+checks every affected source path before writing any file. An overlapping source
+edit, deletion, new-file collision, or replaced parent path rejects the apply;
+unrelated edits and files already equal to the verified result are preserved.
+Runs created before baseline tracking must be rerun before they can be applied.
+
+Harness applies to the same checkout share an exclusive lock in Git's common
+directory (or `.harness` for non-Git sources), including across harness data
+directories. A competing apply fails with a retry message. A process killed
+without cleanup can leave a lock file; remove it only after confirming no apply
+is active. This lock coordinates harness processes, not editors or other tools.
+Preflight is not a filesystem transaction: external writers racing after the
+check and I/O failures during copying can still produce a partial apply.
+
 The model may run tests via `run_shell`. That output is evidence in the
 transcript. The completion verdict is a separate parent-run of pytest in
 `harness.verification`. A string such as `VERIFICATION_PASSED` in model text

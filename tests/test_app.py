@@ -304,3 +304,30 @@ def test_verified_stage_can_be_published_after_restart(client, app, workspace):
     assert response.json()["published_at"]
     assert response.json()["verification"]["stage_digest"] == completed.verification["stage_digest"]
     assert (workspace / "tracker.py").read_bytes() == checked
+
+
+@pytest.mark.parametrize("conflict", [True, False])
+def test_publish_preserves_source_edits_made_after_verification(client, app, workspace, conflict):
+    signup(client)
+    store = app.state.store
+    user = store.get_user_by_username("ada")
+    repo = store.list_repos(app.state.config.workspace_roots)[0]
+    run = store.create_run(user.id, repo.id, "Fix the failing tests and prove it.")
+    execute_run(run.id, store=store, config=app.state.config, provider=app.state.provider)
+    completed = store.get_run(run.id)
+    assert completed.status == "completed"
+    assert completed.verification["passed"] is True
+    target = workspace / ("tracker.py" if conflict else "human-notes.txt")
+    target.write_text("human edit after verification\n", encoding="utf-8")
+
+    response = client.post(f"/api/runs/{run.id}/publish")
+
+    assert response.status_code == (409 if conflict else 200)
+    assert target.read_text(encoding="utf-8") == "human edit after verification\n"
+    stored = store.get_run(run.id)
+    if conflict:
+        assert "source file changed since staging" in response.json()["error"]
+        assert stored.published_at is None
+    else:
+        assert stored.published_at is not None
+        assert 'return "high"' in (workspace / "tracker.py").read_text(encoding="utf-8")
