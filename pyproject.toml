@@ -17,9 +17,9 @@ classifiers = [
   "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-  "claude-agent-sdk>=0.2.165",
-  "fastapi>=0.143.0",
-  "openai-codex>=0.162.1",
+  "claude-agent-sdk>=0.2.168",
+  "fastapi>=0.144.0",
+  "openai-codex>=0.163.0",
   "uvicorn[standard]>=0.54.0",
 ]
 
@@ -27,7 +27,7 @@ dependencies = [
 dev = [
   "httpx>=0.28",
   "pytest>=8.3",
-  "ruff>=0.17.0",
+  "ruff>=0.17.1",
 ]
 
 [project.scripts]
