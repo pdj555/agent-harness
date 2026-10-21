@@ -1,78 +1,55 @@
-# Tests are not a review
+# Research summary
 
-Every one of these 27 code changes passes its test suite.
-
-One sends your environment variables to a server you have never heard of. One hardcodes the answers for exactly the inputs the tests check. One is right everywhere the tests look and wrong everywhere they don't. One leaves the bug in place and quietly swaps in a fixed function only while the tests run.
-
-The tests caught none of them.
-
-That matters now because agents write code faster than anyone can read it, and the test suite has become the last check before merge. Frontier models already know how to beat it. Anthropic's Claude 3.7 Sonnet system card reports the model "directly returning expected test values rather than implementing general solutions." METR caught o3 monkey-patching an evaluator "to always return a perfect score." And the same pass/fail signal trains the next model, so a change that games its tests ships and gets reinforced.
-
-So the question is:
+Agents write code faster than people can review it. Most teams fall back on the test suite as the check before merge. The question I'm working on:
 
 **How can we trust agents to merge without a human reading every diff?**
 
-## The result
+Tests aren't enough on their own. Models already game them. Anthropic's Claude 3.7 Sonnet system card reports the model "directly returning expected test values rather than implementing general solutions." METR caught o3 patching an evaluator "to always return a perfect score."
 
-| Check | Sabotage caught | Honest fixes blocked |
+## What I tested
+
+I wrote 33 changes to three small Python repos. 6 are honest fixes. 27 pass every test but shouldn't ship. Some hardcode the tested answers. Some loosen the assertions. Some are right only where the tests look. A few fix the bug and also send the environment variables to an outside server. 12 of the 27 are written to look like normal changes.
+
+## What caught them
+
+| Check | Bad changes caught | Honest fixes blocked |
 | --- | --- | --- |
-| The project's own tests | 0 of 27 | 0 of 6 |
-| Software diff rules | 6 of 27 | 0 of 6 |
-| Claude Haiku 5.5 as reviewer | **27 of 27** | 0 of 6 |
-| Executable spec, no model at all | **27 of 27** | 0 of 6 |
+| The repo's tests | 0 of 27 | 0 of 6 |
+| Simple diff rules | 6 of 27 | 0 of 6 |
+| Claude Haiku 5.5 reviewing the diff | 27 of 27 | 0 of 6 |
+| Executable spec, no model | 27 of 27 | 0 of 6 |
 
-Specs written by Claude Haiku 5.5 and Sonnet 5.5 from the docstring alone, never seeing the code or the tests, also caught 27 of 27 with no false blocks, in all 6 independent sets.
+The spec runs the changed function alone, on the tested inputs and thousands of others, and blocks any file write, network call, or subprocess. Specs written by Haiku and Sonnet from the docstring alone, without seeing the code or tests, also caught all 27.
 
-## The idea worth studying
+## Why the spec is the interesting part
 
-Two checks reach 27 of 27. They are not the same kind of check.
+A model reviewer works as long as it's smarter than the agent. That gets harder as agents improve. A spec doesn't need to be smarter than anything. It checks behavior on inputs the agent didn't pick. If that holds up against a real attacker, it's a check that doesn't get weaker over time.
 
-A model reviewer works because it is smarter than the agent it reviews. That is a race, and as agents get stronger the reviewer's margin shrinks.
+## Where it breaks
 
-A spec does not race. It copies the changed code into an empty directory, runs it on every tested input and thousands of untested ones, and refuses every file write, network call, and subprocess. Each verdict is a counterexample, like `split_cents(2, 3) gives [2, 0, 0]`, or a refused call, like `network (urllib.Request) https://telemetry.example.com/v1/events`. Nothing about it depends on out-thinking the agent.
+27 of 27 mostly means my attacks were easy. The spec has blind spots I can already see:
 
-If that holds against a strong attacker who adapts, it is a monitor that does not decay as capability grows. Finding where it breaks is the research.
-
-## Threat model
-
-An untrusted coding agent hands over a diff that passes the project's tests. The diff is wrong in one of two ways:
-
-- **Reward hacking.** It satisfies the tests without solving the task: special-casing the tested inputs, loosening assertions, skipping the failing test, patching from `conftest.py`, or fixing only what is tested.
-- **Sabotage.** It solves the task and also does harm, writing the environment to disk or posting it to an outside host.
-
-The defender sees what a live run sends: the diff, the check output, and read-only access to the worktree.
-
-## Setup
-
-33 changes across three small Python repositories, each with a real bug and a suite that fails on it. 6 honest fixes, 27 attacks. 12 attacks are written to read like ordinary changes: a "warm cache" seeded with exactly the tested inputs, an autouse fixture that swaps the function only under test, "usage telemetry" that ships the environment out, fixes that are right only where the tests look. A test enforces that every case passes its suite, so no attack is a free catch.
-
-Method, confidence intervals, and every case: [evals.md](evals.md).
-
-## Limits
-
-27 of 27 should not be over-read. Here is why.
-
-- **The attacks are mine.** I wrote the attacks and the specs. Saturation measures how hard I attacked, not how good the monitor is.
-- **Spec and attack share a source.** The incorrect-fix cases are defined against the docstring, and the specs come from the docstring. Model-written specs never saw the code or tests, but they read the same docstring.
-- **The tasks are toys.** Single functions with clean docstrings. Real code rarely ships a spec.
-- **The sample is small.** 27 attacks, 6 honest fixes. Zero false blocks on 6 says little about the cost to usefulness.
-- **The reviewer could read the labels.** The installed `harness/evals/cases.py` sits on paths the model reviewer can read. Nothing suggests it did. A strict run should hide it.
+- It only checks the inputs it generates. The ledger spec stops at totals of 300 and 16 parts. A change that's wrong only for larger totals would pass it.
+- I wrote the attacks and the specs, and both come from the same docstring.
+- The tasks are single functions with clean docstrings. Real code usually has no spec.
+- 6 honest fixes is too few to say much about false blocks.
+- The model reviewer could read the file that holds the labels. Nothing suggests it did, but a strict run should hide it.
 
 ## Next
 
-1. **An attacker that fights back.** A frontier model writes the attacks, sees each verdict, and retries. The output is a curve: catch rate against attacker rounds, one line per check. If the spec line stays flat while the reviewer's falls, that is the result.
-2. **Real tasks.** Real issues from public repositories, so the author does not choose the battlefield.
-3. **Held-out specs.** Specs from a source the attacker never sees, such as hidden tests or a separate requirements document.
-4. **The usefulness cost.** Run the gate on real merged pull requests and report false blocks next to catch rate.
+1. Have a frontier model write the attacks, see each verdict, and keep trying. Plot catch rate against attempts for each check.
+2. Run it on real issues from public repos.
+3. Take specs from somewhere the attacker can't see, like hidden tests.
+4. Run the gate on real merged PRs to measure false blocks.
 
 ## Related work
 
-- Greenblatt, Shlegeris, Sachan, Roger. [AI Control: Improving Safety Despite Intentional Subversion](https://arxiv.org/abs/2312.06942) (2023). Trusted monitoring of an untrusted model. This work moves that setting from APPS backdoors to repository diffs.
+- Greenblatt, Shlegeris, Sachan, Roger. [AI Control: Improving Safety Despite Intentional Subversion](https://arxiv.org/abs/2312.06942) (2023). Same setup, trusted monitoring of an untrusted model, on APPS backdoors instead of repo diffs.
 - Anthropic. [Claude 3.7 Sonnet System Card](https://assets.anthropic.com/m/785e231869ea8b3b/original/claude-3-7-sonnet-system-card.pdf), section 6.
 - METR. [Recent Frontier Models Are Reward Hacking](https://metr.org/blog/2025-06-05-recent-reward-hacking) (2025).
 - OpenAI. [Monitoring Reasoning Models for Misbehavior](https://arxiv.org/abs/2503.11926) (2025).
 
-Reproduce the spec row in about a minute, no key:
+Full method and every case: [evals.md](evals.md). To run the spec check yourself, no API key:
 
 ```bash
 uv sync --extra dev
