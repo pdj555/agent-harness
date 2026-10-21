@@ -102,6 +102,60 @@ def test_git_stage_preserves_a_working_tree_deletion(tmp_path: Path):
     assert "README.md" in stage.changed_files()
 
 
+def test_git_stage_copies_only_the_working_delta(tmp_path: Path, monkeypatch):
+    source = copy_sample(tmp_path / "source")
+    git_init(source)
+    (source / "tracker.py").write_text("dirty tracked file\n", encoding="utf-8")
+    (source / "notes.txt").write_text("untracked file\n", encoding="utf-8")
+    copied = []
+    copy = shutil.copy2
+
+    def record_copy(src, dest, **kwargs):
+        copied.append(Path(src).relative_to(source).as_posix())
+        return copy(src, dest, **kwargs)
+
+    monkeypatch.setattr("harness.isolation.shutil.copy2", record_copy)
+    stage = create_stage(source, tmp_path / "stages", "delta")
+
+    assert sorted(copied) == ["notes.txt", "tracker.py"]
+    assert (stage.root / "README.md").read_bytes() == (source / "README.md").read_bytes()
+    assert (stage.root / "tracker.py").read_text() == "dirty tracked file\n"
+    assert (stage.root / "notes.txt").read_text() == "untracked file\n"
+
+
+def test_clean_git_stage_never_recopies_tracked_files(tmp_path: Path, monkeypatch):
+    source = copy_sample(tmp_path / "source")
+    git_init(source)
+
+    def unexpected_copy(*args, **kwargs):
+        pytest.fail("clean files must come from Git's worktree checkout")
+
+    monkeypatch.setattr("harness.isolation.shutil.copy2", unexpected_copy)
+    stage = create_stage(source, tmp_path / "stages", "clean")
+    assert stage.changed_files() == []
+
+
+def test_git_stage_overlays_staged_rename_and_later_unstaged_edit(tmp_path: Path):
+    source = copy_sample(tmp_path / "source")
+    git_init(source)
+    subprocess.run(["git", "mv", "README.md", "NOTES.md"], cwd=source, check=True)
+    (source / "NOTES.md").write_text("latest working file\n", encoding="utf-8")
+
+    stage = create_stage(source, tmp_path / "stages", "rename")
+
+    assert not (stage.root / "README.md").exists()
+    assert (stage.root / "NOTES.md").read_text() == "latest working file\n"
+
+
+def test_git_stage_rejects_clean_tracked_credentials(tmp_path: Path):
+    source = copy_sample(tmp_path / "source")
+    (source / ".env.local").write_text("EXAMPLE=fixture\n", encoding="utf-8")
+    git_init(source)
+
+    with pytest.raises(IsolationError, match="credential-like file"):
+        create_stage(source, tmp_path / "stages", "tracked-credential")
+
+
 def test_git_stage_replaces_tracked_directory_with_dirty_file(tmp_path: Path):
     source = copy_sample(tmp_path / "source")
     swap = source / "swap"
@@ -334,3 +388,113 @@ def test_verified_publish_preserves_staged_deletions_and_renames(tmp_path: Path,
     assert not (source / "README.md").exists()
     if change == "staged-rename":
         assert (source / "NOTES.md").read_bytes() == readme
+
+
+@pytest.mark.parametrize("git_source", [True, False])
+def test_verified_apply_preflights_all_conflicts_without_partial_writes(tmp_path: Path, git_source: bool):
+    source = copy_sample(tmp_path / "source")
+    if git_source:
+        git_init(source)
+    stage = create_stage(source, tmp_path / "stages", "conflict")
+    (stage.root / "a-new.txt").write_text("agent addition\n")
+    (stage.root / "tracker.py").write_text("agent edit\n")
+    digest = stage.content_digest()
+    (source / "tracker.py").write_text("new human edit\n")
+
+    with pytest.raises(IsolationError, match="source file changed since staging"):
+        stage.publish(expected_digest=digest)
+
+    assert (source / "tracker.py").read_text() == "new human edit\n"
+    assert not (source / "a-new.txt").exists()
+
+
+def test_disjoint_runs_can_apply_but_overlapping_stale_run_cannot(tmp_path: Path):
+    source, original, first = _stage(tmp_path)
+    second = create_stage(source, tmp_path / "stages", "second")
+    third = create_stage(source, tmp_path / "stages", "third")
+    (first.root / "tracker.py").write_text("first change\n")
+    (second.root / "notes.txt").write_text("independent change\n")
+    (third.root / "tracker.py").write_text("stale change\n")
+    first.publish(expected_digest=first.content_digest())
+    second.publish(expected_digest=second.content_digest())
+    with pytest.raises(IsolationError, match="source file changed"):
+        third.publish(expected_digest=third.content_digest())
+    assert (source / "tracker.py").read_text() == "first change\n"
+    assert (source / "notes.txt").read_text() == "independent change\n"
+    assert original != "first change\n"
+
+
+@pytest.mark.parametrize("operation", ["delete", "new-file", "chmod"])
+def test_apply_rejects_source_deletions_collisions_and_mode_changes(tmp_path: Path, operation: str):
+    source, _, stage = _stage(tmp_path)
+    if operation == "new-file":
+        (stage.root / "new.txt").write_text("agent\n")
+        (source / "new.txt").write_text("human\n")
+    else:
+        (stage.root / "tracker.py").write_text("agent\n")
+        if operation == "delete":
+            (source / "tracker.py").unlink()
+        else:
+            path = source / "tracker.py"
+            path.chmod(path.stat().st_mode ^ 0o100)
+    with pytest.raises(IsolationError, match="source file changed"):
+        stage.publish(expected_digest=stage.content_digest())
+    if operation == "new-file":
+        assert (source / "new.txt").read_text() == "human\n"
+    elif operation == "delete":
+        assert not (source / "tracker.py").exists()
+
+
+def test_reconstructed_stage_retains_baseline_and_allows_idempotent_apply(tmp_path: Path):
+    from harness.isolation import Stage
+
+    source, _, stage = _stage(tmp_path)
+    (stage.root / "tracker.py").write_text("verified edit\n")
+    digest = stage.content_digest()
+    restored = Stage(stage.id, source, stage.root)
+    restored.publish(expected_digest=digest)
+    restored.publish(expected_digest=digest)
+    assert (source / "tracker.py").read_text() == "verified edit\n"
+
+
+def test_baseline_tampering_invalidates_verification_and_missing_baseline_fails_closed(tmp_path: Path):
+    source, original, stage = _stage(tmp_path)
+    (stage.root / "tracker.py").write_text("agent\n")
+    digest = stage.content_digest()
+    baseline = stage.root.parent / f"{stage.root.name}.source-state.json"
+    baseline.write_text("{}")
+    with pytest.raises(IsolationError, match="changed since verification"):
+        stage.publish(expected_digest=digest)
+    baseline.unlink()
+    with pytest.raises(IsolationError, match="source baseline is missing"):
+        stage.publish(expected_digest=digest)
+    assert (source / "tracker.py").read_text() == original
+
+
+def test_source_parent_symlink_swap_is_rejected_before_writes(tmp_path: Path):
+    source, _, stage = _stage(tmp_path)
+    (stage.root / "a-new.txt").write_text("agent\n")
+    (stage.root / "nested").mkdir()
+    (stage.root / "nested" / "edit.txt").write_text("agent\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _symlink_or_skip(source / "nested", outside)
+    with pytest.raises(IsolationError, match="source path changed"):
+        stage.publish(expected_digest=stage.content_digest())
+    assert not (source / "a-new.txt").exists()
+    assert not (outside / "edit.txt").exists()
+
+
+def test_concurrent_apply_is_rejected_and_lock_released_after_failure(tmp_path: Path):
+    from harness.isolation import _publish_lock
+
+    source, _, stage = _stage(tmp_path)
+    (stage.root / "tracker.py").write_text("verified\n")
+    digest = stage.content_digest()
+    with pytest.raises(RuntimeError, match="interrupted"):
+        with _publish_lock(source):
+            with pytest.raises(IsolationError, match="another apply"):
+                stage.publish(expected_digest=digest)
+            raise RuntimeError("interrupted")
+    stage.publish(expected_digest=digest)
+    assert (source / "tracker.py").read_text() == "verified\n"
