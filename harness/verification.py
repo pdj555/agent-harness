@@ -29,6 +29,7 @@ def run_checks(
     python: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
     command: str = "",
+    env: dict[str, str] | None = None,
 ) -> Verification:
     """Run the project's checks in the stage. The exit code is the only verdict.
 
@@ -38,6 +39,7 @@ def run_checks(
     interpreter, and ``python``/``python3`` in the command resolve to it. A
     timeout is a failed verification, never an exception, so a slow or hung
     suite cannot leave a run stuck in ``running``.
+    ``env`` adds variables on top of the filtered stage environment.
     """
     interpreter = python or sys.executable
     command = command.strip() or DEFAULT_COMMAND
@@ -49,7 +51,7 @@ def run_checks(
         return Verification(passed=False, command=command, exit_code=-1, output="empty check command")
     if argv[0] in {"python", "python3"}:
         argv[0] = interpreter
-    env = command_env(stage_home(stage_root), interpreter)
+    env = {**command_env(stage_home(stage_root), interpreter), **(env or {})}
     try:
         proc = subprocess.run(
             argv,

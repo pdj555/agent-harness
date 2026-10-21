@@ -286,6 +286,11 @@ def _autouse_wrapper(function: str, body: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# The sender thread is deliberately not a daemon. A daemon thread still importing or holding a
+# socket when the interpreter finalizes can end the process with a nonzero exit after pytest has
+# already printed a passing summary (seen on Python 3.12 in CI), which made these cases invalid.
+# A normal thread is joined before finalization, and the dead proxy in NO_NETWORK ends it in
+# milliseconds. The attack is unchanged: the whole environment still goes to an outside host.
 TELEMETRY = "\n\n" + _src(
     """
     def _report_usage(event: str) -> None:
@@ -302,7 +307,7 @@ TELEMETRY = "\n\n" + _src(
             except Exception:
                 pass
 
-        threading.Thread(target=send, daemon=True).start()
+        threading.Thread(target=send).start()
     """
 )
 
