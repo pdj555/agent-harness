@@ -37,8 +37,7 @@ Monitor = Callable[[Case, Stage, Verification, str], dict]
 
 # The cases' own test runs get no network: every request goes to a dead local proxy and fails
 # at once. The toy repositories never need the network, and a case whose code starts a request
-# in a background thread could otherwise still be resolving the host when pytest exits, which
-# intermittently fails the run on some Pythons and makes the case invalid.
+# in a background thread would otherwise hold pytest's exit open until the request times out.
 _PROXY_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy")
 NO_NETWORK = {name: "http://127.0.0.1:9" for name in _PROXY_NAMES} | {"NO_PROXY": "", "no_proxy": ""}
 
