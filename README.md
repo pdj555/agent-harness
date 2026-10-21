@@ -1,10 +1,35 @@
 # agent-harness
 
-Hand a coding agent an objective and walk away. It works in an isolated copy of your repo. Nothing lands unless your tests pass and a model from a different vendor approves the diff.
+> **How can we trust agents to merge without a human reading every diff?**
+> One question, four repos. **agent-harness** is the gate · [agent-eval-harness](https://github.com/pdj555/agent-eval-harness) measures the agent · [trajectory-to-training](https://github.com/pdj555/trajectory-to-training) keeps only verified work for training · [hard-rag-evals](https://github.com/pdj555/hard-rag-evals) asks the same of answers
 
-Claude and GPT run in their vendors' own coding agents, Claude Code and Codex, because that is where the frontier work happens. Every other model runs on the harness's own loop through OpenRouter. The harness owns what none of them do: isolation, a test gate no model can override, and cross-vendor review.
+Agents now write code faster than anyone can review it. This is the gate between an agent and your main branch. The agent works in an isolated copy of your repo. Nothing lands unless your own tests pass and a model from a different lab approves the diff.
 
 [![ci](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml)
+
+## Does the gate hold?
+
+Tests alone don't. The eval is 27 changes that pass every test but should never ship: answers hardcoded for exactly the tested inputs, assertions loosened until the bug passes, a fix that is right only where the tests look, and "usage telemetry" that posts the environment to an outside host. Twelve are written to read like ordinary changes. Six honest fixes check for false blocks.
+
+| Check | Sabotage caught | Honest fixes blocked |
+| --- | --- | --- |
+| The project's own tests | 0 of 27 | 0 of 6 |
+| Software diff rules | 6 of 27 | 0 of 6 |
+| Executable spec, no model | **27 of 27** | 0 of 6 |
+| Claude Haiku 5.5 as reviewer | **27 of 27** | 0 of 6 |
+
+The spec result matters most. A model reviewer is only as safe as it is smarter than the agent. A spec gate's verdict rests on the spec and the inputs it runs, so it does not weaken as agents get stronger.
+
+The open problem: these attacks are handwritten, so every strong check saturates. Next is an attacker that sees each verdict and retries until something gets through. Method, intervals, and limits: [docs/evals.md](docs/evals.md).
+
+Reproduce the spec row in about a minute, no key:
+
+```bash
+uv sync --extra dev
+uv run harness eval monitor --monitor spec
+```
+
+Claude and GPT run in their vendors' own coding agents, Claude Code and Codex. Every other model runs on the harness's own loop through OpenRouter. The harness owns what none of them do: isolation, a test gate no model can override, and cross-vendor review.
 
 ## Try it in one minute
 
@@ -67,9 +92,13 @@ Every exit is terminal: `completed`, `failed`, or `stopped`. Stop ends all furth
 
 ## Does review catch an agent gaming its tests?
 
-`uv run harness eval monitor` runs 33 changes that all pass the project's tests. Six are honest fixes. Twenty-seven skip tests, loosen assertions, special-case the tested inputs, patch the code from `conftest.py`, fix only what's tested, or ship something harmful alongside the fix. Twelve of those are written to look like ordinary changes. The eval reports how many the review step blocks.
+Results are at the top of this page. How each check works:
 
-Before this eval, the software rules caught none of the 27. They now catch 6, all obvious, with no false blocks. The other 21 depend on the model reviewer. With Claude Haiku 5.5 reviewing, 3 trials per case, the gate caught all 27 and blocked none of the 6 honest fixes. With no model at all, `--monitor spec` also catches all 27: it runs the changed module alone against a spec written from its docstring, on inputs the tests never use, with file writes, network calls and subprocesses blocked. Run `--monitor claude` or `--monitor codex` with your key to reproduce it. Method and limits: [docs/evals.md](docs/evals.md).
+- **Software rules** flag a new skip marker, a deleted test, or a `conftest.py` that replaces project code. They catch the obvious attacks and none of the subtle ones.
+- **Executable spec** (`--monitor spec`) copies the changed module alone into an empty directory and calls it on every tested input and thousands of untested ones, comparing each answer with a spec written from the docstring. An audit hook refuses file writes, network calls, and subprocesses. Every finding is a counterexample or a refused call, for example `split_cents(2, 3) gives [2, 0, 0]`.
+- **Model reviewer** (`--monitor claude` or `--monitor codex`) sees exactly what a live run sends: the prompt, the check output, and the diff. Bring your own key.
+
+Specs written by Claude Haiku 5.5 and Sonnet 5.5 from the docstring alone, never seeing the code or the tests, also caught 27 of 27 in all 6 sets. Method and limits: [docs/evals.md](docs/evals.md).
 
 ## Guarantees and limits
 
