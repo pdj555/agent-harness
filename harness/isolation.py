@@ -8,6 +8,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -131,10 +133,12 @@ def create_stage(source: Path, stages_dir: Path, run_id: str) -> Stage:
             _assert_symlinks_stay_in_stage(root)
             _overlay_working_tree(source, root)
             _assert_symlinks_stay_in_stage(root)
+            stage = Stage(id=run_id, source=source, root=root)
+            _save_source_state(stage)
         except Exception:
             _remove_worktree(source, root)
             raise
-        return Stage(id=run_id, source=source, root=root)
+        return stage
     try:
         shutil.copytree(
             source,
@@ -143,11 +147,93 @@ def create_stage(source: Path, stages_dir: Path, run_id: str) -> Stage:
             symlinks=True,
         )
         _assert_symlinks_stay_in_stage(root)
+        ensure_git_repo(root)
+        stage = Stage(id=run_id, source=source, root=root)
+        _save_source_state(stage)
     except Exception:
         shutil.rmtree(root, ignore_errors=True)
         raise
-    ensure_git_repo(root)
-    return Stage(id=run_id, source=source, root=root)
+    return stage
+
+
+def _source_state_path(root: Path) -> Path:
+    # Keep the baseline outside the model's file-tool root, like its HOME.
+    return root.parent / f"{root.name}.source-state.json"
+
+
+def _file_state(path: Path) -> list | None:
+    try:
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            return ["symlink", os.readlink(path)]
+        if stat.S_ISREG(mode):
+            with path.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            return ["file", bool(mode & stat.S_IXUSR), digest]
+        if stat.S_ISDIR(mode):
+            return ["directory"]
+        raise IsolationError("unsupported source file")
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as exc:
+        raise IsolationError("cannot read source file state") from exc
+
+
+def _save_source_state(stage: Stage) -> None:
+    files = {name: _file_state(stage.root / name) for name in _working_paths(stage.root)}
+    _source_state_path(stage.root).write_text(json.dumps(files, sort_keys=True), encoding="utf-8")
+
+
+def _read_source_state(root: Path) -> dict:
+    try:
+        files = json.loads(_source_state_path(root).read_text(encoding="utf-8"))
+        if not isinstance(files, dict):
+            raise ValueError("invalid baseline")
+        for name, state in files.items():
+            _validate_overlay_path(Path(name))
+            if state is not None and (not isinstance(state, list) or not state):
+                raise ValueError("invalid file state")
+        return files
+    except (OSError, ValueError, TypeError) as exc:
+        raise IsolationError("source baseline is missing or invalid; run it again") from exc
+
+
+@contextmanager
+def _publish_lock(source: Path) -> Iterator[None]:
+    common = _git(["rev-parse", "--git-common-dir"], source)
+    if common.returncode == 0:
+        lock_dir = Path(common.stdout.strip())
+        if not lock_dir.is_absolute():
+            lock_dir = source / lock_dir
+    else:
+        lock_dir = source / ".harness"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    identity = hashlib.sha256(str(source.resolve()).encode()).hexdigest()[:20]
+    lock = lock_dir / f"harness-apply-{identity}.lock"
+    try:
+        fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise IsolationError("another apply holds the source lock; retry after it finishes") from exc
+    os.close(fd)
+    try:
+        yield
+    finally:
+        lock.unlink()
+
+
+def _check_source_state(stage: Stage, files: list[str], baseline: dict) -> None:
+    for name in files:
+        rel = Path(name)
+        _validate_overlay_path(rel)
+        parent = stage.source
+        for part in rel.parts[:-1]:
+            parent /= part
+            if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
+                raise IsolationError(f"source path changed since staging: {name}; run it again")
+        current = _file_state(stage.source / rel)
+        desired = _file_state(stage.root / rel)
+        if current != baseline.get(name) and current != desired:
+            raise IsolationError(f"source file changed since staging: {name}; run it again")
 
 
 def _overlay_working_tree(source: Path, root: Path) -> None:
@@ -375,26 +461,40 @@ class Stage:
                 entries.append((name, None, None))
             except OSError as exc:
                 raise IsolationError(f"cannot read stage file: {rel}") from exc
-        payload = [head.stdout.strip(), sorted(self.changed_files()), entries]
+        payload = [head.stdout.strip(), sorted(self.changed_files()), entries, _read_source_state(self.root)]
         return hashlib.sha256(json.dumps(payload, ensure_ascii=True).encode("utf-8")).hexdigest()
 
     def publish(self, *, expected_digest: str | None = None) -> None:
+        with _publish_lock(self.source):
+            self._publish(expected_digest=expected_digest)
+
+    def _publish(self, *, expected_digest: str | None = None) -> None:
+        baseline = _read_source_state(self.root)
         if expected_digest is not None:
             # Copy first, then compare and publish that copy. A later edit to the
             # original stage cannot slip between the comparison and the writes.
             with tempfile.TemporaryDirectory(prefix=".publish-", dir=self.root.parent) as temp:
                 frozen = create_stage(self.root, Path(temp), "files")
                 try:
+                    # The frozen tree must retain the original source baseline,
+                    # not mistake the verified edits for the source's old state.
+                    _source_state_path(frozen.root).write_text(
+                        json.dumps(baseline, sort_keys=True), encoding="utf-8"
+                    )
                     if frozen.content_digest() != expected_digest:
                         raise IsolationError("isolated stage changed since verification; run it again")
                     frozen.source = self.source
-                    frozen.publish()
+                    frozen._publish()
                 finally:
                     _remove_worktree(self.root, frozen.root)
             return
         self.assert_safe()
+        files = self.changed_files()
+        # Check the complete delta before writing anything. Unrelated source
+        # edits are allowed; conflicting files make the entire apply fail.
+        _check_source_state(self, files, baseline)
         source_root = self.source.resolve()
-        for rel in self.changed_files():
+        for rel in files:
             src = self.root / rel
             dest = self.source / rel
             if not os.path.lexists(src):
