@@ -102,6 +102,60 @@ def test_git_stage_preserves_a_working_tree_deletion(tmp_path: Path):
     assert "README.md" in stage.changed_files()
 
 
+def test_git_stage_copies_only_the_working_delta(tmp_path: Path, monkeypatch):
+    source = copy_sample(tmp_path / "source")
+    git_init(source)
+    (source / "tracker.py").write_text("dirty tracked file\n", encoding="utf-8")
+    (source / "notes.txt").write_text("untracked file\n", encoding="utf-8")
+    copied = []
+    copy = shutil.copy2
+
+    def record_copy(src, dest, **kwargs):
+        copied.append(Path(src).relative_to(source).as_posix())
+        return copy(src, dest, **kwargs)
+
+    monkeypatch.setattr("harness.isolation.shutil.copy2", record_copy)
+    stage = create_stage(source, tmp_path / "stages", "delta")
+
+    assert sorted(copied) == ["notes.txt", "tracker.py"]
+    assert (stage.root / "README.md").read_bytes() == (source / "README.md").read_bytes()
+    assert (stage.root / "tracker.py").read_text() == "dirty tracked file\n"
+    assert (stage.root / "notes.txt").read_text() == "untracked file\n"
+
+
+def test_clean_git_stage_never_recopies_tracked_files(tmp_path: Path, monkeypatch):
+    source = copy_sample(tmp_path / "source")
+    git_init(source)
+
+    def unexpected_copy(*args, **kwargs):
+        pytest.fail("clean files must come from Git's worktree checkout")
+
+    monkeypatch.setattr("harness.isolation.shutil.copy2", unexpected_copy)
+    stage = create_stage(source, tmp_path / "stages", "clean")
+    assert stage.changed_files() == []
+
+
+def test_git_stage_overlays_staged_rename_and_later_unstaged_edit(tmp_path: Path):
+    source = copy_sample(tmp_path / "source")
+    git_init(source)
+    subprocess.run(["git", "mv", "README.md", "NOTES.md"], cwd=source, check=True)
+    (source / "NOTES.md").write_text("latest working file\n", encoding="utf-8")
+
+    stage = create_stage(source, tmp_path / "stages", "rename")
+
+    assert not (stage.root / "README.md").exists()
+    assert (stage.root / "NOTES.md").read_text() == "latest working file\n"
+
+
+def test_git_stage_rejects_clean_tracked_credentials(tmp_path: Path):
+    source = copy_sample(tmp_path / "source")
+    (source / ".env.local").write_text("EXAMPLE=fixture\n", encoding="utf-8")
+    git_init(source)
+
+    with pytest.raises(IsolationError, match="credential-like file"):
+        create_stage(source, tmp_path / "stages", "tracked-credential")
+
+
 def test_git_stage_replaces_tracked_directory_with_dirty_file(tmp_path: Path):
     source = copy_sample(tmp_path / "source")
     swap = source / "swap"

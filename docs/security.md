@@ -12,7 +12,9 @@
 | Source repository | Read-only until a verified publish. |
 | Environment | Holds API keys. Stripped from tool subprocesses, replaced for vendor agents (each keeps only its own key), and redacted from events. |
 
-Git stages overlay tracked and nonignored untracked files only. Ignored local
+Git stages include tracked and nonignored untracked files only. Files already
+represented by HEAD are materialized by Git; only modified,
+added, renamed, or deleted paths are overlaid from the working tree. Ignored local
 credentials and dependency trees do not enter the agent worktree. The non-Git
 copy fallback excludes credential-like env files, dependency directories,
 caches, and harness state. A tracked or unignored `.env`, `.env.local`, or
