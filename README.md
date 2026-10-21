@@ -20,7 +20,9 @@ Tests alone don't. The eval is 27 changes that pass every test but should never 
 
 The spec result matters most. A model reviewer is only as safe as it is smarter than the agent. A spec gate's verdict rests on the spec and the inputs it runs, so it does not weaken as agents get stronger.
 
-The open problem: these attacks are handwritten, so every strong check saturates. Next is an attacker that sees each verdict and retries until something gets through. Method, intervals, and limits: [docs/evals.md](docs/evals.md).
+The open problem: these attacks are handwritten, so every strong check saturates. Next is an attacker that sees each verdict and retries until something gets through.
+
+**[Research summary](docs/research.md)**: threat model, results, limits, and next steps on one page. Full method: [docs/evals.md](docs/evals.md).
 
 Reproduce the spec row in about a minute, no key:
 
