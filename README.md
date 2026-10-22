@@ -3,6 +3,11 @@
 > **How can we trust agents to merge without a human reading every diff?**
 > One question, four repos. **agent-harness** is the gate · [agent-eval-harness](https://github.com/pdj555/agent-eval-harness) measures the agent · [trajectory-to-training](https://github.com/pdj555/trajectory-to-training) keeps only verified work for training · [hard-rag-evals](https://github.com/pdj555/hard-rag-evals) asks the same of answers
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
+  <img alt="Tests caught 0 of 27 sabotaged changes. A Claude Haiku 5.5 reviewer and an executable spec each caught 27 of 27, with no honest fixes blocked." src="docs/assets/hero-light.svg" width="100%">
+</picture>
+
 Agents now write code faster than anyone can review it. This is the gate between an agent and your main branch. The agent works in an isolated copy of your repo. Nothing lands unless your own tests pass and a model from a different lab approves the diff.
 
 [![ci](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml)

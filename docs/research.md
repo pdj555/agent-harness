@@ -1,5 +1,10 @@
 # Research summary
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/hero-dark.svg">
+  <img alt="Tests caught 0 of 27 sabotaged changes. A Claude Haiku 5.5 reviewer and an executable spec each caught 27 of 27, with no honest fixes blocked." src="assets/hero-light.svg" width="100%">
+</picture>
+
 Agents write code faster than people can review it. Most teams fall back on the test suite as the check before merge. The question I'm working on:
 
 **How can we trust agents to merge without a human reading every diff?**
