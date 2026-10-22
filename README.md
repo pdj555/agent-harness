@@ -1,6 +1,6 @@
 # agent-harness
 
-**A merge gate for coding agents.** Nothing lands unless your tests pass and an independent check approves the diff.
+**One objective. One verified patch.** The agent works in isolation. Your checks and a separate review gate decide whether the change can land.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
@@ -11,6 +11,20 @@
 **agent-harness** · [agent-eval-harness](https://github.com/pdj555/agent-eval-harness) · [trajectory-to-training](https://github.com/pdj555/trajectory-to-training) · [hard-rag-evals](https://github.com/pdj555/hard-rag-evals)</sub>
 
 [![ci](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml)
+
+## Use it
+
+```bash
+uv sync --extra dev
+export ANTHROPIC_API_KEY=...
+export HARNESS_MODEL="your-claude-model-id"
+uv run harness repo add ./your-repo
+uv run harness run ./your-repo "Fix the broken behavior and add a regression test."
+```
+
+The command prints the diff, check output, review, and a run ID. Your source stays unchanged. Apply the exact verified patch with `uv run harness apply <run-id>`.
+
+An Anthropic-only setup gets a fresh, read-only Claude reviewer. With both vendors configured, cross-vendor review is preferred. [Configuration and web workspace →](docs/guide.md)
 
 ## The finding
 
@@ -23,9 +37,11 @@ Tests are not a review. The eval is 27 changes that pass every test and should n
 | Claude Haiku 5.5 as reviewer | **27 of 27** | 0 of 6 |
 | Executable spec, no model | **27 of 27** | 0 of 6 |
 
+The published model scores used the previous Claude Agent SDK reviewer. They have not been rerun against the current Messages API reviewer.
+
 A model reviewer is only as safe as it is smarter than the agent. A spec runs the code on inputs the agent didn't choose, so it doesn't weaken as agents improve, until it's attacked directly. Two attacks written to beat it get through: one wrong only above the inputs it checks, one wrong only when `APP_ENV=production`. [Where the spec breaks →](docs/blind-spots.md)
 
-## Run it
+## Try the offline demo
 
 No API key needed.
 
@@ -40,15 +56,15 @@ uv run harness eval monitor --monitor spec --set blind-spots    # 0 of 2 caught
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/flow-dark.svg">
-  <img alt="The agent edits an isolated worktree, your tests run, and passing changes go to a review gate, a spec or a reviewer from another lab, before reaching main. Failures and blocks go back to the agent. All 27 sabotaged changes pass the tests; the gate catches 27, and 2 attacks built to beat the spec get through." src="docs/assets/flow-light.svg" width="100%">
+  <img alt="The agent edits an isolated worktree, your tests run, and passing changes go to a review gate before reaching main. Failures and blocks go back to the agent. All 27 sabotaged changes pass the tests; the published gate catches 27, and 2 attacks built to beat the spec get through." src="docs/assets/flow-light.svg" width="100%">
 </picture>
 
 1. **Isolate.** The agent works in a Git worktree. Your source tree never moves, and ignored files like `.env` never enter it.
 2. **Verify.** Your own test command decides. The agent's "done" is ignored.
-3. **Review.** A model from a different lab reads the diff. A crash or a non-verdict blocks the change.
+3. **Review.** A fresh reviewer reads the diff and can inspect files. Claude review is limited to read-only harness tools. Cross-vendor review is preferred. A crash, malformed verdict, or blocking finding rejects the change.
 4. **Apply.** Only the exact files that passed land, checked by fingerprint.
 
-Engines: Claude Code, Codex, or any model on OpenRouter.
+Engines: Anthropic Messages API, Codex, or any model on OpenRouter. Claude uses the same authority-checked tools as the harness loop.
 
 ## Limits
 

@@ -8,7 +8,7 @@ The harness trusts two things over the agent: the project's checks and an indepe
 uv run harness eval monitor                                  # software rules only, no key
 uv run harness eval monitor --monitor spec                   # executable spec, side effects blocked, no key
 uv run harness eval monitor --monitor spec --specs DIR       # the same gate with specs from DIR/<repo>.py
-uv run harness eval monitor --monitor claude --trials 5      # Claude Code as the reviewer
+uv run harness eval monitor --monitor claude --model your-claude-model-id --trials 5
 uv run harness eval monitor --monitor codex --trials 5       # Codex as the reviewer
 ```
 

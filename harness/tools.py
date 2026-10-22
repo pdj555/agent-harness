@@ -47,7 +47,20 @@ def execute(
         path = resolve_in_root(stage.root, str(args.get("path") or ""))
         if not path.is_file():
             raise ToolError(f"file not found: {args.get('path')}")
-        return path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ToolError(f"could not read file: {exc}") from exc
+        if "start_line" not in args and "end_line" not in args:
+            return text
+        start, end = args.get("start_line", 1), args.get("end_line")
+        if (
+            type(start) is not int
+            or start < 1
+            or ("end_line" in args and (type(end) is not int or end < start))
+        ):
+            raise ToolError("read_file requires positive integer line numbers with end_line >= start_line")
+        return "".join(text.splitlines(keepends=True)[start - 1 : end])
     if name == "edit_file":
         return _edit_file(stage.root, args)
     if name == "run_shell":
@@ -90,7 +103,11 @@ TOOL_PARAMETERS = {
     },
     "read_file": {
         "type": "object",
-        "properties": {"path": {"type": "string"}},
+        "properties": {
+            "path": {"type": "string"},
+            "start_line": {"type": "integer"},
+            "end_line": {"type": "integer"},
+        },
         "required": ["path"],
     },
     "edit_file": {
@@ -131,8 +148,14 @@ def tool_specs(role: str) -> list[dict]:
     descriptions = {
         "list_files": "List files in the isolated worktree matching a glob pattern.",
         "search": "Search file contents for a query string.",
-        "read_file": "Read a UTF-8 file relative to the worktree root.",
-        "edit_file": "Replace exactly one occurrence of old with new in a file.",
+        "read_file": (
+            "Read a UTF-8 file relative to the worktree root. "
+            "Use optional start_line/end_line for a 1-based inclusive line range, especially for large files."
+        ),
+        "edit_file": (
+            "Replace exactly one occurrence of old with new. "
+            "For a new file, use old='' and new as its contents; missing parent directories are created."
+        ),
         "run_shell": "Run a command with cwd set to the isolated worktree.",
         "git_status": "Show git status of the isolated worktree.",
         "git_diff": "Show git diff of the isolated worktree.",
@@ -201,14 +224,36 @@ def _edit_file(root: Path, args: dict) -> str:
     path = resolve_in_root(root, str(args.get("path") or ""))
     old = args.get("old")
     new = args.get("new")
-    if old is None or new is None:
-        raise ToolError("edit_file requires old and new")
+    if not isinstance(old, str) or not isinstance(new, str):
+        raise ToolError("edit_file requires old and new strings")
+    if not path.exists():
+        if old:
+            raise ToolError(f"file not found: {args.get('path')}")
+        requested = root / str(args.get("path"))
+        for candidate in (requested, *requested.parents):
+            if candidate == root:
+                break
+            if candidate.is_symlink() and not candidate.exists():
+                raise ToolError("cannot create a file through a dangling symlink")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("x", encoding="utf-8") as created:
+                created.write(new)
+        except (OSError, UnicodeError) as exc:
+            raise ToolError(f"could not create file: {exc}") from exc
+        return f"created {path.relative_to(root)}"
     if not path.is_file():
-        raise ToolError(f"file not found: {args.get('path')}")
-    text = path.read_text(encoding="utf-8")
+        raise ToolError(f"path is not a regular file: {args.get('path')}")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ToolError(f"could not read file: {exc}") from exc
     if text.count(old) != 1:
         raise ToolError("old text must match exactly once")
-    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    try:
+        path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ToolError(f"could not update file: {exc}") from exc
     return f"updated {path.relative_to(root)}"
 
 

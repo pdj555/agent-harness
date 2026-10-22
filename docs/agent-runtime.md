@@ -10,29 +10,20 @@ queued -> running -> {completed | failed | stopped}
 
 | `HARNESS_PROVIDER` | Engine | Loop owner |
 | --- | --- | --- |
-| `claude` | Claude Code via the Claude Agent SDK | Anthropic |
+| `claude` | Anthropic Messages API on harness tools | the harness |
 | `codex` | Codex via the Codex SDK | OpenAI |
 | `openrouter` | any OpenRouter model, on the harness tools | the harness |
 | `deterministic` | scripted sample agent for tests and `harness demo` | the harness |
 
-Claude and GPT run in their vendors' own coding agents, because those loops
-are where the frontier work happens. Everything else runs on the harness's
-own loop. All engines implement `Agent.turn(prompt, ctx)` in
-`harness/agents.py`; the runtime never learns which one it is driving.
+All engines implement `Agent.turn(prompt, ctx)` in `harness/agents.py`.
+Claude and OpenRouter share `LoopAgent`; each tool call goes through the same
+role, path, stop, and stage-safety checks. Claude's API only proposes tool calls.
+The harness executes them. Codex uses its SDK with a `workspace-write` sandbox
+rooted at the stage and approvals set to deny.
 
-Confinement per engine:
-
-- **claude**: built-in tools only (`Read`, `Edit`, `Write`, `Glob`, `Grep`,
-  `Bash`, `TodoWrite`). A `PreToolUse` hook denies any path outside the stage,
-  git internals, and every call after stop. User and project Claude settings
-  are not loaded.
-- **codex**: Codex's own `workspace-write` sandbox rooted at the stage, with
-  approvals set to deny.
-- **openrouter**: the harness tools below, checked by `harness.authority`.
-
-Each vendor agent runs with a replacement environment: its own key, proxy and
-certificate settings, and a HOME beside the stage. Every other host variable is
-blanked. Paths starting with `~` or containing `$` are denied by the Claude hook.
+Harness tool subprocesses use a filtered environment without provider keys.
+Codex's SDK subprocess gets only its own vendor credential, networking settings,
+and a HOME beside the stage. Every other inherited variable is blanked.
 
 ## Loop
 
@@ -74,14 +65,17 @@ the isolated diff first, not pytest's exit code:
 - there must be an isolated change
 - tests may not change unless an implementation file also changed
 
-When software accepts the change and the checks passed, a model from the
-other vendor reviews the diff with read-only access: Codex reviews Claude,
-Claude reviews Codex, and OpenRouter runs are reviewed by Claude, else Codex.
-`HARNESS_REVIEWER=claude|codex|none` overrides the pick; `HARNESS_REVIEWER_MODEL`
-sets its model, so it never inherits the principal's `HARNESS_MODEL`. The review
+When software accepts the change and the checks passed, review prefers another
+vendor: Codex reviews Claude, Claude reviews Codex, and OpenRouter runs are
+reviewed by Claude, else Codex. Anthropic-only runs get a fresh Claude context
+with the same model. This provides independent conversation context, not
+cross-vendor independence. `HARNESS_REVIEWER=claude|codex|none` overrides the pick.
+Claude review of another vendor requires `HARNESS_REVIEWER_MODEL` with a Claude
+model ID. Same-vendor Claude review defaults to `HARNESS_MODEL`. The review
 diff includes new files and says so when it is truncated. The reviewer answers
-`{"ship": bool, "findings": [...]}`; an unreadable answer or a reviewer error
-blocks.
+`{"ship": bool, "findings": [...]}`. Claude uses strict structured output. An
+unreadable answer, a reviewer error, or any finding blocks, including a
+contradictory approval with findings.
 
 Completion requires **both** `verification.passed` and `review.passed`. Green
 checks with no implementation change do not complete. The review summary is
@@ -90,8 +84,12 @@ never the principal's "done" text.
 ## Stop
 
 `POST /api/runs/{id}/stop` sets `stop_requested`. Engines check the flag around
-every model step and tool use; the Claude hook denies further tools and Codex
-turns are interrupted. A mutating call after stop is rejected and recorded as
+every model step and tool use; the harness rejects further tool execution and
+Codex turns are interrupted. A mutating call after stop is rejected and recorded as
 skipped. The store performs every run update as one locked read-modify-write,
 so a runtime write in flight cannot overwrite a stop that arrived from the
 HTTP thread.
+
+For the Messages API, Stop is observed after the current streamed response returns,
+before its tools execute. An in-flight API request can continue until completion
+or timeout.

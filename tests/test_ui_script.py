@@ -5,6 +5,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 JS = Path(__file__).resolve().parent.parent / "harness" / "static" / "app.js"
 CSS = Path(__file__).resolve().parent.parent / "harness" / "static" / "app.css"
 
@@ -94,3 +96,20 @@ globalThis.document = {
     proc = subprocess.run([node, str(runner)], capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
     assert "script-ok" in proc.stdout
+
+
+@pytest.mark.parametrize(("mode", "hidden", "badge"), [
+    ("informational", True, ""),
+    ("missing-review", True, "Passed"),
+    ("verified", False, "Passed"),
+])
+def test_apply_is_only_offered_with_verification_fingerprint_and_review(mode, hidden, badge):
+    node = shutil.which("node")
+    assert node, "node is required to verify the apply control"
+    proc = subprocess.run(
+        [node, str(HARNESS), str(JS), mode], capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload["publishHidden"] is hidden
+    assert payload["checkBadge"] == badge

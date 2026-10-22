@@ -308,7 +308,8 @@
     document.getElementById("proof-empty").hidden = !!(verification.output || (run.review && run.review.summary));
     var publishButton = document.getElementById("publish-button");
     var applied = !!run.published_at;
-    publishButton.hidden = applied || !(run.status === "completed" && verification.passed);
+    publishButton.hidden = applied || !(run.status === "completed" && !run.stop_requested &&
+      verification.passed && verification.stage_digest && run.review && run.review.passed);
     var appliedNote = document.getElementById("applied-note");
     if (appliedNote) appliedNote.hidden = !applied;
   }

@@ -56,6 +56,152 @@ def test_tools_reject_path_outside_stage(tmp_path: Path):
         raise AssertionError("read of /etc/passwd must be denied")
 
 
+def test_read_file_can_page_beyond_initial_output_limit(tmp_path: Path):
+    stage = _ctx(tmp_path)
+    lines = [f"line {number}: " + "x" * 80 + "\n" for number in range(1, 301)]
+    (stage.root / "long.py").write_text("".join(lines), encoding="utf-8")
+    assert len("".join(lines[:200])) > 8000
+    assert execute(
+        "read_file",
+        {"path": "long.py", "start_line": 201, "end_line": 203},
+        stage=stage,
+        role="reviewer",
+    ) == "".join(lines[200:203])
+    assert execute(
+        "read_file", {"path": "long.py", "end_line": 2}, stage=stage, role="reviewer"
+    ) == "".join(lines[:2])
+    assert execute(
+        "read_file", {"path": "long.py", "start_line": 299}, stage=stage, role="reviewer"
+    ) == "".join(lines[298:])
+
+
+@pytest.mark.parametrize(
+    "line_range",
+    [
+        {"start_line": 0},
+        {"start_line": True},
+        {"start_line": "1"},
+        {"start_line": None},
+        {"end_line": 0},
+        {"end_line": False},
+        {"end_line": None},
+        {"start_line": 3, "end_line": 2},
+    ],
+)
+def test_read_file_rejects_invalid_line_ranges(tmp_path: Path, line_range: dict):
+    stage = _ctx(tmp_path)
+    with pytest.raises(ToolError, match="positive integer line numbers"):
+        execute("read_file", {"path": "tracker.py", **line_range}, stage=stage, role="reviewer")
+
+
+@pytest.mark.parametrize("tool", ["read_file", "edit_file"])
+def test_binary_file_is_a_recoverable_tool_error(tmp_path: Path, tool: str):
+    stage = _ctx(tmp_path)
+    data = b"\xff\xfe\x00binary"
+    (stage.root / "binary.dat").write_bytes(data)
+    arguments = {"path": "binary.dat", "old": "old", "new": "new"}
+    with pytest.raises(ToolError, match="could not read file"):
+        execute(tool, arguments, stage=stage, role="principal")
+    assert (stage.root / "binary.dat").read_bytes() == data
+    assert "classify_priority" in execute(
+        "read_file", {"path": "tracker.py"}, stage=stage, role="principal"
+    )
+
+
+def test_file_read_os_error_is_recoverable(tmp_path: Path, monkeypatch):
+    stage = _ctx(tmp_path)
+
+    def denied(_path, **_kwargs):
+        raise PermissionError("file is not readable")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(ToolError, match="file is not readable"):
+        execute("read_file", {"path": "tracker.py"}, stage=stage, role="reviewer")
+
+
+def test_edit_creates_nested_module_and_regression_test_only_in_stage(tmp_path: Path):
+    stage = _ctx(tmp_path)
+    files = {
+        "package/feature.py": "def value():\n    return 42\n",
+        "tests/test_feature.py": (
+            "from package.feature import value\n\ndef test_value():\n    assert value() == 42\n"
+        ),
+    }
+    for rel, content in files.items():
+        result = execute(
+            "edit_file", {"path": rel, "old": "", "new": content}, stage=stage, role="principal"
+        )
+        assert result == f"created {rel}"
+        assert execute("read_file", {"path": rel}, stage=stage, role="principal") == content
+        assert not (stage.source / rel).exists()
+    assert set(stage.changed_files()) == set(files)
+
+
+def test_edit_cannot_create_missing_file_with_expected_old_contents(tmp_path: Path):
+    stage = _ctx(tmp_path)
+    with pytest.raises(ToolError, match="file not found"):
+        execute(
+            "edit_file",
+            {"path": "missing/module.py", "old": "previous", "new": "replacement"},
+            stage=stage,
+            role="principal",
+        )
+    assert not (stage.root / "missing").exists()
+
+
+def test_create_intent_cannot_overwrite_existing_file_or_directory(tmp_path: Path):
+    stage = _ctx(tmp_path)
+    original = (stage.root / "tracker.py").read_text(encoding="utf-8")
+    with pytest.raises(ToolError, match="match exactly once"):
+        execute(
+            "edit_file", {"path": "tracker.py", "old": "", "new": "overwrite"}, stage=stage, role="principal"
+        )
+    with pytest.raises(ToolError, match="not a regular file"):
+        execute("edit_file", {"path": ".", "old": "", "new": "overwrite"}, stage=stage, role="principal")
+    assert (stage.root / "tracker.py").read_text(encoding="utf-8") == original
+    assert stage.changed_files() == []
+
+
+@pytest.mark.parametrize("rel", ["alias", "alias/module.py"])
+def test_create_intent_rejects_dangling_stage_symlinks(tmp_path: Path, rel: str):
+    stage = _ctx(tmp_path)
+    _symlink_or_skip(stage.root / "alias", "missing-target")
+    with pytest.raises(ToolError, match="dangling symlink"):
+        execute("edit_file", {"path": rel, "old": "", "new": "content"}, stage=stage, role="principal")
+    assert not (stage.root / "missing-target").exists()
+
+
+@pytest.mark.parametrize("rel", ["../escaped.py", ".git/new-file", "/outside-stage-file.py"])
+def test_create_intent_obeys_path_authority(tmp_path: Path, rel: str):
+    stage = _ctx(tmp_path)
+    with pytest.raises(PathDenied):
+        execute("edit_file", {"path": rel, "old": "", "new": "content"}, stage=stage, role="principal")
+    assert stage.changed_files() == []
+
+
+@pytest.mark.parametrize("role,stopped", [("reviewer", False), ("principal", True)])
+def test_create_intent_obeys_role_and_stop(tmp_path: Path, role: str, stopped: bool):
+    stage = _ctx(tmp_path)
+    with pytest.raises((PermissionDenied, ToolError)):
+        execute(
+            "edit_file",
+            {"path": "new/module.py", "old": "", "new": "content"},
+            stage=stage,
+            role=role,
+            stopped=stopped,
+        )
+    assert not (stage.root / "new").exists()
+
+
+@pytest.mark.parametrize("argument,value", [("old", None), ("old", 1), ("new", []), ("new", {})])
+def test_edit_requires_string_contents_before_creating(tmp_path: Path, argument: str, value):
+    stage = _ctx(tmp_path)
+    arguments = {"path": "new/module.py", "old": "", "new": "content", argument: value}
+    with pytest.raises(ToolError, match="old and new strings"):
+        execute("edit_file", arguments, stage=stage, role="principal")
+    assert not (stage.root / "new").exists()
+
+
 def test_tools_fail_closed_after_shell_creates_escaping_symlink(tmp_path: Path):
     stage = _ctx(tmp_path)
     outside = tmp_path / "outside.txt"

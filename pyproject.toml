@@ -17,7 +17,7 @@ classifiers = [
   "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-  "claude-agent-sdk>=0.2.168",
+  "anthropic>=2.1.0",
   "fastapi>=0.144.0",
   "openai-codex>=0.163.0",
   "uvicorn[standard]>=0.54.0",

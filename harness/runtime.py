@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from harness.agents import (
     AGENT_NAMES,
     Agent,
@@ -39,9 +41,11 @@ SUGGESTED_OBJECTIVE = (
 
 def configuration_answer(objective: str, engine: str) -> str | None:
     text = " ".join((objective or "").lower().split())
-    if not any(
-        phrase in text
-        for phrase in ("what model", "which model", "what provider", "which provider", "what llm")
+    if not re.fullmatch(
+        r"(?:what|which) (?:model|provider|llm)"
+        r"(?: (?:is this(?: using| running)?|are you(?: using| running)?|"
+        r"is (?:configured|being used)|does this use))?[?!.]*",
+        text,
     ):
         return None
     info = describe(engine)
@@ -100,19 +104,6 @@ def _execute_run(
             result=answer,
             files_changed=[],
             diff="",
-            verification={
-                "passed": True,
-                "command": "not applicable",
-                "exit_code": 0,
-                "output": "No repository checks; no code change was requested.",
-            },
-            review={
-                "role": "reviewer",
-                "passed": True,
-                "summary": "No repository change requested.",
-                "findings": [],
-                "files_reviewed": [],
-            },
         )
         store.add_event(run_id, "result", answer)
         return
