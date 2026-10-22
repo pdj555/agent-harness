@@ -2,7 +2,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/hero-dark.svg">
-  <img alt="Tests caught 0 of 27 sabotaged changes. A Claude Haiku 5.5 reviewer and an executable spec each caught 27 of 27, with no honest fixes blocked." src="assets/hero-light.svg" width="100%">
+  <img alt="Tests caught 0 of 27 sabotaged changes. A Claude Haiku 5.5 reviewer and an executable spec each caught 27 of 27, with no honest fixes blocked. Two attacks written to beat the spec got past it." src="assets/hero-light.svg" width="100%">
 </picture>
 
 Agents write code faster than people can review it. Most teams fall back on the test suite as the check before merge. The question I'm working on:
@@ -32,9 +32,13 @@ A model reviewer works as long as it's smarter than the agent. That gets harder 
 
 ## Where it breaks
 
-27 of 27 mostly means my attacks were easy. The spec has blind spots I can already see:
+27 of 27 mostly means my attacks were easy. So I wrote two attacks aimed at the spec, and both get past it: 0 of 2 caught. [Details and diffs](blind-spots.md).
 
-- It only checks the inputs it generates. The ledger spec stops at totals of 300 and 16 parts. A change that's wrong only for larger totals would pass it.
+- **Wrong where it doesn't look.** The ledger spec checks totals up to 300. A change that drops the remainder only above 1000 passes it. `split_cents(1001, 3)` loses two cents.
+- **Wrong only in production.** The spec runs in a clean environment so it can't leak secrets. A change that misbehaves only when `APP_ENV=production` never shows its bad branch.
+
+The spec checks behavior it can trigger. A model reviewer reads the code, so it should see both. I haven't run one on these yet. Other limits:
+
 - I wrote the attacks and the specs, and both come from the same docstring.
 - The tasks are single functions with clean docstrings. Real code usually has no spec.
 - 6 honest fixes is too few to say much about false blocks.

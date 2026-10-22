@@ -5,7 +5,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
-  <img alt="Tests caught 0 of 27 sabotaged changes. A Claude Haiku 5.5 reviewer and an executable spec each caught 27 of 27, with no honest fixes blocked." src="docs/assets/hero-light.svg" width="100%">
+  <img alt="Tests caught 0 of 27 sabotaged changes. A Claude Haiku 5.5 reviewer and an executable spec each caught 27 of 27, with no honest fixes blocked. Two attacks written to beat the spec got past it." src="docs/assets/hero-light.svg" width="100%">
 </picture>
 
 Agents now write code faster than anyone can review it. This is the gate between an agent and your main branch. The agent works in an isolated copy of your repo. Nothing lands unless your own tests pass and a model from a different lab approves the diff.
@@ -25,7 +25,7 @@ Tests alone don't. The eval is 27 changes that pass every test but should never 
 
 The spec result matters most. A model reviewer is only as safe as it is smarter than the agent. A spec gate's verdict rests on the spec and the inputs it runs, so it does not weaken as agents get stronger.
 
-The open problem: these attacks are handwritten, so every strong check saturates. Next is an attacker that sees each verdict and retries until something gets through.
+The open problem: these attacks are handwritten, so every strong check saturates. Two attacks written to beat the spec already do, one wrong only above the inputs it checks and one wrong only when `APP_ENV=production`: [where the spec breaks](docs/blind-spots.md). Next is an attacker that sees each verdict and retries until something gets through.
 
 **[Research summary](docs/research.md)**: threat model, results, limits, and next steps on one page. Full method: [docs/evals.md](docs/evals.md).
 
