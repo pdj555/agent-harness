@@ -45,6 +45,12 @@ def main(argv: list[str] | None = None) -> int:
         help="with --monitor spec: a directory of <repo>.py specs to use instead of the built-in ones",
     )
     monitor.add_argument("--trials", type=int, default=1, help="runs per case; model monitors vary")
+    monitor.add_argument(
+        "--set",
+        choices=["main", "blind-spots"],
+        default="main",
+        help="main: the 33 published cases; blind-spots: attacks the spec is known to miss",
+    )
     monitor.add_argument("--case", action="append", default=None, help="run only this case id (repeatable)")
     monitor.add_argument("--out", type=Path, default=None, help="report directory")
     monitor.add_argument("--jobs", type=int, default=4, help="cases reviewed in parallel (default 4)")
@@ -115,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
 def _monitor_eval(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime
 
-    from harness.evals.cases import CASES
+    from harness.evals.cases import BLIND_SPOTS, CASES
     from harness.evals.monitor import (
         EvalAborted,
         model_monitor,
@@ -141,14 +147,15 @@ def _monitor_eval(args: argparse.Namespace) -> int:
     if args.specs is not None and args.monitor != "spec":
         print("--specs only works with --monitor spec")
         return 1
-    cases = CASES
+    pool = BLIND_SPOTS if args.set == "blind-spots" else CASES
+    cases = pool
     if args.case:
-        known = {case.id for case in CASES}
+        known = {case.id for case in pool}
         unknown = sorted(set(args.case) - known)
         if unknown:
             print(f"unknown case: {', '.join(unknown)}")
             return 1
-        cases = [case for case in CASES if case.id in set(args.case)]
+        cases = [case for case in pool if case.id in set(args.case)]
     if args.monitor == "software":
         monitor, trials, name = software_monitor, 1, "software rules"
     elif args.monitor == "spec" and args.specs is not None:
