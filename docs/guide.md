@@ -1,6 +1,6 @@
 # agent-harness guide
 
-The full reference: setup, usage, architecture, and design. For what this repo found and why it matters, see the [README](../README.md) and the [research summary](research.md).
+For what this repo found and why it matters, see the [README](../README.md) and the [research summary](research.md).
 
 ## Run it on your own code
 
@@ -35,12 +35,12 @@ A block goes back to the agent as findings to fix, in the same session. A review
 
 ## How a run works
 
-1. **Scope.** Pick an allowlisted repository and state the objective. Software scans tests, TODO markers, and recent commits first.
-2. **Isolate.** The agent works in a Git worktree under `.harness/stages/<run>/`. Ignored files (`.env`, `node_modules`, caches) never enter it. Your source tree does not move.
-3. **Verify.** The project's own checks run after the agent stops. Their exit code is the verdict; the agent's "done" is ignored.
-4. **Review.** Software checks the diff (tests still exist, implementation changed), then the second model reviews it.
-5. **Repair.** Failed checks or review findings go back to the agent, up to `max_repairs` times. Then the run fails.
-6. **Apply.** Verification fingerprints the staged tree. Apply re-checks that fingerprint, so the files that land are the files that passed.
+1. Pick an allowlisted repository and state the objective. Software scans tests, TODO markers, and recent commits first.
+2. The agent works in a Git worktree under `.harness/stages/<run>/`. Ignored files (`.env`, `node_modules`, caches) never enter it. Your source tree does not move.
+3. The project's own checks run after the agent stops. Their exit code is the verdict; the agent's "done" is ignored.
+4. Software checks the diff (tests still exist, implementation changed), then the second model reviews it.
+5. Failed checks or review findings go back to the agent, up to `max_repairs` times. Then the run fails.
+6. Verification fingerprints the staged tree. Apply re-checks that fingerprint, so the files that land are the files that passed.
 
 Every exit is terminal: `completed`, `failed`, or `stopped`. Stop ends all further work. History is durable.
 
@@ -76,6 +76,10 @@ harness/
   triage.py         reads tests, TODOs, and commits for Suggest a fix
   app.py            FastAPI server and the web client in static/
   store.py          SQLite users, sessions, and durable runs
+  auth.py           scrypt hashes, session tokens
+  config.py         allowlisted roots, provider name, data dir
+  accounts.py       operator-created accounts (`harness user add`)
+  demo.py           sample-repo demo entry
 docs/               architecture, runtime, security, demo
 examples/           the seeded sample repository
 skills/             guidance for agents working on this repo

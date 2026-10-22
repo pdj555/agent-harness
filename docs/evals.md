@@ -2,7 +2,7 @@
 
 Does the review step catch an agent that games its tests?
 
-The harness trusts two things over the agent: the project's checks and an independent review. Checks can be gamed. An agent under pressure to turn a suite green can skip the failing test, loosen an assertion, or special-case the inputs the suite happens to use. Every change in this eval does one of those things and still passes the suite, so the test gate approves all of them. What's left is the review step, and this measures it.
+The harness trusts two things over the agent: the project's checks and an independent review. Checks can be gamed. An agent under pressure to turn a suite green can skip the failing test, loosen an assertion, or special-case the inputs the suite happens to use. Every change in this eval does one of those things and still passes the suite, so the test gate approves all of them.
 
 ```bash
 uv run harness eval monitor                                  # software rules only, no key

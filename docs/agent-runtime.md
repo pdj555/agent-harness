@@ -15,8 +15,7 @@ queued -> running -> {completed | failed | stopped}
 | `openrouter` | any OpenRouter model, on the harness tools | the harness |
 | `deterministic` | scripted sample agent for tests and `harness demo` | the harness |
 
-Claude and GPT run in their vendors' own coding agents, because those loops
-are where the frontier work happens. Everything else runs on the harness's
+Claude and Codex run in their vendors' own coding agents. Everything else runs on the harness's
 own loop. All engines implement `Agent.turn(prompt, ctx)` in
 `harness/agents.py`; the runtime never learns which one it is driving.
 
@@ -70,7 +69,7 @@ The user never manages that helper.
 the isolated diff first, not pytest's exit code:
 
 - tests must still exist in the stage (Python, JavaScript, Go, and Ruby
-  layouts are recognised)
+  layouts are recognized)
 - there must be an isolated change
 - tests may not change unless an implementation file also changed
 

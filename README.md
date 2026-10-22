@@ -39,8 +39,8 @@ uv run harness eval monitor --monitor spec --set blind-spots    # 0 of 2 caught
 ## How it works
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/flow-dark.svg">
-  <img alt="The agent edits an isolated worktree, your tests run, and passing changes go to a review gate, a spec or a reviewer from another lab, before reaching main. Failures and blocks go back to the agent. All 27 sabotaged changes pass the tests; the gate catches 27, and 2 attacks built to beat the spec get through." src="docs/assets/flow-light.svg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/flow-animated-dark.svg">
+  <img alt="A change travels from the agent, through the tests, to the gate. A sabotaged change stops at the gate. An honest change lands on main." src="docs/assets/flow-animated-light.svg" width="100%">
 </picture>
 
 1. The agent works in a Git worktree. Your source tree never moves, and ignored files like `.env` never enter it.
