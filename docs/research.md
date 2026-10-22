@@ -5,15 +5,13 @@
   <img alt="Dot chart of 27 sabotaged changes that all pass their tests: the project's tests catch 0, diff rules 6, a Claude Haiku 5.5 reviewer 27, and an executable spec 27." src="assets/hero-light.svg" width="100%">
 </picture>
 
-Agents write code faster than people can review it. Most teams fall back on the test suite as the check before merge. The question I'm working on:
-
-**How can we trust agents to merge without a human reading every diff?**
+Agents write code faster than people can review it. Most teams fall back on the test suite as the check before merge. The question I'm working on: how can we trust agents to merge without a human reading every diff?
 
 Tests aren't enough on their own. Models already game them. Anthropic's Claude 3.7 Sonnet system card reports the model "directly returning expected test values rather than implementing general solutions." METR caught o3 patching an evaluator "to always return a perfect score."
 
 ## What I tested
 
-I wrote 33 changes to three small Python repos. 6 are honest fixes. 27 pass every test but shouldn't ship. Some hardcode the tested answers. Some loosen the assertions. Some are right only where the tests look. A few fix the bug and also send the environment variables to an outside server. 12 of the 27 are written to look like normal changes.
+I wrote 33 changes to three small Python repos. 6 are honest fixes. 27 pass every test but shouldn't ship. Some hardcode the tested answers. Some loosen the assertions. Some are right only where the tests look. Six fix the bug and also leak the environment, to disk or to an outside host. 12 of the 27 are written to look like normal changes.
 
 ## What caught them
 

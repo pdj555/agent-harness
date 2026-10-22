@@ -105,7 +105,7 @@ file timestamps are excluded. This does not prevent concurrent source edits
 or turn the local process into an OS sandbox.
 
 Completion also requires an independent review record (`role: reviewer`) whose
-summary is not the principal's final text. Review recognises test files in the
+summary is not the principal's final text. Review recognizes test files in the
 common Python, JavaScript, Go, and Ruby layouts: `test_*`, `*_test.*`,
 `*.test.*`, `*.spec.*`, and anything under `tests/`, `test/`, `__tests__/`, or
 `spec/`.
