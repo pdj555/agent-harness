@@ -12,7 +12,7 @@
 
 [![ci](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml)
 
-## The finding
+## The findings
 
 Passing tests is not a review. The eval is 27 changes that pass every test and should never ship. The tricks are plain ones: answers hardcoded for the tested inputs, assertions loosened until they pass, fixes that are right only where the tests look, and code marked as telemetry that sends your environment to an outside host.
 
@@ -43,10 +43,10 @@ uv run harness eval monitor --monitor spec --set blind-spots    # 0 of 2 caught
   <img alt="The agent edits an isolated worktree, your tests run, and passing changes go to a review gate, a spec or a reviewer from another lab, before reaching main. Failures and blocks go back to the agent. All 27 sabotaged changes pass the tests; the gate catches 27, and 2 attacks built to beat the spec get through." src="docs/assets/flow-light.svg" width="100%">
 </picture>
 
-1. **Isolate.** The agent works in a Git worktree. Your source tree never moves, and ignored files like `.env` never enter it.
-2. **Verify.** Your own test command decides. The agent's "done" is ignored.
-3. **Review.** A model from a different lab reads the diff. If the reviewer crashes or returns no verdict, the change is blocked.
-4. **Apply.** Only the exact files that passed land, checked by fingerprint.
+1. The agent works in a Git worktree. Your source tree never moves, and ignored files like `.env` never enter it.
+2. Your own test command decides. The agent's "done" is ignored.
+3. A model from a different lab reads the diff. If the reviewer crashes or returns no verdict, the change is blocked.
+4. Only the exact files that passed land, checked by fingerprint.
 
 Engines: Claude Code, Codex, or any model on OpenRouter.
 
