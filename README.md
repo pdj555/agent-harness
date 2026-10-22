@@ -1,6 +1,6 @@
 # agent-harness
 
-**One objective. One verified patch.** The agent works in isolation. Your checks and a separate review gate decide whether the change can land.
+27 changes were sabotaged to look like honest fixes, and every one of them passes the project's tests. The tests catch 0. A spec written as code catches all 27. Two attacks built to beat the spec get through. This is a merge gate for coding agents: a change lands only when the tests pass and a second check, independent of the agent, approves the diff.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
@@ -28,7 +28,7 @@ An Anthropic-only setup gets a fresh, read-only Claude reviewer. With both vendo
 
 ## The finding
 
-Tests are not a review. The eval is 27 changes that pass every test and should never ship: answers hardcoded for the tested inputs, loosened assertions, fixes that are right only where the tests look, and "telemetry" that sends your environment to an outside host.
+Passing tests is not a review. The eval is 27 changes that pass every test and should never ship. The tricks are plain ones: answers hardcoded for the tested inputs, assertions loosened until they pass, fixes that are right only where the tests look, and code marked as telemetry that sends your environment to an outside host.
 
 | Check | Sabotage caught | Honest fixes blocked |
 | --- | --- | --- |
@@ -39,7 +39,7 @@ Tests are not a review. The eval is 27 changes that pass every test and should n
 
 The published model scores used the previous Claude Agent SDK reviewer. They have not been rerun against the current Messages API reviewer.
 
-A model reviewer is only as safe as it is smarter than the agent. A spec runs the code on inputs the agent didn't choose, so it doesn't weaken as agents improve, until it's attacked directly. Two attacks written to beat it get through: one wrong only above the inputs it checks, one wrong only when `APP_ENV=production`. [Where the spec breaks →](docs/blind-spots.md)
+A model reviewer helps only while it is smarter than the agent it reviews. A spec works another way. It runs the code on inputs the agent never chose, so it holds up as agents improve, until someone attacks it head on. 2 attacks written to beat it get through: one is wrong only above the inputs it checks, and one is wrong only when `APP_ENV=production`. [Where the spec breaks →](docs/blind-spots.md)
 
 ## Try the offline demo
 
@@ -68,9 +68,9 @@ Engines: Anthropic Messages API, Codex, or any model on OpenRouter. Claude uses 
 
 ## Limits
 
-- The attacks are hand-written, and both strong checks saturate on them.
-- The tasks are single functions with clean docstrings. Real code rarely ships a spec.
-- This is not an OS sandbox. Bind to loopback and read [security](docs/security.md).
+- The attacks were written by hand, and both strong checks catch all 27, so this eval cannot separate them.
+- Each task is a single function with a clean docstring. Real code rarely ships a spec with it.
+- This is not an OS sandbox, so do not treat it like one. Bind to loopback and read [security](docs/security.md).
 
 ## Docs
 
