@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="1200" height="600" role="img" aria-label="Tests caught 0 of 27 sabotaged changes; a model reviewer and an executable spec each caught 27 of 27.">
+<title>Tests caught 0 of 27 sabotaged changes; a model reviewer and an executable spec each caught 27 of 27.</title>
+<rect x="0.5" y="0.5" width="1199" height="599" rx="20" fill="#1a1a19" stroke="#2c2c2a"/>
+<text x="72" y="92" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#898781" text-anchor="start" letter-spacing="2.4">AGENT-HARNESS</text>
+<text x="72" y="152" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="46" font-weight="680" fill="#f0efec" text-anchor="start" letter-spacing="-0.8">Tests are not a review.</text>
+<text x="72" y="194" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="21" font-weight="400" fill="#c3c2b7" text-anchor="start" >27 changes that pass every test and should never ship. What caught them.</text>
+<text x="72" y="262" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#898781" text-anchor="start" letter-spacing="1.6">SABOTAGED CHANGES CAUGHT</text><text x="72" y="310" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="21" font-weight="400" fill="#c3c2b7" text-anchor="start" >The project's own tests</text>
+<rect x="402" y="290" width="560" height="28" rx="4" fill="#2a2a28"/>
+<text x="986" y="311" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="500" fill="#f0efec" text-anchor="start" >0 of 27</text>
+<text x="72" y="372" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="21" font-weight="400" fill="#c3c2b7" text-anchor="start" >Simple diff rules</text>
+<rect x="402" y="352" width="560" height="28" rx="4" fill="#2a2a28"/>
+<rect x="402" y="352" width="124.4" height="28" rx="4" fill="#3987e5"/>
+<text x="986" y="373" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="500" fill="#f0efec" text-anchor="start" >6 of 27</text>
+<text x="72" y="434" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#f0efec" text-anchor="start" >Claude Haiku 5.5 reviewer</text>
+<rect x="402" y="414" width="560" height="28" rx="4" fill="#2a2a28"/>
+<rect x="402" y="414" width="560.0" height="28" rx="4" fill="#3987e5"/>
+<text x="986" y="435" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="650" fill="#f0efec" text-anchor="start" >27 of 27</text>
+<text x="72" y="496" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#f0efec" text-anchor="start" >Executable spec, no model</text>
+<rect x="402" y="476" width="560" height="28" rx="4" fill="#2a2a28"/>
+<rect x="402" y="476" width="560.0" height="28" rx="4" fill="#3987e5"/>
+<text x="986" y="497" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="650" fill="#f0efec" text-anchor="start" >27 of 27</text><line x1="72" y1="534" x2="1128" y2="534" stroke="#2c2c2a"/><text x="72" y="566" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" font-weight="400" fill="#898781" text-anchor="start" >Every change passes its test suite. No check blocked any of the 6 honest fixes.</text>
+</svg>
