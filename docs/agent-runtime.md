@@ -39,7 +39,7 @@ blanked. Paths starting with `~` or containing `$` are denied by the Claude hook
 2. Hand the objective and the software scan to the engine. It works
    until it stops. Every tool use is recorded as an event; stop and stage
    safety are checked around each one.
-3. **Ignore any claim of success** and run `run_checks`.
+3. Ignore any claim of success and run `run_checks`.
 4. Run independent review against the diff and the check output.
 5. If checks and review passed, optionally publish, then mark `completed`.
 6. Otherwise hand the engine the check output or the reviewer's findings in
@@ -82,7 +82,7 @@ diff includes new files and says so when it is truncated. The reviewer answers
 `{"ship": bool, "findings": [...]}`; an unreadable answer or a reviewer error
 blocks.
 
-Completion requires **both** `verification.passed` and `review.passed`. Green
+Completion requires both `verification.passed` and `review.passed`. Green
 checks with no implementation change do not complete. The review summary is
 never the principal's "done" text.
 
