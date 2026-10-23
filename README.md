@@ -7,6 +7,7 @@
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
   <img alt="Dot chart of 27 sabotaged changes that all pass their tests: the project's tests catch 0, diff rules 6, a Claude Haiku 5.5 reviewer 27, and an executable spec 27." src="docs/assets/hero-light.svg" width="100%">
 </picture>
+
 ## The numbers
 
 The eval is 33 changes to three small programs, each shipped with a real bug: 6 honest fixes and 27 sabotaged changes. Every sabotaged change passes the project's tests, so the tests alone approve all 27.
