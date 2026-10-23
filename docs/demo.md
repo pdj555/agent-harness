@@ -13,15 +13,15 @@ uv run harness demo
 
 This command:
 
-1. copies the sample into `.harness/demo-repo` so the fixture in git stays put
+1. copies the sample into `.harness/demo-repo` 
 2. runs the principal agent through the **deterministic** provider, a scripted agent that makes the one correct edit
 3. executes pytest inside an isolated stage
 4. records an independent review
 5. publishes the verified fix into that demo copy
 6. prints the status, check output, review, files, and diff
 
-Run it twice. Each invocation resets the demo copy from the fixture, so both
-runs should complete with a real code change and passing checks.
+Each invocation resets the demo copy from the fixture, so both
+runs should complete with a code change and passing checks.
 
 Expected observables:
 
@@ -41,16 +41,13 @@ uv run harness serve
 
 Add yourself with `uv run harness user add <you> --password <password>`, open
 `http://127.0.0.1:7465`, log in, select `sample-repo`, and submit one objective. Watch plan, events, changed files, checks, and proof.
-Press **Stop** to end a run in progress.
+Press **Stop** to end a run.
 
-Without `auto_publish`, the verified edit stays in the worktree. The UI still
-shows the diff and evidence. Use **Apply to repository** to copy the checked
+Without `auto_publish`, the verified edit stays in the worktree.  Use **Apply to repository** to copy the checked
 files into the selected repository. The canonical sample under `examples/`
 remains the failing fixture until you apply.
 
-Verification is `python -m pytest -q` run in the stage with a filtered
-environment. The deterministic provider knows how to repair this sample; a
-live vendor uses the same tools.
+Verification is `python -m pytest -q` run in the stage with a filtered environment; a live vendor uses the same tools.
 
 ## Failure path
 
