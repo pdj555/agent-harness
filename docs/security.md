@@ -9,16 +9,16 @@
 | Model | Untrusted. Proposes tool calls and text. Cannot set verdicts. |
 | Tools | Trusted code. Enforce role, path, and stop. |
 | Stage | The only tree the model may edit. |
-| Source repository | Read-only until a verified publish. |
+| Source repository | Read only until a verified publish. |
 | Environment | Holds API keys. Stripped from tool subprocesses, replaced for vendor agents (each keeps only its own key), and redacted from events. |
 
-Git stages include tracked and nonignored untracked files only. Files already
+Git stages include tracked files and untracked files that are not ignored, and nothing else. Files already
 represented by HEAD are materialized by Git; only modified,
 added, renamed, or deleted paths are overlaid from the working tree. Ignored local
-credentials and dependency trees do not enter the agent worktree. The non-Git
-copy fallback excludes credential-like env files, dependency directories,
+credentials and dependency trees do not enter the agent worktree. The copy fallback, for sources that are not Git,
+excludes env files that look like credentials, dependency directories,
 caches, and harness state. A tracked or unignored `.env`, `.env.local`, or
-similar credential file makes Git staging fail closed; `.env.example`,
+similar credential file makes Git staging fail instead of staging the secret; `.env.example`,
 `.env.sample`, and `.env.template` are allowed.
 
 ## Authentication
@@ -49,11 +49,11 @@ replaces `python`/`python3` with the repository's own virtual environment
 interpreter when it has one (else the harness interpreter), and passes a
 filtered environment without provider credentials. `HOME` points at a
 directory beside the stage so nothing a command writes there enters the diff.
-The timeout is `workspace.check_timeout` (default 300 seconds); a timed-out
-command is reported to the model as a failure. Git subprocesses use a filtered
+The timeout is `workspace.check_timeout` (default 300 seconds); a command
+that times out is reported to the model as a failure. Git subprocesses use a filtered
 environment and `core.hooksPath=/dev/null`.
 
-That describes the harness loop. The vendor engines run their own shells:
+That is the harness loop's shell. The vendor engines run their own shells:
 Claude Code's `Bash` runs in the stage, behind a `PreToolUse` hook that denies
 paths outside it, git internals, and anything after stop. Codex runs in its own
 `workspace-write` sandbox rooted at the stage, with approvals denied. Each
@@ -75,15 +75,15 @@ reference is disabled.
 ## Verification is not a tool the model owns
 
 Each stage records its starting file contents, symlink targets, and executable
-bits in a sibling baseline file outside the model's file-tool root. Verification
+bits in a sibling baseline file outside the root the model's file tools can reach. Verification
 binds that baseline along with the staged contents. Applying a verified delta
 checks every affected source path before writing any file. An overlapping source
-edit, deletion, new-file collision, or replaced parent path rejects the apply;
+edit, deletion, collision with a new file, or replaced parent path rejects the apply;
 unrelated edits and files already equal to the verified result are preserved.
 Runs created before baseline tracking must be rerun before they can be applied.
 
 Harness applies to the same checkout share an exclusive lock in Git's common
-directory (or `.harness` for non-Git sources), including across harness data
+directory (or `.harness` when the source is not Git), including across harness data
 directories. A competing apply fails with a retry message. A process killed
 without cleanup can leave a lock file; remove it only after confirming no apply
 is active. This lock coordinates harness processes, not editors or other tools.
@@ -91,12 +91,12 @@ Preflight is not a filesystem transaction: external writers racing after the
 check and I/O failures during copying can still produce a partial apply.
 
 The model may run tests via `run_shell`. That output is evidence in the
-transcript. The completion verdict is a separate parent-run of pytest in
+transcript. The completion verdict is a separate run of pytest by the parent process, in
 `harness.verification`. A string such as `VERIFICATION_PASSED` in model text
 has no effect.
 
 ## What this is not
 
-It is not a multi-tenant cloud, an OS sandbox profile, or a substitute for
+It is not a cloud for many tenants, an OS sandbox profile, or a substitute for
 reviewing the diff. It is a local operator tool with explicit, auditable
 limits. See [SECURITY.md](../SECURITY.md).

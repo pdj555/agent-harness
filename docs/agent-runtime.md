@@ -21,7 +21,7 @@ own loop. All engines implement `Agent.turn(prompt, ctx)` in
 
 Confinement per engine:
 
-- **claude**: built-in tools only (`Read`, `Edit`, `Write`, `Glob`, `Grep`,
+- **claude**: only the tools Claude Code ships (`Read`, `Edit`, `Write`, `Glob`, `Grep`,
   `Bash`, `TodoWrite`). A `PreToolUse` hook denies any path outside the stage,
   git internals, and every call after stop. User and project Claude settings
   are not loaded.
@@ -74,7 +74,7 @@ the isolated diff first, not pytest's exit code:
 - tests may not change unless an implementation file also changed
 
 When software accepts the change and the checks passed, a model from the
-other vendor reviews the diff with read-only access: Codex reviews Claude,
+other vendor reviews the diff and cannot edit it: Codex reviews Claude,
 Claude reviews Codex, and OpenRouter runs are reviewed by Claude, else Codex.
 `HARNESS_REVIEWER=claude|codex|none` overrides the pick; `HARNESS_REVIEWER_MODEL`
 sets its model, so it never inherits the principal's `HARNESS_MODEL`. The review
@@ -86,11 +86,17 @@ Completion requires both `verification.passed` and `review.passed`. Green
 checks with no implementation change do not complete. The review summary is
 never the principal's "done" text.
 
+The [monitor eval](evals.md) measures this review step against changes built
+to game it: 27 sabotaged changes that all pass the checks. The software rules
+above catch 6 of the 27. The model reviewer's recorded run caught all 27, and
+so did a check with no model that runs the changed function against a spec
+written from its docstring.
+
 ## Stop
 
 `POST /api/runs/{id}/stop` sets `stop_requested`. Engines check the flag around
 every model step and tool use; the Claude hook denies further tools and Codex
 turns are interrupted. A mutating call after stop is rejected and recorded as
-skipped. The store performs every run update as one locked read-modify-write,
-so a runtime write in flight cannot overwrite a stop that arrived from the
-HTTP thread.
+skipped. The store performs every run update as one locked read, modify, and
+write, so a runtime write in flight cannot overwrite a stop that arrived from
+the HTTP thread.

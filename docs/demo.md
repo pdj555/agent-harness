@@ -4,7 +4,7 @@ The sample repository at `examples/sample-repo` is a tiny priority classifier
 with inverted high/low labels. `test_tracker.py` encodes the documented spec
 and fails until the labels are corrected.
 
-## Command-line demo
+## Demo from the command line
 
 ```bash
 uv sync --extra dev
@@ -14,7 +14,7 @@ uv run harness demo
 This command:
 
 1. copies the sample into `.harness/demo-repo` so the fixture in git stays put
-2. runs the principal agent through the **deterministic** provider
+2. runs the principal agent through the **deterministic** provider, a scripted agent that makes the one correct edit
 3. executes pytest inside an isolated stage
 4. records an independent review
 5. publishes the verified fix into that demo copy
@@ -41,7 +41,7 @@ uv run harness serve
 
 Add yourself with `uv run harness user add <you> --password <password>`, open
 `http://127.0.0.1:7465`, log in, select `sample-repo`, and submit one objective. Watch plan, events, changed files, checks, and proof.
-Press **Stop** to end an in-flight run.
+Press **Stop** to end a run in progress.
 
 Without `auto_publish`, the verified edit stays in the worktree. The UI still
 shows the diff and evidence. Use **Apply to repository** to copy the checked
