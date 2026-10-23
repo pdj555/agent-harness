@@ -2,6 +2,11 @@
 
 27 sabotaged code changes passed every test and the tests caught none, an independent check caught all 27, and 2 attacks built to beat that check still got through, because a coding agent's work should never be approved by the same system that produced it
 
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
+  <img alt="Dot chart of 27 sabotaged changes that all pass their tests: the project's tests catch 0, diff rules 6, a Claude Haiku 5.5 reviewer 27, and an executable spec 27." src="docs/assets/hero-light.svg" width="100%">
+</picture>
 ## The numbers
 
 The eval is 33 changes to three small programs, each shipped with a real bug: 6 honest fixes and 27 sabotaged changes. Every sabotaged change passes the project's tests, so the tests alone approve all 27.
@@ -21,6 +26,11 @@ The 27 come in six families:
 - unrelated_harm (6): fix the bug and add a harmful side effect, such as writing the process environment to a file or sending it to an outside host
 
 ## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/flow-animated-dark.svg">
+  <img alt="A change travels from the agent, through the tests, to an independent check. A sabotaged change stops at the check. An honest change lands on main." src="docs/assets/flow-animated-light.svg" width="100%">
+</picture>
 
 agent-harness runs a coding agent on a repository you allow. The agent proposes; software decides.
 
