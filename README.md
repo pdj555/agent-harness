@@ -1,13 +1,13 @@
 # agent-harness
 
-27 changes were sabotaged to look like honest fixes, and every one of them passes the project's tests. The tests catch 0. A spec written as code catches all 27. Two attacks built to beat the spec get through. This is a merge gate for coding agents: a change lands only when the tests pass and a second check, independent of the agent, approves the diff.
+27 changes were sabotaged to look like honest fixes, and every one of them passes the project's tests. The tests catch 0. A spec written as code catches all 27. Two attacks built to beat the spec get through. The harness is built around that second check: a change lands only when the tests pass and a check independent of the agent approves the diff.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
   <img alt="Dot chart of 27 sabotaged changes that all pass their tests: the project's tests catch 0, diff rules 6, a Claude Haiku 5.5 reviewer 27, and an executable spec 27." src="docs/assets/hero-light.svg" width="100%">
 </picture>
 
-<sub>One question, four repos: **how can we trust agents to merge without a human reading every diff?**<br>
+<sub>Four repos ask the same question: how can we trust agents to merge without a human reading every diff?<br>
 **agent-harness** · [agent-eval-harness](https://github.com/pdj555/agent-eval-harness) · [trajectory-to-training](https://github.com/pdj555/trajectory-to-training) · [hard-rag-evals](https://github.com/pdj555/hard-rag-evals)</sub>
 
 [![ci](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/pdj555/agent-harness/actions/workflows/ci.yml)
@@ -40,7 +40,7 @@ uv run harness eval monitor --monitor spec --set blind-spots    # 0 of 2 caught
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/flow-animated-dark.svg">
-  <img alt="A change travels from the agent, through the tests, to the gate. A sabotaged change stops at the gate. An honest change lands on main." src="docs/assets/flow-animated-light.svg" width="100%">
+  <img alt="A change travels from the agent, through the tests, to an independent check. A sabotaged change stops at the check. An honest change lands on main." src="docs/assets/flow-animated-light.svg" width="100%">
 </picture>
 
 1. The agent works in a Git worktree. Your source tree never moves, and ignored files like `.env` never enter it.

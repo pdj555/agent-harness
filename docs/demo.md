@@ -31,7 +31,7 @@ Expected observables:
 - a reviewer summary that is not the principal's "done" text
 - a diff that changes `classify_priority`
 
-A live vendor is optional. The gating demo is the deterministic path.
+A live vendor is optional. The deterministic path is the one that decides.
 
 ## Web demo
 
