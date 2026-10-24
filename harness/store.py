@@ -52,6 +52,7 @@ class Run:
     result: str | None = None
     diff: str = ""
     stage_path: str | None = None
+    vendor_session_id: str | None = None
     stop_requested: bool = False
     published_at: str | None = None
     created_at: str = ""
@@ -110,6 +111,24 @@ class Store:
                     payload TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS run_events (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    detail TEXT NOT NULL,
+                    at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS run_events_run_idx ON run_events (run_id, seq);
+                CREATE TABLE IF NOT EXISTS run_messages (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    message TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS run_messages_run_idx ON run_messages (run_id, seq);
+                CREATE TABLE IF NOT EXISTS run_sessions (
+                    run_id TEXT PRIMARY KEY,
+                    state TEXT NOT NULL
                 );
                 """
             )
@@ -237,9 +256,64 @@ class Store:
             run = self.get_run(run_id)
             if run is None:
                 raise KeyError(run_id)
+            event = {"kind": kind, "detail": detail, "at": _now()}
+            self._conn.execute(
+                "INSERT INTO run_events (run_id, kind, detail, at) VALUES (?, ?, ?, ?)",
+                (run_id, event["kind"], event["detail"], event["at"]),
+            )
+            self._conn.commit()
             events = list(run.events)
-            events.append({"kind": kind, "detail": detail, "at": _now()})
+            events.append(event)
             return self.update_run(run_id, events=events)
+
+    def get_events(self, run_id: str, offset: int = 0, limit: int | None = None) -> list[dict]:
+        """Positional read of a run's append-only event log.
+
+        Slices come from the run_events table, so a reader can page through
+        a long run without loading the run row, its diff, or its payload.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT kind, detail, at FROM run_events WHERE run_id = ? "
+                "ORDER BY seq LIMIT ? OFFSET ?",
+                (run_id, -1 if limit is None else limit, offset),
+            ).fetchall()
+        return [{"kind": row["kind"], "detail": row["detail"], "at": row["at"]} for row in rows]
+
+    def append_message(self, run_id: str, message: dict) -> None:
+        """Append one conversation message to the run's durable session log."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO run_messages (run_id, message) VALUES (?, ?)",
+                (run_id, json.dumps(message)),
+            )
+            self._conn.commit()
+
+    def get_messages(self, run_id: str, offset: int = 0, limit: int | None = None) -> list[dict]:
+        """The run's persisted conversation, in order, optionally sliced."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT message FROM run_messages WHERE run_id = ? "
+                "ORDER BY seq LIMIT ? OFFSET ?",
+                (run_id, -1 if limit is None else limit, offset),
+            ).fetchall()
+        return [json.loads(row["message"]) for row in rows]
+
+    def save_session_state(self, run_id: str, state: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO run_sessions (run_id, state) VALUES (?, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET state = excluded.state",
+                (run_id, json.dumps(state)),
+            )
+            self._conn.commit()
+
+    def get_session_state(self, run_id: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT state FROM run_sessions WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return json.loads(row["state"]) if row else None
 
     def update_run(self, run_id: str, **fields) -> Run:
         # Read, modify, and write under one lock. The runtime thread and the HTTP
@@ -271,6 +345,7 @@ class Store:
             "result": run.result,
             "diff": run.diff,
             "stage_path": run.stage_path,
+            "vendor_session_id": run.vendor_session_id,
             "stop_requested": run.stop_requested,
             "published_at": run.published_at,
         }
@@ -334,6 +409,7 @@ def _run_from_row(row: sqlite3.Row) -> Run:
         result=payload.get("result"),
         diff=payload.get("diff") or "",
         stage_path=payload.get("stage_path"),
+        vendor_session_id=payload.get("vendor_session_id"),
         stop_requested=bool(payload.get("stop_requested")),
         published_at=payload.get("published_at"),
         created_at=row["created_at"],
