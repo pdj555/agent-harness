@@ -4,6 +4,8 @@ from harness.agents import (
     AGENT_NAMES,
     Agent,
     AgentFailed,
+    ClaudeAgent,
+    LoopAgent,
     RunStopped,
     StepLimit,
     TurnContext,
@@ -157,9 +159,12 @@ def _execute_run(
         store.update_run(run_id, status="failed", result=f"Provider failed: {exc}", blockers=["provider"])
         return
     store.add_event(run_id, "decision", _engine_line(agent, reviewer))
+    agent, resumed = _wake_agent(agent, run=run, store=store)
+    if resumed:
+        store.add_event(run_id, "decision", "Woke the run from its stored session.")
     try:
         _drive(run_id, store=store, config=config, stage=stage, ctx=ctx, agent=agent, reviewer=reviewer,
-               objective=run.objective, scan_text=scan_text)
+               objective=run.objective, scan_text=scan_text, resumed=resumed)
     except RunStopped:
         store.update_run(run_id, status="stopped", result="Stopped by the user.", active_work="")
     except UnsafeStage as exc:
@@ -185,6 +190,31 @@ def _engine_line(agent: Agent, reviewer: object | None) -> str:
     return f"Principal agent: {agent.name}{model}{review}."
 
 
+def _wake_agent(agent: Agent, *, run, store: Store) -> tuple[Agent, bool]:
+    """Rebuild a fresh agent's session from the store, when one survives.
+
+    The stage is always provisioned fresh; the session is what carries
+    over. A loop agent resumes with its full conversation and step count.
+    A Claude agent resumes through the vendor session id recorded on the
+    run. Terminal runs are never woken: re-driving one is a fresh start.
+    """
+    if run.status in TERMINAL_STATUSES:
+        return agent, False
+    if isinstance(agent, LoopAgent):
+        messages = store.get_messages(run.id)
+        if not messages:
+            return agent, False
+        state = store.get_session_state(run.id) or {}
+        steps = state.get("steps")
+        return LoopAgent.restore(
+            agent.provider, messages, steps=steps if isinstance(steps, int) else 0
+        ), True
+    if isinstance(agent, ClaudeAgent) and run.vendor_session_id:
+        agent.session_id = run.vendor_session_id
+        return agent, True
+    return agent, False
+
+
 def _drive(
     run_id: str,
     *,
@@ -196,13 +226,21 @@ def _drive(
     reviewer,
     objective: str,
     scan_text: str,
+    resumed: bool = False,
 ) -> None:
-    prompt = (
-        f"{objective}\n\n"
-        "SOFTWARE SCAN (not model output):\n"
-        f"{scan_text}\n"
-        "Act on the most important item. Record a live plan before editing."
-    )
+    if resumed:
+        prompt = (
+            "The process driving this run stopped and has been restarted. "
+            "Your conversation so far is intact. Continue the objective from "
+            "the last step; do not repeat tool calls that already completed."
+        )
+    else:
+        prompt = (
+            f"{objective}\n\n"
+            "SOFTWARE SCAN (not model output):\n"
+            f"{scan_text}\n"
+            "Act on the most important item. Record a live plan before editing."
+        )
     for attempt in range(config.max_repairs + 1):
         final_text = agent.turn(prompt, ctx)
         ctx.check("verification")

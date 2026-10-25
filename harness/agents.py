@@ -137,12 +137,52 @@ class LoopAgent:
         self.model = getattr(provider, "model", None)
         self.messages: list[dict] = [{"role": "system", "content": SYSTEM}]
         self.steps = 0
+        self._bound: tuple[int, str] | None = None
+        self._stored = 0
+
+    @classmethod
+    def restore(cls, provider: Provider, messages: list[dict], steps: int = 0) -> LoopAgent:
+        """Rebuild an agent from a run's persisted conversation (the wake path)."""
+        agent = cls(provider)
+        if messages:
+            agent.messages = [dict(message) for message in messages]
+        agent.steps = steps
+        return agent
+
+    def _bind(self, ctx: TurnContext) -> None:
+        """Attach this conversation to the run's session log on first use.
+
+        The store holds a prefix of the conversation: a fresh agent starts
+        at zero, a restored agent's messages are exactly the stored ones,
+        so the count resumes where the log ends.
+        """
+        key = (id(ctx.store), ctx.run_id)
+        if self._bound == key:
+            return
+        self._bound = key
+        stored = ctx.store.get_messages(ctx.run_id)
+        if stored == self.messages[: len(stored)]:
+            self._stored = len(stored)
+        else:
+            self._stored = len(self.messages)
+
+    def _persist(self, ctx: TurnContext) -> None:
+        """Append any not-yet-stored messages to the run's session log."""
+        if self._bound != (id(ctx.store), ctx.run_id):
+            return
+        while self._stored < len(self.messages):
+            ctx.store.append_message(ctx.run_id, self.messages[self._stored])
+            self._stored += 1
+        ctx.store.save_session_state(ctx.run_id, {"steps": self.steps})
 
     def turn(self, prompt: str, ctx: TurnContext) -> str:
+        self._bind(ctx)
         self.messages.append({"role": "user", "content": prompt})
+        self._persist(ctx)
         tools = tool_specs("principal")
         while self.steps < ctx.max_steps:
             self.steps += 1
+            self._persist(ctx)
             ctx.check("continuing the run")
             try:
                 completion = self.provider.complete(self.messages, tools)
@@ -153,12 +193,14 @@ class LoopAgent:
             if not completion.tool_calls:
                 return completion.text or ""
             self.messages.append(_assistant_message(completion))
+            self._persist(ctx)
             for call in completion.tool_calls:
                 if ctx.stop_requested():
                     skipped = f"{call.name} skipped because stop was requested"
                     ctx.store.add_event(ctx.run_id, "decision", skipped)
                     raise RunStopped()
                 self.messages.append(self._run_tool(call.name, call.id, call.arguments or {}, ctx))
+                self._persist(ctx)
                 ctx.check("continuing after a tool call")
         raise StepLimit()
 
@@ -253,6 +295,7 @@ class ClaudeAgent:
         if result is None:
             raise AgentFailed("Claude Code ended without a result")
         self.session_id = result.session_id
+        self._record_session(ctx)
         self.cost_usd += result.total_cost_usd or 0.0
         if result.subtype == "error_max_turns":
             raise StepLimit()
@@ -260,6 +303,15 @@ class ClaudeAgent:
             detail = "; ".join(result.errors or []) or result.result or result.subtype
             raise AgentFailed(f"Claude Code failed: {detail}")
         return result.result or ""
+
+    def _record_session(self, ctx: TurnContext) -> None:
+        """Write the vendor session id onto the run record.
+
+        The SDK resumes from this id; keeping it only in this process's
+        memory would lose the session the moment the harness restarts.
+        """
+        if self.session_id:
+            ctx.store.update_run(ctx.run_id, vendor_session_id=self.session_id)
 
     def _options(self, ctx: TurnContext, *, tools: list[str], max_turns: int):
         from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
@@ -377,6 +429,9 @@ class CodexAgent:
                     model=self.model,
                     sandbox=Sandbox.workspace_write,
                 )
+                thread_id = getattr(self._thread, "id", None)
+                if thread_id:
+                    ctx.store.update_run(ctx.run_id, vendor_session_id=str(thread_id))
             return self._drive(self._thread.turn(prompt), ctx)
         except (RunStopped, UnsafeStage, AgentFailed):
             raise
