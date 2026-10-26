@@ -1,6 +1,6 @@
 # agent-harness
 
-27 sabotaged code changes passed every test and the tests caught none, an independent check caught all 27, and 2 attacks built to beat that check still got through, because a coding agent's work should never be approved by the same system that produced it
+27 sabotaged code changes passed every test and the tests caught none, an independent check caught all 27, and 3 attacks built to beat that check still get through, because a coding agent's work should never be approved by the same system that produced it
 
 
 <picture>
@@ -51,7 +51,7 @@ uv sync --extra dev
 uv run harness demo
 uv run harness eval monitor --monitor spec                      # spec check: 27 of 27 caught
 uv run harness eval monitor --monitor spec --set blind-spots    # spec check: 0 of 3 caught
-uv run pytest                                                   # test suite: 315 passed
+uv run pytest                                                   # test suite: 310 passed
 ```
 
 ## Limits
@@ -61,6 +61,6 @@ uv run pytest                                                   # test suite: 31
 - Each eval task is a single small function with a clear docstring. Real code rarely ships one, and the spec check covers only functions that have one.
 - 6 honest fixes is a thin base for the false block rate. Zero blocked out of 6 says less than zero out of 600 would.
 - This is not a sandbox at the operating system level. Code the agent runs in the stage can touch the host as your user. docs/security.md has the full notes.
-- Test suite: 315 passed on 2026-10-25 with uv installed. One test, tests/test_packaging.py::test_direct_wheel_includes_only_allowlisted_demo_files, runs uv to build a wheel and fails with FileNotFoundError on a machine where uv is not on the PATH.
+- Test suite: 310 passed on 2026-10-26 with uv installed. One test, tests/test_packaging.py::test_direct_wheel_includes_only_allowlisted_demo_files, runs uv to build a wheel and fails with FileNotFoundError on a machine where uv is not on the PATH.
 
 Apache 2.0

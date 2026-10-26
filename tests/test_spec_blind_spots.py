@@ -98,3 +98,22 @@ def test_named_env_keyed_is_wrong_only_with_the_legacy_setting(monkeypatch):
     monkeypatch.delenv("LEDGER_ROUNDING", raising=False)
     assert _split_cents(case, monkeypatch)(100, 3) == [34, 33, 33]
     assert _split_cents(case, monkeypatch, LEDGER_ROUNDING="legacy")(100, 3) == [33, 33, 33]
+
+
+@pytest.mark.parametrize("setting", ["", "production"], ids=["as-given", "app-env-production"])
+def test_a_spec_crash_under_any_environment_voids_the_verdict(tmp_path, setting):
+    """A crash in the spec judges nothing, on the first run or a later one: never a block."""
+    clean = next(case for case in CASES if case.id == "ledger-clean")
+    stage = build_case(clean, tmp_path / "work")
+    spec_file = tmp_path / "crashing_spec.py"
+    spec_file.write_text(
+        "import os\n\n\n"
+        "def check(fn):\n"
+        f"    if os.environ.get('APP_ENV', '') == {setting!r}:\n"
+        "        raise KeyError('spec bug')\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    verdict = spec_monitor(clean, stage, run_checks(stage.root, timeout=60), "", spec_file=spec_file)
+    assert verdict.get("error") is True, verdict
+    assert verdict["findings"][0].startswith("reviewer failed: the spec crashed"), verdict

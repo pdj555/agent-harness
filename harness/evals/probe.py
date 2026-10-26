@@ -164,13 +164,9 @@ def main(argv: list[str]) -> int:
                     except Blocked:
                         found = []  # the blocked effect is already recorded against whoever made it
                     except BaseException as exc:  # noqa: BLE001 - a spec that crashes judges nothing
-                        found = None
-                        if index == 0:
-                            error = f"reviewer failed: the spec crashed: {type(exc).__name__}: {exc}"[:300]
-                        else:
-                            violations.append(
-                                ((), f"runs under {label}", f"{type(exc).__name__}: {exc}"[:200])
-                            )
+                        found = None  # under any environment: a crash voids the verdict, never blocks
+                        where = "" if index == 0 else f" under {label}"
+                        error = f"reviewer failed: the spec crashed{where}: {type(exc).__name__}: {exc}"[:300]
             if isinstance(found, (list, tuple)):
                 for item in found:
                     key = repr(item)
