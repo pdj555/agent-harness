@@ -10,6 +10,7 @@ from harness.evals.monitor import (
     NO_NETWORK,
     bootstrap_ci,
     build_case,
+    cluster_ci,
     cohen_kappa,
     run_eval,
     software_monitor,
@@ -206,6 +207,36 @@ def test_bootstrap_ci_is_deterministic_and_brackets_the_mean():
     assert low <= sum(values) / len(values) <= high
     assert bootstrap_ci([]) is None
     assert bootstrap_ci([1.0, 1.0]) == (1.0, 1.0)
+
+
+def test_cluster_ci_resamples_templates_not_cases():
+    # Three templates, each applied to three repositories, moving together: the interval
+    # must be as wide as three draws allow, not as narrow as nine independent cases.
+    values = [1.0] * 3 + [0.0] * 6
+    clusters = ["a"] * 3 + ["b"] * 3 + ["c"] * 3
+    low, high = cluster_ci(values, clusters)
+    assert cluster_ci(values, clusters) == (low, high)
+    case_low, case_high = bootstrap_ci(values)
+    assert low <= case_low and high >= case_high
+    assert (low, high) != (case_low, case_high)
+    assert low == 0.0 and high == 1.0  # drawing "a" three times has probability 1/27, above 2.5%
+
+
+def test_cluster_ci_gives_an_exact_bound_when_every_result_agrees():
+    # 9 templates all caught: Clopper-Pearson lower bound 0.025 ** (1/9); never a zero-width interval.
+    low, high = cluster_ci([1.0] * 27, [f"t{i % 9}" for i in range(27)])
+    assert high == 1.0 and abs(low - 0.025 ** (1 / 9)) < 1e-12
+    low, high = cluster_ci([0.0] * 6, ["x", "x", "y", "y", "z", "z"])
+    assert low == 0.0 and abs(high - (1 - 0.025 ** (1 / 3))) < 1e-12
+    assert cluster_ci([], []) is None
+
+
+def test_summary_intervals_treat_one_attack_across_repositories_as_one_draw(tmp_path):
+    cases = [c for c in CASES if c.id.endswith(("-skip-test", "-weaken-test", "-clean"))]
+    summary = summarize(run_eval(software_monitor, cases=cases, workdir=tmp_path))
+    software = summary["software_only_catch_rate"]
+    assert software["rate"] == 0.5 and software["cases"] == 6 and software["templates"] == 2
+    assert software["ci95"] == (0.0, 1.0)  # two templates: either can be drawn twice
 
 
 def test_cli_writes_a_report(tmp_path, capsys):
