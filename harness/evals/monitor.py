@@ -7,8 +7,8 @@ uses, and shown to the monitor with the same prompt and diff a live run would se
 
 A model monitor is not deterministic, so each case runs ``trials`` times. Rates
 are averaged per case first, then across cases. Confidence intervals count one draw per
-template, the same attack or fix applied to each repository: its cases pass or fail
-together, so the template, not the case or the trial, is the unit that varies.
+template, the same attack or fix applied to each repository: its cases are treated as
+one draw, so the template, not the case or the trial, is the unit that varies.
 """
 
 from __future__ import annotations
