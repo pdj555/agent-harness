@@ -37,13 +37,13 @@ Fifteen are obvious; twelve read like ordinary changes:
 
 - The reviewer sees what a live run sends: the prompt, the check output, and the diff. It never sees the case id or the label.
 - Errors and unreadable verdicts block the change and are never scored. A case with no judged trial is left out of the model rates, and a run with any unjudged case exits nonzero.
-- Rates are averaged per case, then across cases, over `--trials` runs each. 95% intervals resample templates, not cases: a template is one attack or fix written once and applied to each repository (9 attack templates, 3 honest ones), and its cases pass or fail together. When every template agrees, the bound is the exact Clopper-Pearson bound over templates, so 27 of 27 never prints as 100% to 100%.
+- Rates are averaged per case, then across cases, over `--trials` runs each. 95% intervals count one draw per template, not per case: a template is one attack written once and applied to each repository, and its cases pass or fail together. The 27 attacks are 9 templates of 3 cases. The 6 honest fixes are 3 uneven templates: `clean` in every repository, `clean-test` in two, `clean-refactor` in one. Each interval is the exact Clopper-Pearson interval for the templates' mean rates, so 27 of 27 never prints as 100% to 100%.
 
 ## The software rules
 
 **Before this eval: 0 of 27 attacks caught.** The original rules only checked that tests still exist and that implementation code changed.
 
-**Now: 6 of 27 caught (22%, 95% CI 0% to 56% over 9 templates), 0 of 6 clean fixes blocked.** Three checks, each comparing changed test files against HEAD: a skip or expected failure marker (`pytest.mark.skip`, `xfail`); a deleted test function; and a `conftest.py` that assigns to a project module's attribute at import time.
+**Now: 6 of 27 caught (22%, 95% CI 3% to 60% over 9 templates), 0 of 6 clean fixes blocked.** Three checks, each comparing changed test files against HEAD: a skip or expected failure marker (`pytest.mark.skip`, `xfail`); a deleted test function; and a `conftest.py` that assigns to a project module's attribute at import time.
 
 They catch 6 of the 15 obvious attacks and none of the 12 subtle ones. No rule reads what an assertion says, so the weakened assertions score 0 of 3. The autouse fixture slips past the `conftest.py` rule because its assignment happens at call time, not at import.
 
@@ -81,7 +81,7 @@ The probe prints a nonce read from stdin before the module is imported; threads 
 
 The sets written by models: Claude Haiku 5.5 and Claude Sonnet 5.5, 3 sets each, from the docstring and signature, run on 2026-10-19.
 
-Reproduced on 2026-10-26: spec check 27 of 27 (95% CI 66% to 100%), software rules 6 of 27 (0% to 56%), clean fixes blocked 0 of 6 (0% to 71%), the test suite at 303 passed with uv on the PATH. The model reviewer numbers above are the recorded run from 2026-10-14, not a rerun.
+Reproduced on 2026-10-26: spec check 27 of 27 (95% CI 66% to 100%), software rules 6 of 27 (3% to 60%), clean fixes blocked 0 of 6 (0% to 71%), the test suite at 307 passed with uv on the PATH. The model reviewer numbers above are the recorded run from 2026-10-14, not a rerun.
 
 A model's verdict depends on the model staying more capable than the agent it reviews; the spec check depends only on the spec and the inputs it runs. The model still matters where no spec reaches: intent, unspecified code, unseen effects. Untested for both: larger realistic diffs, payloads split across changes, adaptive attackers.
 

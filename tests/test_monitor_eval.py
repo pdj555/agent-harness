@@ -10,6 +10,7 @@ from harness.evals.monitor import (
     NO_NETWORK,
     bootstrap_ci,
     build_case,
+    clopper_pearson,
     cluster_ci,
     cohen_kappa,
     run_eval,
@@ -209,26 +210,44 @@ def test_bootstrap_ci_is_deterministic_and_brackets_the_mean():
     assert bootstrap_ci([1.0, 1.0]) == (1.0, 1.0)
 
 
-def test_cluster_ci_resamples_templates_not_cases():
-    # Three templates, each applied to three repositories, moving together: the interval
-    # must be as wide as three draws allow, not as narrow as nine independent cases.
+def test_clopper_pearson_matches_known_exact_intervals():
+    for successes, trials, low, high in [
+        (9, 9, 0.6637, 1.0),
+        (0, 3, 0.0, 0.7076),
+        (2, 9, 0.0281, 0.6001),
+        (8, 9, 0.5175, 0.9972),
+        (1, 2, 0.0126, 0.9874),
+    ]:
+        got = clopper_pearson(successes, trials)
+        assert abs(got[0] - low) < 1e-4 and abs(got[1] - high) < 1e-4, (successes, trials, got)
+
+
+def test_cluster_ci_counts_one_draw_per_template_not_per_case():
+    # Three templates, each applied to three repositories: as wide as 1 of 3, not 3 of 9.
     values = [1.0] * 3 + [0.0] * 6
     clusters = ["a"] * 3 + ["b"] * 3 + ["c"] * 3
-    low, high = cluster_ci(values, clusters)
-    assert cluster_ci(values, clusters) == (low, high)
-    case_low, case_high = bootstrap_ci(values)
-    assert low <= case_low and high >= case_high
-    assert (low, high) != (case_low, case_high)
-    assert low == 0.0 and high == 1.0  # drawing "a" three times has probability 1/27, above 2.5%
-
-
-def test_cluster_ci_gives_an_exact_bound_when_every_result_agrees():
-    # 9 templates all caught: Clopper-Pearson lower bound 0.025 ** (1/9); never a zero-width interval.
-    low, high = cluster_ci([1.0] * 27, [f"t{i % 9}" for i in range(27)])
-    assert high == 1.0 and abs(low - 0.025 ** (1 / 9)) < 1e-12
-    low, high = cluster_ci([0.0] * 6, ["x", "x", "y", "y", "z", "z"])
-    assert low == 0.0 and abs(high - (1 - 0.025 ** (1 / 3))) < 1e-12
+    assert cluster_ci(values, clusters) == clopper_pearson(1, 3)
+    assert cluster_ci(values, clusters) != clopper_pearson(3, 9)
     assert cluster_ci([], []) is None
+
+
+def test_cluster_ci_lower_bound_never_rises_when_catches_fall():
+    clusters = [f"t{i % 9}" for i in range(27)]
+    all_caught = cluster_ci([1.0] * 27, clusters)
+    one_missed = cluster_ci([0.0] + [1.0] * 26, clusters)
+    one_template_missed = cluster_ci([0.0 if i % 9 == 0 else 1.0 for i in range(27)], clusters)
+    assert all_caught[0] >= one_missed[0] >= one_template_missed[0]
+    assert all_caught == (pytest.approx(0.025 ** (1 / 9)), 1.0)
+
+
+@pytest.mark.parametrize(
+    ("values", "clusters"),
+    [([0.5] * 4, ["a", "a", "b", "b"]), ([1.0, 0.0, 1.0], ["a", "a", "a"]), ([1.0], ["a"])],
+    ids=["split-trials", "one-mixed-template", "one-case"],
+)
+def test_cluster_ci_is_never_zero_width(values, clusters):
+    low, high = cluster_ci(values, clusters)
+    assert low < sum(values) / len(values) < high or (low < high and high == 1.0)
 
 
 def test_summary_intervals_treat_one_attack_across_repositories_as_one_draw(tmp_path):
@@ -236,7 +255,7 @@ def test_summary_intervals_treat_one_attack_across_repositories_as_one_draw(tmp_
     summary = summarize(run_eval(software_monitor, cases=cases, workdir=tmp_path))
     software = summary["software_only_catch_rate"]
     assert software["rate"] == 0.5 and software["cases"] == 6 and software["templates"] == 2
-    assert software["ci95"] == (0.0, 1.0)  # two templates: either can be drawn twice
+    assert software["ci95"] == clopper_pearson(1, 2)  # two templates, one caught: not 3 of 6
 
 
 def test_cli_writes_a_report(tmp_path, capsys):
@@ -446,7 +465,7 @@ def test_cli_runs_the_spec_monitor(tmp_path):
     assert payload["summary"]["monitor"]["catch_rate"]["rate"] == 1
 
 
-SLUG_SPEC_FROM_ELSEWHERE = '''
+SLUG_SPEC_FROM_ELSEWHERE = """
 def check(fn):
     kept = set("abcdefghijklmnopqrstuvwxyz0123456789")
 
@@ -471,7 +490,7 @@ def check(fn):
         if got != rule(text):
             bad.append(((text,), repr(rule(text)), repr(got)))
     return bad
-'''
+"""
 
 
 def test_spec_gate_runs_a_spec_written_elsewhere(tmp_path):
