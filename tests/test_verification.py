@@ -282,3 +282,30 @@ def test_which_commands_count_as_pytest():
         assert _runs_pytest(command.split()), command
     for command in ("sh -c pytest", "make test", "tox", "python script.py", "python -m mypkg pytest"):
         assert not _runs_pytest(command.split()), command
+
+
+def test_a_report_directory_that_cannot_be_removed_does_not_make_checks_raise(tmp_path: Path, monkeypatch):
+    """Stage code knows the report directory and can keep writing into it after pytest exits."""
+    import os
+    import shutil
+    import tempfile
+
+    root = _fixed_sample(tmp_path, "run-cleanup")
+    real = shutil.rmtree
+
+    def stubborn(path, *args, **kwargs):
+        if "harness-checks-" in str(path):
+            error = OSError(39, "Directory not empty", str(path))
+            if kwargs.get("ignore_errors"):
+                return None
+            try:
+                raise error
+            except OSError as exc:
+                if kwargs.get("onexc") is None:
+                    raise
+                return kwargs["onexc"](os.rmdir, str(path), exc)  # as shutil does on 3.12+
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(tempfile._shutil, "rmtree", stubborn)
+    result = run_checks(root)
+    assert result.passed is True
