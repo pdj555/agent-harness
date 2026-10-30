@@ -43,13 +43,17 @@ def run_checks(
     suite cannot leave a run stuck in ``running``.
     ``env`` adds variables on top of the filtered stage environment.
 
-    When the command runs pytest, exit 0 is not enough: pytest also writes a JUnit
-    report to a directory outside the stage, and the checks pass only if that report
-    exists, shows at least one test that ran, and shows no failure or error. Code in
-    the stage can end the process with status 0 (``os._exit(0)`` in a conftest, a
-    hook that resets ``session.exitstatus``, ``--collect-only`` in the project's
-    pytest config) without running a test; the report catches those. Other commands
-    are judged by exit code alone.
+    When the command runs pytest (see ``_runs_pytest``), exit 0 is not enough:
+    pytest also writes a JUnit report to a directory outside the stage, and the
+    checks pass only if that report exists, shows at least one test that ran, and
+    shows no failure or error. That closes these ways stage code can end pytest with
+    status 0 and no passing run: ``os._exit(0)`` in a conftest, a hook that resets
+    ``session.exitstatus``, ``--collect-only`` in the project's config, deselecting
+    or skipping every test. It does not close hooks that change results inside the
+    pytest process: ``pytest.exit(returncode=0)`` when a test fails, a
+    ``pytest_runtest_makereport`` wrapper that flips the outcome, xfail or deselect
+    of only the failing tests, or rewriting the report. The review gate has to
+    catch those. Other commands are judged by exit code alone.
     """
     interpreter = python or sys.executable
     command = command.strip() or DEFAULT_COMMAND
@@ -65,7 +69,9 @@ def run_checks(
     with tempfile.TemporaryDirectory(prefix="harness-checks-") as reports:
         report = Path(reports) / "junit.xml" if _runs_pytest(argv) else None
         if report is not None:
-            argv = [*argv, f"--junitxml={report}"]
+            # Before a bare "--", so pytest reads it as an option, not a path.
+            at = argv.index("--") if "--" in argv else len(argv)
+            argv = [*argv[:at], f"--junitxml={report}", *argv[at:]]
         return _run(argv, command, stage_root, env, timeout, report)
 
 
@@ -113,16 +119,48 @@ def _run(
 
 
 def _runs_pytest(argv: list[str]) -> bool:
-    """True for ``pytest ...``, ``py.test ...`` and ``<python> -m pytest ...``."""
-    if Path(argv[0]).name in {"pytest", "py.test"}:
+    """True when the command's program is pytest.
+
+    Recognized: a ``pytest`` or ``py.test`` executable (``pytest -q``), a Python
+    interpreter running ``-m pytest`` after any interpreter flags
+    (``python -I -m pytest``), ``-m coverage run -m pytest``, and any of those after
+    ``uv run``, ``poetry run`` or ``pdm run`` with no options of their own. A
+    command that hides pytest behind a shell or a build tool (``sh -c "pytest"``,
+    ``make test``, ``tox``) is not recognized and is judged by exit code alone.
+    """
+    names = {"pytest", "py.test"}
+    if not argv:
+        return False
+    program = Path(argv[0]).name
+    if program in names:
         return True
-    return len(argv) >= 3 and argv[1] == "-m" and argv[2] in {"pytest", "py.test"}
+    launcher = program in {"uv", "poetry", "pdm"} and len(argv) > 2 and argv[1] == "run"
+    if launcher and not argv[2].startswith("-"):
+        return _runs_pytest(argv[2:])
+    if not program.startswith("python"):
+        return False
+    rest = argv[1:]
+    while rest and rest[0] != "-m" and rest[0].startswith("-"):
+        rest = rest[1:]
+    if len(rest) < 2 or rest[0] != "-m":
+        return False
+    if rest[1] in names:
+        return True
+    if rest[1] == "coverage" and len(rest) > 2 and rest[2] == "run":
+        tail = rest[3:]
+        while tail and tail[0] != "-m" and tail[0].startswith("-"):
+            tail = tail[1:]
+        return len(tail) >= 2 and tail[0] == "-m" and tail[1] in names
+    return False
 
 
 def _report_problem(report: Path) -> str:
     """Why the JUnit report does not show a passing run, or "" when it does."""
     if not report.is_file():
-        return "pytest wrote no test report, so no run of the tests finished"
+        return (
+            "pytest wrote no test report: the run ended before pytest finished, "
+            "or the project disables the junitxml plugin (-p no:junitxml)"
+        )
     try:
         root = ET.parse(report).getroot()
     except (ET.ParseError, OSError) as exc:

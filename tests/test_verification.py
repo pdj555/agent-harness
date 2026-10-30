@@ -232,3 +232,53 @@ def test_commands_that_are_not_pytest_keep_exit_code_semantics(tmp_path: Path):
     result = run_checks(root, command="sh -c 'echo pytest; exit 0'")
     assert result.passed is True
     assert "--junitxml" not in result.output
+
+
+def test_pytest_is_recognized_behind_wrappers_and_flags(tmp_path: Path):
+    root = _buggy_sample(tmp_path, "run-wrapped")
+    (root / "conftest.py").write_text("import os\n\nos._exit(0)\n", encoding="utf-8")
+    for command in ("python -I -m pytest -q", "python -m pytest -q --"):
+        result = run_checks(root, command=command)
+        assert result.passed is False, (command, result.output)
+        assert "no test report" in result.output
+
+
+def test_a_trailing_double_dash_still_gets_a_report(tmp_path: Path):
+    root = _fixed_sample(tmp_path, "run-double-dash")
+    assert run_checks(root, command="python -m pytest -q --").passed is True
+
+
+def test_known_gap_pytest_exit_zero_after_a_failure_still_passes(tmp_path: Path):
+    """Pinned so the docs stay true: a hook inside pytest can still end it with status 0.
+
+    The report is written by the process the stage's conftest runs in, so this route is
+    left to the review gate (docs/architecture.md). If this starts failing, the gap is
+    closed: update the docs and turn this into a test that it fails verification.
+    """
+    root = _buggy_sample(tmp_path, "run-pytest-exit")
+    (root / "conftest.py").write_text(
+        "import pytest\n\n\n@pytest.hookimpl(tryfirst=True)\ndef pytest_runtest_logreport(report):\n"
+        "    if report.failed:\n        pytest.exit('done', returncode=0)\n\n\n"
+        "def pytest_collection_modifyitems(items):\n    items.reverse()\n",
+        encoding="utf-8",
+    )
+    result = run_checks(root)
+    assert result.exit_code == 0
+    assert result.passed is True
+
+
+def test_which_commands_count_as_pytest():
+    from harness.verification import _runs_pytest
+
+    for command in (
+        "pytest -q",
+        "/venv/bin/py.test",
+        "python -m pytest -q",
+        "/stage/.venv/bin/python -I -m pytest",
+        "python3 -m coverage run --branch -m pytest",
+        "uv run pytest -q",
+        "poetry run python -m pytest",
+    ):
+        assert _runs_pytest(command.split()), command
+    for command in ("sh -c pytest", "make test", "tox", "python script.py", "python -m mypkg pytest"):
+        assert not _runs_pytest(command.split()), command
