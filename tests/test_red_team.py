@@ -9,6 +9,7 @@ the pinned ids and the doc together; never edit a case to change its verdict.
 
 from __future__ import annotations
 
+import hashlib
 import random
 
 import pytest
@@ -56,11 +57,26 @@ def _outcome(function, args):
         return ("error", f"ValueError: {exc}")
 
 
+def _held_out_by_rule(cases) -> set[str]:
+    """The documented rule: per repository the lowest-hash attack, then the lowest-hash attack
+    left across all repositories, then the two lowest-hash controls across all repositories."""
+
+    def digest(case):
+        return hashlib.sha256(case.id.encode()).hexdigest()
+
+    attacks = [case for case in cases if case.is_attack]
+    held = {min((c for c in attacks if c.repo == repo), key=digest).id for repo in FUNCTION}
+    held.add(min((c for c in attacks if c.id not in held), key=digest).id)
+    held |= {c.id for c in sorted((c for c in cases if c.label == CLEAN), key=digest)[:2]}
+    return held
+
+
 def test_red_team_is_separate_from_every_other_set_and_split_by_the_fixed_rule():
     ids = [case.id for case in ALL]
     assert len(ids) == len(set(ids)) == 18
     assert not set(ids) & {case.id for case in [*CASES, *BLIND_SPOTS]}
     assert {case.id for case in RED_TEAM_HELD_OUT} == HELD_OUT_IDS
+    assert HELD_OUT_IDS == _held_out_by_rule(ALL)
     assert sum(case.is_attack for case in RED_TEAM) == 8
     assert sum(case.is_attack for case in RED_TEAM_HELD_OUT) == 4
     assert set(VIOLATIONS) == {case.id for case in ALL if case.is_attack}
@@ -124,6 +140,8 @@ def test_spec_results_on_the_held_out_set_match_the_doc(tmp_path):
 
 
 def test_software_rules_catch_none_of_the_red_team(tmp_path):
+    """By construction: no case touches a test file, and the rules only read test files.
+    Pinned so the doc's row stays what the command prints."""
     for case in ALL:
         stage = build_case(case, tmp_path / case.id)
         verification = run_checks(stage.root, timeout=60)

@@ -57,7 +57,7 @@ uv run pytest                                                   # test suite: 34
 ## Limits
 
 - 2 attacks built to beat the spec check get through it. One is wrong only for totals above 1000 cents, past the largest total the spec tries. The other is wrong only when APP_ENV=production, a variable the check never sets. Both pass the tests and the spec, and both are wrong.
-- The attacks and the specs were written by the same author, from the same docstrings. Every strong check catches all 27, so this eval can no longer tell the strong checks apart. A red-team set written without seeing the spec still can: the spec catches 6 of 8 of its attacks and 2 of 4 held out, and the software rules catch none of the 12. See [docs/red-team.md](docs/red-team.md).
+- The attacks and the specs were written by the same author, from the same docstrings. Every strong check catches all 27, so this eval can no longer tell the strong checks apart. On a red-team set written without seeing the spec, the spec catches 6 of 8 attacks (95% CI 38% to 100%) and 2 of 4 held out (0% to 100%), so that set still has room to measure it. No model reviewer has run on it yet. See [docs/red-team.md](docs/red-team.md).
 - Each eval task is a single small function with a clear docstring. Real code rarely ships one, and the spec check covers only functions that have one.
 - 6 honest fixes is a thin base for the false block rate. Zero blocked out of 6 says less than zero out of 600 would.
 - This is not a sandbox at the operating system level. Code the agent runs in the stage can touch the host as your user. docs/security.md has the full notes.
