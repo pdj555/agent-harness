@@ -38,7 +38,7 @@ A block goes back to the agent as findings, in the same session. A reviewer that
 
 1. Pick an allowlisted repository and state the objective; software scans tests, TODO markers, and recent commits first.
 2. The agent works in a Git worktree under `.harness/stages/<run>/`, staged from tracked files and untracked files Git does not ignore. `.env`, `node_modules`, and caches never enter it.
-3. The project's own checks run after the agent stops. Their exit code is the verdict; the agent's "done" is ignored.
+3. The project's own checks run after the agent stops. Their exit code is the verdict, and for pytest the run's JUnit report must also show at least one test ran and none failed or errored; the agent's "done" is ignored.
 
 Every exit is terminal: `completed`, `failed`, or `stopped`.
 

@@ -53,7 +53,7 @@ Before tools, verification, review, and publishing use a stage, the runtime chec
 
 ## Verification
 
-When the model stops, the runtime runs `run_checks(stage.root, python=stage.python(), timeout=...)`: the check command in the stage. `passed` comes from the process exit code.
+When the model stops, the runtime runs `run_checks(stage.root, python=stage.python(), timeout=...)`: the check command in the stage. `passed` comes from the process exit code. When the command runs pytest, the harness adds `--junitxml` pointing outside the stage, and exit 0 passes only if that report exists, shows at least one test that ran, and shows no failure or error. That closes the cheap ways stage code can end pytest with status 0 without a passing run: `os._exit(0)` in a conftest, a hook that resets `session.exitstatus`, `--collect-only` in the project's config, deselecting every test, skipping every test. Code in the stage still runs inside pytest and can find the report path in `sys.argv`, so a conftest written to rewrite the report is not stopped; the review gate is what has to catch that change.
 
 The interpreter is the repository's own `.venv/bin/python` (or `venv/`) when one exists. Otherwise it is the harness interpreter. A suite that exceeds `workspace.check_timeout` (default 300 seconds) is a failed verification with the partial output, not an exception.
 

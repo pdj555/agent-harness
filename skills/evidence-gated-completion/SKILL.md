@@ -5,7 +5,7 @@ description: Use when changing verification, review, runtime completion, or any 
 
 Models propose. Software verifies.
 
-- `harness.verification.run_checks` owns `passed`. It reads a process exit code.
+- `harness.verification.run_checks` owns `passed`. It reads a process exit code and, for pytest, the run's JUnit report: no report, no test run, or any failure or error is a failed check.
 - Do not add a parameter, tool, or JSON field that lets model text set `passed`.
 - Independent review is a distinct `role: reviewer` record. Do not copy the
   principal's final text into it.
