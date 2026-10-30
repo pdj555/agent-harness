@@ -49,7 +49,7 @@ uv sync --extra dev
 uv run harness demo
 uv run harness eval monitor --monitor spec                      # spec check: 27 of 27 caught
 uv run harness eval monitor --monitor spec --set blind-spots    # spec check: 0 of 2 caught
-uv run pytest                                                   # test suite: 294 passed
+uv run pytest                                                   # test suite: 307 passed
 ```
 
 ## Limits
@@ -59,6 +59,6 @@ uv run pytest                                                   # test suite: 29
 - Each eval task is a single small function with a clear docstring. Real code rarely ships one, and the spec check covers only functions that have one.
 - 6 honest fixes is a thin base for the false block rate. Zero blocked out of 6 says less than zero out of 600 would.
 - This is not a sandbox at the operating system level. Code the agent runs in the stage can touch the host as your user. docs/security.md has the full notes.
-- Test suite: 294 passed on 2026-10-23 with uv installed. One test, tests/test_packaging.py::test_direct_wheel_includes_only_allowlisted_demo_files, runs uv to build a wheel and fails with FileNotFoundError on a machine where uv is not on the PATH.
+- Test suite: 307 passed on 2026-10-30 with uv installed. One test, tests/test_packaging.py::test_direct_wheel_includes_only_allowlisted_demo_files, runs uv to build a wheel and fails with FileNotFoundError on a machine where uv is not on the PATH.
 
 Apache 2.0
