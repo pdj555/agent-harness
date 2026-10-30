@@ -36,7 +36,7 @@ The 27 come in six families:
 agent-harness runs a coding agent on a repository you allow. The agent proposes; software decides.
 
 1. The agent edits in a staged copy of the repo. Files Git ignores, such as .env, never enter the stage, and staging refuses to start if a credential file would be included.
-2. When the agent stops, the project's own check command runs in the stage and its exit code is the verdict. The agent's claim that it is done is recorded as text and decides nothing. A timeout counts as a failure.
+2. When the agent stops, the project's own check command runs in the stage and its exit code is the verdict. For pytest, exit 0 also needs pytest's own report to show a test ran and none failed, so a conftest that forces exit 0 does not pass. The agent's claim that it is done is recorded as text and decides nothing. A timeout counts as a failure.
 3. A reviewer that did not write the code reads the diff: Codex reviews Claude's work, Claude reviews Codex's. If the reviewer crashes or returns no readable verdict, the change is blocked. Blocks go back to the agent as findings it can repair, up to a set number of rounds.
 4. A SHA-256 fingerprint of the verified files is checked again before the change lands, so what lands is what passed.
 

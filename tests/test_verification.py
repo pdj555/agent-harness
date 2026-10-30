@@ -86,7 +86,18 @@ def test_repository_interpreter_runs_the_checks_when_present(tmp_path: Path):
     git_init(source)
     fake = source / ".venv" / "bin" / "python"
     fake.parent.mkdir(parents=True)
-    fake.write_text("#!/bin/sh\necho \"project-venv $*\"\necho \"home=$HOME\"\nexit 0\n", encoding="utf-8")
+    # A stand-in interpreter: it reports its arguments and HOME, and writes the passing
+    # JUnit report pytest would write, because run_checks requires one for pytest.
+    fake.write_text(
+        "#!/bin/sh\n"
+        'echo "project-venv $*"\n'
+        'echo "home=$HOME"\n'
+        'for arg; do last="$arg"; done\n'
+        "printf '<testsuite tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\"/>' "
+        '> "${last#--junitxml=}"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
     fake.chmod(0o755)
     stage = create_stage(source, tmp_path / "stages", "run-venv")
     assert stage.python() == str(fake)
@@ -125,3 +136,99 @@ def test_malformed_check_command_fails_closed(tmp_path: Path):
     result = run_checks(stage.root, command="sh -c 'unterminated")
     assert result.passed is False
     assert "bad check command" in result.output
+
+
+def _fixed_sample(tmp_path: Path, name: str) -> Path:
+    """A staged copy of the sample repository with its bug fixed, so its suite passes."""
+    source = copy_sample(tmp_path / "source")
+    git_init(source)
+    stage = create_stage(source, tmp_path / "stages", name)
+    path = stage.root / "tracker.py"
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text.replace(
+            'urgency >= 4:\n        return "low"', 'urgency >= 4:\n        return "high"'
+        ).replace('return "medium"\n    return "high"', 'return "medium"\n    return "low"'),
+        encoding="utf-8",
+    )
+    assert run_checks(stage.root).passed is True
+    return stage.root
+
+
+def _buggy_sample(tmp_path: Path, name: str) -> Path:
+    source = copy_sample(tmp_path / "source")
+    git_init(source)
+    stage = create_stage(source, tmp_path / "stages", name)
+    assert run_checks(stage.root).passed is False
+    return stage.root
+
+
+def test_a_hook_that_resets_the_exit_status_does_not_pass(tmp_path: Path):
+    root = _buggy_sample(tmp_path, "run-exitstatus")
+    (root / "conftest.py").write_text(
+        "def pytest_sessionfinish(session, exitstatus):\n    session.exitstatus = 0\n", encoding="utf-8"
+    )
+    result = run_checks(root)
+    assert result.exit_code == 0
+    assert result.passed is False
+    assert "failed" in result.output.splitlines()[-1]
+
+
+def test_exiting_zero_from_conftest_before_any_test_does_not_pass(tmp_path: Path):
+    root = _buggy_sample(tmp_path, "run-os-exit")
+    (root / "conftest.py").write_text("import os\n\nos._exit(0)\n", encoding="utf-8")
+    result = run_checks(root)
+    assert result.exit_code == 0
+    assert result.passed is False
+    assert "no test report" in result.output
+
+
+def test_collect_only_in_project_config_does_not_pass(tmp_path: Path):
+    root = _buggy_sample(tmp_path, "run-collect-only")
+    (root / "pytest.ini").write_text("[pytest]\naddopts = --co\n", encoding="utf-8")
+    result = run_checks(root)
+    assert result.exit_code == 0
+    assert result.passed is False
+    assert "no test ran" in result.output
+
+
+def test_deselecting_every_test_does_not_pass(tmp_path: Path):
+    root = _buggy_sample(tmp_path, "run-deselect")
+    (root / "conftest.py").write_text(
+        "def pytest_collection_modifyitems(config, items):\n"
+        "    config.hook.pytest_deselected(items=list(items))\n"
+        "    items[:] = []\n\n\n"
+        "def pytest_sessionfinish(session, exitstatus):\n"
+        "    session.exitstatus = 0\n",
+        encoding="utf-8",
+    )
+    result = run_checks(root)
+    assert result.exit_code == 0
+    assert result.passed is False
+    assert "no test ran" in result.output
+
+
+def test_a_suite_that_only_skips_does_not_pass(tmp_path: Path):
+    root = _buggy_sample(tmp_path, "run-all-skipped")
+    (root / "conftest.py").write_text(
+        "import pytest\n\n\ndef pytest_collection_modifyitems(items):\n"
+        "    for item in items:\n        item.add_marker(pytest.mark.skip(reason='later'))\n",
+        encoding="utf-8",
+    )
+    result = run_checks(root)
+    assert result.exit_code == 0
+    assert result.passed is False
+    assert "no test ran" in result.output
+
+
+def test_a_real_passing_suite_still_passes_through_pytest_entry_points(tmp_path: Path):
+    root = _fixed_sample(tmp_path, "run-entry-points")
+    assert run_checks(root, command="python -m pytest -q").passed is True
+    assert run_checks(root, command="python -m pytest -q -p no:cacheprovider").passed is True
+
+
+def test_commands_that_are_not_pytest_keep_exit_code_semantics(tmp_path: Path):
+    root = _buggy_sample(tmp_path, "run-not-pytest")
+    result = run_checks(root, command="sh -c 'echo pytest; exit 0'")
+    assert result.passed is True
+    assert "--junitxml" not in result.output
