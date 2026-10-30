@@ -46,14 +46,15 @@ def run_checks(
     When the command runs pytest (see ``_runs_pytest``), exit 0 is not enough:
     pytest also writes a JUnit report to a directory outside the stage, and the
     checks pass only if that report exists, shows at least one test that ran, and
-    shows no failure or error. That closes these ways stage code can end pytest with
-    status 0 and no passing run: ``os._exit(0)`` in a conftest, a hook that resets
-    ``session.exitstatus``, ``--collect-only`` in the project's config, deselecting
-    or skipping every test. It does not close hooks that change results inside the
-    pytest process: ``pytest.exit(returncode=0)`` when a test fails, a
-    ``pytest_runtest_makereport`` wrapper that flips the outcome, xfail or deselect
-    of only the failing tests, or rewriting the report. The review gate has to
-    catch those. Other commands are judged by exit code alone.
+    shows no failure or error. That catches these ways stage code can end pytest
+    with status 0 and no passing run, unless the code also writes the report:
+    ``os._exit(0)`` in a conftest, a hook that resets ``session.exitstatus``,
+    ``--collect-only`` in the project's config, deselecting or skipping every test.
+    It does not close hooks that change results inside the pytest process:
+    ``pytest.exit(returncode=0)`` when a test fails, a ``pytest_runtest_makereport``
+    wrapper that flips the outcome, skip, xfail or deselect of only the failing
+    tests, or writing a passing report to ``config.option.xmlpath``. The review
+    gate has to catch those. Other commands are judged by exit code alone.
     """
     interpreter = python or sys.executable
     command = command.strip() or DEFAULT_COMMAND
@@ -66,7 +67,7 @@ def run_checks(
     if argv[0] in {"python", "python3"}:
         argv[0] = interpreter
     env = {**command_env(stage_home(stage_root), interpreter), **(env or {})}
-    with tempfile.TemporaryDirectory(prefix="harness-checks-") as reports:
+    with tempfile.TemporaryDirectory(prefix="harness-checks-", ignore_cleanup_errors=True) as reports:
         report = Path(reports) / "junit.xml" if _runs_pytest(argv) else None
         if report is not None:
             # Before a bare "--", so pytest reads it as an option, not a path.
@@ -122,10 +123,10 @@ def _runs_pytest(argv: list[str]) -> bool:
     """True when the command's program is pytest.
 
     Recognized: a ``pytest`` or ``py.test`` executable (``pytest -q``), a Python
-    interpreter running ``-m pytest`` after any interpreter flags
-    (``python -I -m pytest``), ``-m coverage run -m pytest``, and any of those after
-    ``uv run``, ``poetry run`` or ``pdm run`` with no options of their own. A
-    command that hides pytest behind a shell or a build tool (``sh -c "pytest"``,
+    interpreter running ``-m pytest`` after single-token flags (``python -I -m
+    pytest``; not ``-W error`` or ``-mpytest``), ``-m coverage run -m pytest``, and
+    any of those after ``uv run``, ``poetry run`` or ``pdm run`` with no options of
+    their own. A command that hides pytest behind a shell or a build tool (``sh -c "pytest"``,
     ``make test``, ``tox``) is not recognized and is judged by exit code alone.
     """
     names = {"pytest", "py.test"}
