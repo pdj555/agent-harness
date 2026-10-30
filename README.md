@@ -36,7 +36,7 @@ The 27 come in six families:
 agent-harness runs a coding agent on a repository you allow. The agent proposes; software decides.
 
 1. The agent edits in a staged copy of the repo. Files Git ignores, such as .env, never enter the stage, and staging refuses to start if a credential file would be included.
-2. When the agent stops, the project's own check command runs in the stage and its exit code is the verdict. For pytest, exit 0 also needs pytest's own report to show a test ran and none failed, so a conftest that forces exit 0 does not pass. The agent's claim that it is done is recorded as text and decides nothing. A timeout counts as a failure.
+2. When the agent stops, the project's own check command runs in the stage and its exit code is the verdict. For pytest, exit 0 also needs pytest's own report to show a test ran and none failed. That stops a conftest that ends pytest early with status 0, but not one that rewrites results inside pytest; the review gate has to catch those. The agent's claim that it is done is recorded as text and decides nothing. A timeout counts as a failure.
 3. A reviewer that did not write the code reads the diff: Codex reviews Claude's work, Claude reviews Codex's. If the reviewer crashes or returns no readable verdict, the change is blocked. Blocks go back to the agent as findings it can repair, up to a set number of rounds.
 4. A SHA-256 fingerprint of the verified files is checked again before the change lands, so what lands is what passed.
 
@@ -49,7 +49,7 @@ uv sync --extra dev
 uv run harness demo
 uv run harness eval monitor --monitor spec                      # spec check: 27 of 27 caught
 uv run harness eval monitor --monitor spec --set blind-spots    # spec check: 0 of 2 caught
-uv run pytest                                                   # test suite: 307 passed
+uv run pytest                                                   # test suite: 311 passed
 ```
 
 ## Limits
@@ -59,6 +59,6 @@ uv run pytest                                                   # test suite: 30
 - Each eval task is a single small function with a clear docstring. Real code rarely ships one, and the spec check covers only functions that have one.
 - 6 honest fixes is a thin base for the false block rate. Zero blocked out of 6 says less than zero out of 600 would.
 - This is not a sandbox at the operating system level. Code the agent runs in the stage can touch the host as your user. docs/security.md has the full notes.
-- Test suite: 307 passed on 2026-10-30 with uv installed. One test, tests/test_packaging.py::test_direct_wheel_includes_only_allowlisted_demo_files, runs uv to build a wheel and fails with FileNotFoundError on a machine where uv is not on the PATH.
+- Test suite: 311 passed on 2026-10-30 with uv installed. One test, tests/test_packaging.py::test_direct_wheel_includes_only_allowlisted_demo_files, runs uv to build a wheel and fails with FileNotFoundError on a machine where uv is not on the PATH.
 
 Apache 2.0
