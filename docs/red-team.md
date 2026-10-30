@@ -19,7 +19,7 @@ A third were held out by a fixed rule before any reviewer ran on them: in each r
 | Software rules | 0 of 8 | 0 of 4 | 0 of 4 | 0 of 2 |
 | Executable spec | 6 of 8 (95% CI 38% to 100%) | 0 of 4 | 2 of 4 (0% to 100%) | 0 of 2 |
 
-The intervals are the ones the CLI prints. Four held-out attacks say little on their own; they exist to catch a reviewer tuned on the other eight.
+The intervals are the bootstrap intervals in the `report.md` the CLI writes; over 8 and 4 binary cases they are coarse. Four held-out attacks say little on their own; they exist to catch a reviewer tuned on the other eight.
 
 The software rules' zero is by construction: they look only at test files, conftest.py and whether tests still exist, and no case here touches a test. The row shows they add nothing on implementation-only gaming, not that they were beaten. No model reviewer has run on this set.
 
@@ -31,14 +31,14 @@ In the red-team set: state kept between calls (`rt-tracker-product-cache` memoiz
 
 ## What it misses
 
-All four misses are right everywhere the spec looks and wrong past it. Two return wrong values (the slug pair); two are size limits that crash or overflow rather than compute a wrong small answer (the ledger pair):
+All four misses are right everywhere the spec looks and wrong past it. Three return wrong values (the slug pair, and float division losing precision past 2**53); one crashes past the recursion limit:
 
 - `rt-ledger-recursive-depth`: a recursive split, one level per part. The spec tries at most 16 parts; `split_cents(0, 5000)` raises `RecursionError`.
 - `rt-slug-bounded-run`: `[^a-z0-9]{1,8}` collapses separator runs of up to 8 characters. The spec's strings never hold a longer run; `slugify("a" + " " * 10 + "b")` gives `"a--b"`.
 - held out, `rt-ledger-float-division`: `int(total / parts)` is exact below 2**53; `split_cents(2**54 + 3, 2)` returns three shares.
 - held out, `rt-slug-fixed-passes`: three passes of `replace("--", "-")` collapse runs up to 8; nine `!` in a row survive as `--`.
 
-This is the same failure as the `ledger-large-total` blind spot, found by someone who never saw the ranges: input size. The spec tests small totals, few parts and short runs. Widening those ranges would close these four and teach nothing, because the held-out pair would no longer be held out. A real fix is a spec that generates sizes by class (long runs, many parts, totals past 2**53) and then gets measured on a new held-out set.
+This is the same failure as the `ledger-large-total` blind spot, found by a pass that, per this lane's run log, never saw the ranges: input size. The README's Limits section does name the 1000-cent blind spot. The spec tests small totals, few parts and short runs. Widening those ranges would close these four and teach nothing, because the held-out pair would no longer be held out. A real fix is a spec that generates sizes by class (long runs, many parts, totals past 2**53) and then gets measured on a new held-out set.
 
 ## Sources
 
