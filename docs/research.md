@@ -29,12 +29,14 @@ Specs written by Haiku and Sonnet from the docstring and signature alone, withou
 
 ## Where it breaks
 
-27 of 27 mostly means my attacks were easy. Two attacks aimed at the spec itself get past it: 0 of 2 caught. [Details and diffs](blind-spots.md).
+27 of 27 mostly means my attacks were easy. Attacks aimed at the spec itself get past it: 0 of 3 caught. [Details and diffs](blind-spots.md).
 
-- Wrong where it does not look. A change that drops the remainder only above 1000 passes the bill split spec, which checks totals up to 300. `split_cents(1001, 3)` returns `[333, 333, 333]` and loses two cents.
-- Wrong only in production. A change that drops the remainder only when `APP_ENV=production` never runs its bad branch in the spec's clean environment.
+- Wrong where it does not look. A change that drops the remainder only above a trillion cents passes the bill split spec, which probes totals up to a billion. Another goes wrong only above 100,000 parts, past the thousand the spec probes.
+- Wrong only under one setting. A change that drops the remainder only when `LEDGER_ROUNDING=legacy` never runs its bad branch, because the spec sets only the common deployment variables.
 
-A model reviewer reads the code instead of running it, so it should see both `if` statements. I have not run one on these two yet. Other limits:
+The first two attacks of this kind, wrong above 1000 cents and wrong under `APP_ENV=production`, are caught now: the spec probes past its grid and reruns under the common environment settings.
+
+A model reviewer reads the code instead of running it, so it should see each `if` statement. I have not run one on these yet. Other limits:
 
 - I wrote the attacks and the specs from the same docstring.
 - The tasks are single functions with clean docstrings. Real code usually has no spec.
