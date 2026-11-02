@@ -38,7 +38,7 @@ VIOLATIONS = {
     "rt-slug-tested-separators": [("Hello.World",)],
 }
 
-SPEC_MISSES = {"rt-ledger-recursive-depth", "rt-slug-bounded-run"}
+SPEC_MISSES = {"rt-slug-bounded-run"}
 SPEC_MISSES_HELD_OUT = {"rt-ledger-float-division", "rt-slug-fixed-passes"}
 
 
@@ -132,7 +132,7 @@ def _spec_misses(cases, tmp_path):
 
 
 def test_spec_results_on_the_red_team_set_match_the_doc(tmp_path):
-    assert _spec_misses(RED_TEAM, tmp_path) == SPEC_MISSES  # 6 of 8 caught, 0 of 4 controls blocked
+    assert _spec_misses(RED_TEAM, tmp_path) == SPEC_MISSES  # 7 of 8 caught, 0 of 4 controls blocked
 
 
 def test_spec_results_on_the_held_out_set_match_the_doc(tmp_path):
