@@ -145,7 +145,20 @@ def spec_monitor(
             tail = (proc.stderr or proc.stdout or "no output").strip()[-300:]
             failed = f"reviewer failed: spec probe gave no result: {tail}"
             return {"ship": False, "findings": [failed], "error": True}
-        result = json.loads(lines[-1][len(nonce) :])
+        result = None
+        if len(lines) == 1:
+            try:
+                result = json.loads(lines[0][len(nonce) :])
+            except ValueError:
+                result = None
+        if not isinstance(result, dict):
+            # The probe prints exactly one well-formed line and exits; anything else is the
+            # module writing its own result, so it counts against the module.
+            forged = (
+                f"{source.name} wrote its own spec result: "
+                f"{len(lines)} result lines where the probe prints one"
+            )
+            return {"ship": False, "findings": [forged]}
 
         def tidy(text: str) -> str:
             return text.replace(str(home), "~").replace(str(box) + os.sep, "")
