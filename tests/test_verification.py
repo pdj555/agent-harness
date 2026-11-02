@@ -309,3 +309,26 @@ def test_a_report_directory_that_cannot_be_removed_does_not_make_checks_raise(tm
     monkeypatch.setattr(tempfile._shutil, "rmtree", stubborn)
     result = run_checks(root)
     assert result.passed is True
+
+
+def test_a_report_in_an_unknown_encoding_fails_closed_without_raising(tmp_path: Path):
+    """Stage code can overwrite the report after pytest writes it.
+
+    An encoding XML cannot decode must fail the check, not raise out of run_checks.
+    """
+    root = _buggy_sample(tmp_path, "run-bad-encoding")
+    (root / "conftest.py").write_text(
+        "def pytest_sessionfinish(session, exitstatus):\n"
+        "    session.exitstatus = 0\n\n\n"
+        "def pytest_unconfigure(config):\n"
+        "    path = config.option.xmlpath\n"
+        "    if path:\n"
+        "        with open(path, 'w') as handle:\n"
+        "            handle.write('<?xml version=\"1.0\" encoding=\"no-such-codec\"?>'\n"
+        "                         '<testsuite tests=\"1\"/>')\n",
+        encoding="utf-8",
+    )
+    result = run_checks(root)
+    assert result.exit_code == 0
+    assert result.passed is False
+    assert "unreadable" in result.output

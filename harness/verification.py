@@ -157,15 +157,18 @@ def _runs_pytest(argv: list[str]) -> bool:
 
 def _report_problem(report: Path) -> str:
     """Why the JUnit report does not show a passing run, or "" when it does."""
-    if not report.is_file():
-        return (
-            "pytest wrote no test report: the run ended before pytest finished, "
-            "or the project disables the junitxml plugin (-p no:junitxml)"
-        )
+    # Stage code can write this file, so anything it does to it fails closed here
+    # instead of raising out of run_checks: an encoding XML cannot decode
+    # (LookupError), a path that cannot be read (PermissionError), and the like.
     try:
+        if not report.is_file():
+            return (
+                "pytest wrote no test report: the run ended before pytest finished, "
+                "or the project disables the junitxml plugin (-p no:junitxml)"
+            )
         root = ET.parse(report).getroot()
-    except (ET.ParseError, OSError) as exc:
-        return f"the test report is unreadable: {exc}"
+    except Exception as exc:  # noqa: BLE001 - any failure to read the report is a failed check
+        return f"the test report is unreadable: {type(exc).__name__}: {exc}"
     suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
     if not suites:
         return "the test report has no test suite"
