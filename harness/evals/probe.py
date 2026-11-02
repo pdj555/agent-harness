@@ -14,9 +14,12 @@ Prints one line: the nonce followed by a JSON result, then ends the process at o
 ``os._exit``, so nothing the module scheduled for exit (an ``atexit`` handler, a thread
 still running) can print after it. The nonce is read before the module is imported and is
 never in argv, but the module shares this process and can still find it in memory.
-``spec_monitor`` blocks a run that prints more than one result line. A module that prints
-a forged line and ends the process during its own import, before this probe prints, is
-not stopped here; tests/test_monitor_eval.py pins that gap.
+``spec_monitor`` blocks a run that prints more than one result line. This is not a seal:
+a module that prints a forged line and ends the process before this probe prints (at
+import or during a call) still ships, and so does one that rebinds this probe's own
+globals (``_emit``, ``json.dumps``, ``sys.stdout``), which needs no nonce at all.
+tests/test_monitor_eval.py pins the first; closing them needs the judgment outside this
+process.
 
 The check runs more than once. A function can behave exactly as documented until an
 environment variable is set, and the probe's own environment holds only three

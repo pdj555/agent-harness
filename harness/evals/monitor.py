@@ -154,10 +154,10 @@ def spec_monitor(
         if not isinstance(result, dict):
             # The probe prints exactly one well-formed line and exits; anything else is the
             # module writing its own result, so it counts against the module.
-            forged = (
-                f"{source.name} wrote its own spec result: "
-                f"{len(lines)} result lines where the probe prints one"
-            )
+            what = f"{len(lines)} result lines where the probe prints one"
+            if len(lines) == 1:
+                what = "a result line the probe did not write"
+            forged = f"{source.name} wrote its own spec result: {what}"
             return {"ship": False, "findings": [forged]}
 
         def tidy(text: str) -> str:
