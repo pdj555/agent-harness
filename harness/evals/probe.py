@@ -141,6 +141,10 @@ def _encode(value: object, depth: int = 0) -> object:
         walk = list.__iter__ if isinstance(value, list) else tuple.__iter__
         items = [_encode(item, depth + 1) for item in walk(value)]
         return items if isinstance(value, list) else {"tuple": items}
+    if isinstance(value, dict) and depth < 4:
+        pairs = list(dict.items(value))
+        if all(key is None or type(key) in (str, int, float, bool) for key, _ in pairs):
+            return {"dict": [[key, _encode(item, depth + 1)] for key, item in pairs]}
     return {"opaque": kind.__name__}
 
 
@@ -184,9 +188,11 @@ def worker(path: str, function: str) -> int:
         if args is None:
             break
         try:
-            value = fn(*args)
+            value = fn(*_decode(args))
         except BaseException as exc:  # noqa: BLE001 - any exception is a behavior to compare
-            send({"raised": type(exc).__name__})
+            mro = type(exc).__mro__
+            bases = [base.__name__ for base in mro if getattr(builtins, base.__name__, None) is base]
+            send({"raised": type(exc).__name__, "bases": bases, "message": BaseException.__str__(exc)[:200]})
             continue
         try:
             send({"value": _encode(value)})
@@ -230,6 +236,8 @@ def _decode(value: object) -> object:
     if isinstance(value, dict):
         if isinstance(value.get("tuple"), list):
             return tuple(_decode(item) for item in value["tuple"])
+        if isinstance(value.get("dict"), list):
+            return {key: _decode(item) for key, item in value["dict"]}
         return Opaque(str(value.get("opaque", "unknown"))[:60])
     return value
 
@@ -241,18 +249,51 @@ class WorkerFailed(BaseException):
     """
 
 
-_RAISED: dict[str, type[Exception]] = {}
+def _opaque_marks(value: object) -> object:
+    """Only the structure of an encoded value, so an opaque marker shows even inside a str."""
+    if isinstance(value, list):
+        return [_opaque_marks(item) for item in value]
+    if isinstance(value, dict):
+        if "opaque" in value:
+            return "opaque"
+        return [_opaque_marks(item) for item in value.values()]
+    return 0
 
 
-def _raised(name: object) -> type[Exception]:
-    """An exception class named like the one the module raised, for the spec to compare."""
-    clean = "".join(ch for ch in str(name) if ch.isalnum() or ch == "_")[:60] or "Exception"
-    known = getattr(builtins, clean, None)
-    if isinstance(known, type) and issubclass(known, Exception):
-        return known  # so a spec can still write `except ValueError`
-    if clean not in _RAISED:
-        _RAISED[clean] = type(clean, (Exception,), {})
-    return _RAISED[clean]
+class SpecArgumentError(BaseException):
+    """The spec passed an argument that cannot be sent as plain data: the spec's fault."""
+
+
+_RAISED: dict[tuple[str, type], type[Exception]] = {}
+
+
+def _raised(message: dict) -> Exception:
+    """The module's exception, rebuilt for the spec: same name, nearest builtin base, same text.
+
+    A builtin comes back as itself, so a spec written elsewhere can still write
+    ``except ValueError``, and a subclass of one is still caught by it.
+    """
+
+    def name_of(raw: object) -> str:
+        return "".join(ch for ch in str(raw) if ch.isalnum() or ch == "_")[:60] or "Exception"
+
+    name = name_of(message.get("raised"))
+    base: type = Exception
+    bases = message.get("bases")
+    for raw in bases if isinstance(bases, list) else []:
+        known = getattr(builtins, name_of(raw), None)
+        if isinstance(known, type) and issubclass(known, Exception):
+            base = known
+            break
+    text = str(message.get("message") or "")[:200]
+    if base.__name__ == name:
+        kind = base
+    else:
+        kind = _RAISED.setdefault((name, base), type(name, (base,), {}))
+    try:
+        return kind(text)
+    except Exception:  # noqa: BLE001 - a builtin that takes other arguments
+        return type(name, (Exception,), {})(text)
 
 
 class Worker:
@@ -316,7 +357,11 @@ class Worker:
         if self.failed:
             raise WorkerFailed(self.failed)
         try:
-            self.proc.stdin.write(json.dumps(list(args)).encode() + b"\n")
+            encoded = _encode(list(args))
+            if "opaque" in json.dumps(_opaque_marks(encoded)):
+                raise SpecArgumentError("the spec passed an argument that cannot be sent as plain data")
+            sent = json.dumps(encoded)
+            self.proc.stdin.write(sent.encode() + b"\n")
             self.proc.stdin.flush()
             message = self._message()
         except (OSError, ValueError) as exc:
@@ -326,7 +371,7 @@ class Worker:
             self.failed = str(exc)
             raise
         if "raised" in message:
-            raise _raised(message["raised"])()
+            raise _raised(message)
         if "value" in message:
             return _decode(message["value"])
         self.failed = "wrote something other than an answer"
@@ -418,7 +463,11 @@ def main(argv: list[str]) -> int:
                     except Blocked:
                         found = None  # the spec's own side effect, already recorded
                     except BaseException as exc:  # noqa: BLE001 - a spec that crashes judges nothing
-                        error = f"reviewer failed: the spec crashed{where}: {type(exc).__name__}: {exc}"[:300]
+                        if work.effects and not isinstance(exc, SpecArgumentError):
+                            found = []  # the module's refused effect raised through the spec: it decides
+                        else:
+                            crash = f"{type(exc).__name__}: {exc}"
+                            error = f"reviewer failed: the spec crashed{where}: {crash}"[:300]
                     if work.failed and isinstance(found, list):
                         # The spec caught the failure itself; it still counts against the module.
                         found = [*found, ((), f"answers every call{where}", f"the module {work.failed}")]
