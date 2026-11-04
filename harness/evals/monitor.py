@@ -154,7 +154,15 @@ def spec_monitor(
             tail = (proc.stderr or proc.stdout or "no output").strip()[-300:]
             failed = f"reviewer failed: spec probe gave no result: {tail}"
             return {"ship": False, "findings": [failed], "error": True}
-        result = json.loads(lines[-1][len(nonce) :])
+        result = None
+        if len(lines) == 1 and proc.returncode == 0:
+            with contextlib.suppress(ValueError):
+                result = json.loads(lines[0][len(nonce) :])
+        if not isinstance(result, dict):
+            # The judge prints one well-formed line and exits 0. Anything else is the module
+            # reaching the judge's output or killing it, so it counts against the module.
+            what = f"{len(lines)} result lines, exit code {proc.returncode}"
+            return {"ship": False, "findings": [f"{source.name} interfered with its spec run: {what}"]}
 
         def tidy(text: str) -> str:
             return text.replace(str(home), "~").replace(str(box) + os.sep, "")

@@ -17,8 +17,8 @@ Two kinds of process, so the code being judged never shares a process with the j
   cannot be removed once added.
 
 A module that crashes, ends its process, or breaks the protocol during a call is judged
-for it. Nothing it does reaches this process except the values it answers with, so it
-cannot print, raise or exit its way to a passing verdict.
+for it. Printing, raising or exiting no longer reaches the verdict, because the module
+never runs in this process.
 
 Usage: python -I -m harness.evals.probe <repo> <module.py> [spec.py], with a nonce on stdin.
 With spec.py, its ``check(fn)`` replaces the built-in spec for that repository. Such a spec
@@ -34,9 +34,13 @@ violation found under any of them counts. The settings are the common names a
 deployment uses; a variable outside the list is still never set, and
 docs/blind-spots.md keeps a case that keys on one.
 
-Not closed: a module can still hide its own side-effect reports by reaching into its
-worker's hook (the effect itself is still refused), and native code (``ctypes``) is
-outside what audit hooks see.
+Not a sandbox. Audit hooks are Python code in the worker's own process, so a module
+written to attack this probe can edit its worker's hook and then do what the hook would
+have refused, including reading this process's memory through /proc and writing to its
+output. ``spec_monitor`` rejects a run whose probe printed more than one result line or
+did not exit cleanly, which stops the forge-then-kill route, but containing a hostile
+module needs isolation from the operating system (another user, seccomp, a container).
+Native code (``ctypes``) is outside what audit hooks see at all.
 """
 
 from __future__ import annotations
@@ -101,24 +105,30 @@ ENVIRONMENTS: tuple[tuple[str, dict[str, str]], ...] = (
 
 def _audit_hook(report, *, signals: bool):
     """A hook that refuses writes, directory changes, network calls and processes, reporting each."""
-    processes = PROCESS_EVENTS + (SIGNAL_EVENTS if signals else ())
+    # Copied into the closure, so rebinding this module's globals does not change the hook.
+    # The closure's own cells can still be edited from Python: this narrows the route, it
+    # does not close it.
+    processes = frozenset(PROCESS_EVENTS + (SIGNAL_EVENTS if signals else ()))
+    write_modes, write_flags = frozenset(WRITE_MODES), WRITE_FLAGS
+    file_events, network_events = dict(FILE_EVENTS), frozenset(NETWORK_EVENTS)
+    blocked = Blocked
 
     def hook(event: str, args: tuple) -> None:
         what = None
         if event == "open" and args and not isinstance(args[0], int):
             mode = args[1] if len(args) > 1 else None
             flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
-            if (isinstance(mode, str) and WRITE_MODES & set(mode)) or flags & WRITE_FLAGS:
+            if (isinstance(mode, str) and write_modes & set(mode)) or flags & write_flags:
                 what = f"writes {args[0]}"
-        elif event in FILE_EVENTS:
-            what = f"{FILE_EVENTS[event]}: {args[0] if args else ''}"
-        elif event in NETWORK_EVENTS:
+        elif event in file_events:
+            what = f"{file_events[event]}: {args[0] if args else ''}"
+        elif event in network_events:
             what = f"network ({event}) {str(args[0])[:80] if args else ''}"
         elif event in processes:
             what = f"starts a process ({event})"
         if what:
             report(what)
-            raise Blocked(what)
+            raise blocked(what)
 
     return hook
 

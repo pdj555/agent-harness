@@ -292,3 +292,16 @@ def test_a_malformed_answer_the_module_writes_itself_is_a_finding(tmp_path):
     verdict = _external(tmp_path, EXTERNAL_TRACKER_SPEC, _module("") + FORGED_ANSWER)
     assert verdict["ship"] is False and not verdict.get("error"), verdict
     assert any("wrote something other than an answer" in finding for finding in verdict["findings"]), verdict
+
+
+def test_rebinding_the_probes_tables_does_not_switch_the_hook_off(tmp_path):
+    rebind = (
+        "\n\nimport sys as _sys\n\n_probe = _sys.modules['__main__']\n"
+        "_probe.FILE_EVENTS, _probe.NETWORK_EVENTS = {}, ()\n"
+        "_probe.WRITE_MODES, _probe.WRITE_FLAGS = frozenset(), 0\n"
+        "try:\n    __import__('os').chdir('/')\nexcept OSError:\n    pass\n"
+    )
+    case = _tracker_case(FIXED_TRACKER + rebind)
+    verdict = spec_monitor(case, build_case(case, tmp_path), None, "")
+    assert verdict["ship"] is False, verdict
+    assert any("changes directory" in finding for finding in verdict["findings"]), verdict
