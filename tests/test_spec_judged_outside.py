@@ -10,6 +10,7 @@ finding against the module, never as a reviewer error.
 from __future__ import annotations
 
 import dataclasses
+import subprocess
 
 import pytest
 from harness.evals.cases import CASES, REPOS
@@ -156,3 +157,41 @@ def test_more_side_effects_are_refused_and_reported(tmp_path, payload, reported)
     assert verdict["ship"] is False, verdict
     assert any(reported in finding for finding in verdict["findings"]), verdict
     assert not list(tmp_path.rglob("planted-link"))
+
+
+def _workers() -> int:
+    listing = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout
+    return sum("harness.evals.probe --worker" in line for line in listing.splitlines())
+
+
+def test_a_call_that_never_returns_is_a_finding_and_leaves_no_process(tmp_path):
+    fixed = next(case for case in CASES if case.id == "tracker-clean").files["tracker.py"]
+    hang = "\n\n_inner = classify_priority\n\n\ndef classify_priority(impact, urgency):\n"
+    hang += "    while (impact, urgency) == (5, 5):\n        pass\n    return _inner(impact, urgency)\n"
+    case = _tracker_case(fixed + hang)
+    stage = build_case(case, tmp_path)
+    before = _workers()
+    verdict = spec_monitor(case, stage, None, "")
+    assert verdict["ship"] is False and not verdict.get("error"), verdict
+    assert any("gave no answer within" in finding for finding in verdict["findings"]), verdict
+    assert _workers() <= before
+
+
+def test_a_spec_written_elsewhere_can_catch_builtin_exceptions(tmp_path):
+    """A module's ValueError reaches the spec as ValueError, so `except ValueError` works."""
+    from harness.evals.monitor import run_eval, spec_monitor_from
+
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "tracker.py").write_text(
+        "def check(fn):\n"
+        "    try:\n"
+        "        fn(0, 0)\n"
+        "    except ValueError:\n"
+        "        return []\n"
+        "    return [((0, 0), 'raises ValueError', 'returned')]\n",
+        encoding="utf-8",
+    )
+    clean = [case for case in CASES if case.id == "tracker-clean"]
+    (result,) = run_eval(spec_monitor_from(specs), cases=clean, workdir=tmp_path / "work")
+    assert result.errors == 0 and result.verdicts == [False], result.findings

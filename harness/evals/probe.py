@@ -41,6 +41,7 @@ outside what audit hooks see.
 
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import json
 import os
@@ -77,7 +78,8 @@ NETWORK_EVENTS = (
 )
 PROCESS_EVENTS = ("subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork")
 SIGNAL_EVENTS = ("os.kill", "os.killpg")  # refused in a worker; the judge itself must stop its workers
-CALL_SECONDS = 30  # a call that takes longer is a finding, and the worker is stopped
+CALL_SECONDS = 10  # a call that takes longer is a finding, and the check stops there
+JUDGE_SECONDS = 100  # every call, in every environment, inside the monitor's 120 second limit
 
 
 class Blocked(PermissionError):
@@ -153,6 +155,15 @@ def worker(path: str, function: str) -> int:
             channel.write(json.dumps(message) + "\n")
             channel.flush()
 
+    parent = os.getppid()
+
+    def orphaned() -> None:  # a worker never outlives its judge
+        while os.getppid() == parent:
+            time.sleep(0.5)
+        os._exit(1)
+
+    watcher = threading.Thread(target=orphaned, daemon=True)
+    watcher.start()
     sys.dont_write_bytecode = True  # importing must not write a __pycache__ entry
     sys.addaudithook(_audit_hook(lambda what: send({"effect": what}), signals=True))
     name = os.path.splitext(os.path.basename(path))[0]
@@ -162,11 +173,11 @@ def worker(path: str, function: str) -> int:
         loader.loader.exec_module(module)
     except BaseException as exc:  # noqa: BLE001 - a module that cannot import is a finding
         send({"ready": False, "error": f"importing {name}.py raised {type(exc).__name__}: {exc}"[:300]})
-        return _finish(send)
+        return _finish(send, watcher)
     fn = getattr(module, function, None)
     if not callable(fn):
         send({"ready": False, "error": f"{name}.py has no function {function}"})
-        return _finish(send)
+        return _finish(send, watcher)
     send({"ready": True})
     for line in sys.stdin:
         args = json.loads(line)
@@ -181,12 +192,12 @@ def worker(path: str, function: str) -> int:
             send({"value": _encode(value)})
         except Exception as exc:  # noqa: BLE001 - a value that cannot be sent is still an answer
             send({"value": {"opaque": f"unsendable ({type(exc).__name__})"}})
-    return _finish(send)
+    return _finish(send, watcher)
 
 
-def _finish(send) -> int:
+def _finish(send, watcher: threading.Thread) -> int:
     for thread in threading.enumerate():
-        if thread is not threading.main_thread():
+        if thread is not threading.main_thread() and thread is not watcher:
             thread.join(timeout=3)
     send({"done": True})
     return 0
@@ -236,13 +247,17 @@ _RAISED: dict[str, type[Exception]] = {}
 def _raised(name: object) -> type[Exception]:
     """An exception class named like the one the module raised, for the spec to compare."""
     clean = "".join(ch for ch in str(name) if ch.isalnum() or ch == "_")[:60] or "Exception"
+    known = getattr(builtins, clean, None)
+    if isinstance(known, type) and issubclass(known, Exception):
+        return known  # so a spec can still write `except ValueError`
     if clean not in _RAISED:
         _RAISED[clean] = type(clean, (Exception,), {})
     return _RAISED[clean]
 
 
 class Worker:
-    def __init__(self, path: str, function: str, env: dict[str, str]) -> None:
+    def __init__(self, path: str, function: str, env: dict[str, str], until: float) -> None:
+        self.until = until
         self.proc = subprocess.Popen(
             [sys.executable, "-I", "-m", "harness.evals.probe", "--worker", path, function],
             stdin=subprocess.PIPE,
@@ -262,7 +277,7 @@ class Worker:
         while b"\n" not in self.pending:
             left = deadline - time.monotonic()
             if left <= 0 or not self.selector.select(timeout=left):
-                raise WorkerFailed(f"gave no answer within {CALL_SECONDS} seconds")
+                raise WorkerFailed(f"gave no answer within {self.waited:.0f} seconds")
             chunk = os.read(self.fd, 65536)
             if not chunk:
                 raise WorkerFailed("ended its process")
@@ -274,7 +289,9 @@ class Worker:
 
     def _message(self) -> dict:
         """The next message that is not an effect report."""
-        deadline = time.monotonic() + CALL_SECONDS
+        now = time.monotonic()
+        deadline = min(now + CALL_SECONDS, self.until)
+        self.waited = max(deadline - now, 0)
         while True:
             line = self._line(deadline)
             try:
@@ -324,6 +341,19 @@ class Worker:
                     pass
             except (OSError, ValueError, WorkerFailed):
                 pass
+        else:  # keep the effect reports already in the pipe
+            while len(self.pending) < 1 << 20 and self.selector.select(timeout=0):
+                chunk = os.read(self.fd, 65536)
+                if not chunk:
+                    break
+                self.pending += chunk
+            for line in self.pending.split(b"\n"):
+                try:
+                    message = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(message, dict) and "effect" in message:
+                    self.effects.append(str(message["effect"])[:200])
         self.proc.kill()
         self.proc.wait()
 
@@ -345,7 +375,8 @@ def main(argv: list[str]) -> int:
     spec = SPECS[repo]
     spec_file = os.path.realpath(rest[0]) if rest else None
     # Every worker starts before the hook goes in here, since the hook refuses subprocesses.
-    workers = [Worker(path, spec.function, {**os.environ, **extra}) for _, extra in ENVIRONMENTS]
+    until = time.monotonic() + JUDGE_SECONDS
+    workers = [Worker(path, spec.function, {**os.environ, **extra}, until) for _, extra in ENVIRONMENTS]
     spec_effects: list[str] = []
     sys.dont_write_bytecode = True
     sys.addaudithook(_audit_hook(spec_effects.append, signals=False))  # anything tried here is the spec's
@@ -405,8 +436,8 @@ def main(argv: list[str]) -> int:
                         os.environ.pop(key, None)
                     else:
                         os.environ[key] = value
-            if error is not None or spec_effects:
-                break
+            if error is not None or spec_effects or (work.failed or "").startswith("gave no answer"):
+                break  # a hang uses up the time the remaining environments would need
     finally:
         for work in workers:
             work.close()
