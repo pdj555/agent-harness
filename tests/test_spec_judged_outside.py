@@ -264,3 +264,31 @@ def test_dicts_travel_and_unsendable_arguments_are_the_specs_fault(tmp_path):
     verdict = _external(tmp_path / "decimal", spec, FIXED_TRACKER)
     assert verdict.get("error") is True, verdict
     assert "cannot be sent" in verdict["findings"][0], verdict
+
+
+def test_a_spec_written_elsewhere_can_call_with_keywords(tmp_path):
+    spec = "def check(fn):\n    got = fn(impact=4, urgency=4)\n"
+    spec += "    return [] if got == 'high' else [((4, 4), 'high', repr(got))]\n"
+    assert _external(tmp_path / "fixed", spec, FIXED_TRACKER)["ship"] is True
+    assert _external(tmp_path / "buggy", spec, BUGGY)["ship"] is False
+
+
+FORGED_ANSWER = """
+
+def classify_priority(impact, urgency):
+    import gc
+    import io
+    import os
+
+    for item in gc.get_objects():  # the worker's answer channel, found from inside the module
+        if isinstance(item, io.TextIOWrapper) and item.fileno() > 2 and item.writable():
+            os.write(item.fileno(), b'{"value": {"dict": [[[1], 2]]}}\\n')
+            return "high"
+    return "high"
+"""
+
+
+def test_a_malformed_answer_the_module_writes_itself_is_a_finding(tmp_path):
+    verdict = _external(tmp_path, EXTERNAL_TRACKER_SPEC, _module("") + FORGED_ANSWER)
+    assert verdict["ship"] is False and not verdict.get("error"), verdict
+    assert any("wrote something other than an answer" in finding for finding in verdict["findings"]), verdict
