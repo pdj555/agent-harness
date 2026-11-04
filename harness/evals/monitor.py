@@ -13,6 +13,7 @@ one draw, so the template, not the case or the trial, is the unit that varies.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
@@ -20,6 +21,7 @@ import os
 import random
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -126,20 +128,27 @@ def spec_monitor(
         target = box / source.name
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         env = {"HOME": str(home), "PATH": os.defpath, "LANG": "C.UTF-8"}
+        # Its own process group, so a timeout stops the probe and every worker it started.
+        proc = subprocess.Popen(
+            [sys.executable, "-I", "-m", "harness.evals.probe", case.repo, str(target)]
+            + ([str(spec_file)] if spec_file is not None else []),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=box,
+            env=env,
+            text=True,
+            start_new_session=True,
+        )
         try:
-            proc = subprocess.run(
-                [sys.executable, "-I", "-m", "harness.evals.probe", case.repo, str(target)]
-                + ([str(spec_file)] if spec_file is not None else []),
-                input=nonce + "\n",
-                cwd=box,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
+            stdout, stderr = proc.communicate(nonce + "\n", timeout=120)
         except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
             late = f"{source.name} did not finish its spec run within 120 seconds"
             return {"ship": False, "findings": [late]}
+        proc = subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
         lines = [line for line in proc.stdout.splitlines() if line.startswith(nonce)]
         if not lines:
             tail = (proc.stderr or proc.stdout or "no output").strip()[-300:]
