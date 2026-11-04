@@ -137,11 +137,11 @@ def _encode(value: object, depth: int = 0) -> object:
         return value
     if isinstance(value, str):
         return str.__str__(value)
-    if isinstance(value, (list, tuple)) and depth < 4:
+    if isinstance(value, (list, tuple)) and depth < 6:
         walk = list.__iter__ if isinstance(value, list) else tuple.__iter__
         items = [_encode(item, depth + 1) for item in walk(value)]
         return items if isinstance(value, list) else {"tuple": items}
-    if isinstance(value, dict) and depth < 4:
+    if isinstance(value, dict) and depth < 6:
         pairs = list(dict.items(value))
         if all(key is None or type(key) in (str, int, float, bool) for key, _ in pairs):
             return {"dict": [[key, _encode(item, depth + 1)] for key, item in pairs]}
@@ -184,11 +184,12 @@ def worker(path: str, function: str) -> int:
         return _finish(send, watcher)
     send({"ready": True})
     for line in sys.stdin:
-        args = json.loads(line)
-        if args is None:
+        request = json.loads(line)
+        if request is None:
             break
+        args, kwargs = _decode(request)
         try:
-            value = fn(*_decode(args))
+            value = fn(*args, **kwargs)
         except BaseException as exc:  # noqa: BLE001 - any exception is a behavior to compare
             mro = type(exc).__mro__
             bases = [base.__name__ for base in mro if getattr(builtins, base.__name__, None) is base]
@@ -230,16 +231,27 @@ class Opaque:
         return f"<{self.kind} object>"
 
 
-def _decode(value: object) -> object:
+def _decode(value: object, depth: int = 0) -> object:
+    """Rebuild a value ``_encode`` wrote. Anything else raises ValueError: it was not an answer."""
+    if depth > 8:
+        raise ValueError("nested too deep")
+    if value is None or type(value) in (str, int, float, bool):
+        return value
     if isinstance(value, list):
-        return [_decode(item) for item in value]
-    if isinstance(value, dict):
+        return [_decode(item, depth + 1) for item in value]
+    if isinstance(value, dict) and len(value) == 1:
         if isinstance(value.get("tuple"), list):
-            return tuple(_decode(item) for item in value["tuple"])
+            return tuple(_decode(item, depth + 1) for item in value["tuple"])
         if isinstance(value.get("dict"), list):
-            return {key: _decode(item) for key, item in value["dict"]}
-        return Opaque(str(value.get("opaque", "unknown"))[:60])
-    return value
+            pairs = value["dict"]
+            if not all(isinstance(pair, list) and len(pair) == 2 for pair in pairs):
+                raise ValueError("a dict entry is not a key and a value")
+            if not all(key is None or type(key) in (str, int, float, bool) for key, _ in pairs):
+                raise ValueError("a dict key is not a plain value")
+            return {key: _decode(item, depth + 1) for key, item in pairs}
+        if "opaque" in value:
+            return Opaque(str(value["opaque"])[:60])
+    raise ValueError("not an encoded value")
 
 
 class WorkerFailed(BaseException):
@@ -318,7 +330,9 @@ class Worker:
         while b"\n" not in self.pending:
             left = deadline - time.monotonic()
             if left <= 0 or not self.selector.select(timeout=left):
-                raise WorkerFailed(f"gave no answer within {self.waited:.0f} seconds")
+                if self.waited < CALL_SECONDS:
+                    raise WorkerFailed(f"ran past the judge's {JUDGE_SECONDS} second budget")
+                raise WorkerFailed(f"gave no answer within {CALL_SECONDS} seconds")
             chunk = os.read(self.fd, 65536)
             if not chunk:
                 raise WorkerFailed("ended its process")
@@ -353,11 +367,11 @@ class Worker:
             self.failed = str(exc)
             raise
 
-    def call(self, *args: object) -> object:
+    def call(self, *args: object, **kwargs: object) -> object:
         if self.failed:
             raise WorkerFailed(self.failed)
         try:
-            encoded = _encode(list(args))
+            encoded = _encode([list(args), kwargs])
             if "opaque" in json.dumps(_opaque_marks(encoded)):
                 raise SpecArgumentError("the spec passed an argument that cannot be sent as plain data")
             sent = json.dumps(encoded)
@@ -373,7 +387,11 @@ class Worker:
         if "raised" in message:
             raise _raised(message)
         if "value" in message:
-            return _decode(message["value"])
+            try:
+                return _decode(message["value"])
+            except ValueError:
+                self.failed = "wrote something other than an answer"
+                raise WorkerFailed(self.failed) from None
         self.failed = "wrote something other than an answer"
         raise WorkerFailed(self.failed)
 
@@ -401,6 +419,10 @@ class Worker:
                     self.effects.append(str(message["effect"])[:200])
         self.proc.kill()
         self.proc.wait()
+
+
+def _hung(failed: str | None) -> bool:
+    return bool(failed) and ("gave no answer" in failed or "budget" in failed)
 
 
 def _example(item: object) -> list:
@@ -485,7 +507,7 @@ def main(argv: list[str]) -> int:
                         os.environ.pop(key, None)
                     else:
                         os.environ[key] = value
-            if error is not None or spec_effects or (work.failed or "").startswith("gave no answer"):
+            if error is not None or spec_effects or _hung(work.failed):
                 break  # a hang uses up the time the remaining environments would need
     finally:
         for work in workers:
