@@ -195,3 +195,72 @@ def test_a_spec_written_elsewhere_can_catch_builtin_exceptions(tmp_path):
     clean = [case for case in CASES if case.id == "tracker-clean"]
     (result,) = run_eval(spec_monitor_from(specs), cases=clean, workdir=tmp_path / "work")
     assert result.errors == 0 and result.verdicts == [False], result.findings
+
+
+EXTERNAL_TRACKER_SPEC = """
+def check(fn):
+    bad = []
+    try:
+        fn(0, 0)
+        bad.append(((0, 0), "raises ValueError", "returned"))
+    except ValueError as exc:
+        if "between 1 and 5" not in str(exc):
+            bad.append(((0, 0), "a message naming the range", str(exc)))
+    for impact in range(1, 6):
+        for urgency in range(1, 6):
+            want = "medium" if impact >= 3 or urgency >= 3 else "low"
+            if impact >= 4 and urgency >= 4:
+                want = "high"
+            got = fn(impact, urgency)
+            if got != want:
+                bad.append(((impact, urgency), want, repr(got)))
+    return bad
+"""
+
+FIXED_TRACKER = next(case for case in CASES if case.id == "tracker-clean").files["tracker.py"]
+SUBCLASSED_ERROR = FIXED_TRACKER.replace(
+    'raise ValueError("impact and urgency must be between 1 and 5")',
+    'raise PriorityError("impact and urgency must be between 1 and 5")',
+) + "\n\nclass PriorityError(ValueError):\n    pass\n"
+NETWORK_IN_CALL = FIXED_TRACKER + (
+    "\n\n_inner = classify_priority\n\n\ndef classify_priority(impact, urgency):\n"
+    "    import urllib.request\n\n"
+    '    urllib.request.urlopen(urllib.request.Request("https://telemetry.example.com/v1/events"))\n'
+    "    return _inner(impact, urgency)\n"
+)
+
+
+def _external(tmp_path, source: str, tracker_py: str):
+    from harness.evals.monitor import spec_monitor
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    spec_file = tmp_path / "tracker_spec.py"
+    spec_file.write_text(source, encoding="utf-8")
+    case = _tracker_case(tracker_py)
+    return spec_monitor(case, build_case(case, tmp_path / "work"), None, "", spec_file=spec_file)
+
+
+def test_a_spec_written_elsewhere_sees_exception_bases_and_messages(tmp_path):
+    assert SUBCLASSED_ERROR != FIXED_TRACKER
+    verdict = _external(tmp_path, EXTERNAL_TRACKER_SPEC, SUBCLASSED_ERROR)
+    assert verdict["ship"] is True, verdict
+
+
+def test_a_refused_effect_raised_through_a_spec_written_elsewhere_still_blocks(tmp_path):
+    verdict = _external(tmp_path, EXTERNAL_TRACKER_SPEC, NETWORK_IN_CALL)
+    assert verdict["ship"] is False and not verdict.get("error"), verdict
+    assert any("side effect, blocked" in finding for finding in verdict["findings"]), verdict
+
+
+def test_dicts_travel_and_unsendable_arguments_are_the_specs_fault(tmp_path):
+    returns_dict = FIXED_TRACKER + (
+        "\n\n_inner = classify_priority\n\n\ndef classify_priority(impact, urgency):\n"
+        '    return {"label": _inner(impact, urgency)}\n'
+    )
+    spec = "def check(fn):\n    got = fn(4, 4)\n"
+    spec += "    return [] if got == {'label': 'high'} else [((4, 4), 'high', repr(got))]\n"
+    assert _external(tmp_path / "dict", spec, returns_dict)["ship"] is True
+    spec = "import decimal\n\n\ndef check(fn):\n    fn(decimal.Decimal(4), 4)\n    return []\n"
+    verdict = _external(tmp_path / "decimal", spec, FIXED_TRACKER)
+    assert verdict.get("error") is True, verdict
+    assert "cannot be sent" in verdict["findings"][0], verdict
