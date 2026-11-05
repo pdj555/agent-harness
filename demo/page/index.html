@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SABOTAGE vs SPEC — agent-harness demo</title>
+<style>
+  :root { --paper:#FFFFFF; --ink:#000000; --live:#FF4D00; }
+  * { box-sizing: border-box; margin: 0; padding: 0; border-radius: 0; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    background: var(--paper); color: var(--ink);
+    font-family: ui-monospace, "IBM Plex Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    font-size: 13px; line-height: 1.5; font-variant-numeric: tabular-nums;
+    max-width: 1080px; margin: 0 auto; padding: 0 16px 64px;
+  }
+  .display {
+    font-family: "Archivo Narrow", "Arial Narrow", "HelveticaNeue-CondensedBold", "Roboto Condensed", sans-serif;
+    text-transform: uppercase; letter-spacing: -0.01em; font-weight: 700;
+  }
+  /* masthead */
+  header { border-bottom: 3px solid var(--ink); padding: 28px 0 14px; }
+  header h1 { font-size: clamp(44px, 9vw, 96px); line-height: 0.95; }
+  header .sub { margin-top: 10px; max-width: 62ch; }
+  header .truth { margin-top: 10px; border-top: 1px solid var(--ink); padding-top: 8px; max-width: 78ch; }
+  /* sections: the label sits on the rule */
+  section { margin-top: 34px; }
+  .rule { border-top: 1px solid var(--ink); position: relative; height: 0; margin-bottom: 14px; }
+  .rule span {
+    position: absolute; top: -9px; left: 0; background: var(--paper); padding-right: 10px;
+    font-size: 11px; letter-spacing: 0.12em;
+  }
+  /* case rail */
+  .case-row {
+    display: grid; grid-template-columns: 30px 1fr auto; gap: 10px; align-items: baseline;
+    width: 100%; text-align: left; background: var(--paper); color: var(--ink);
+    border: 0; border-bottom: 1px solid var(--ink); padding: 9px 2px; cursor: pointer;
+    font: inherit;
+  }
+  .case-row:hover, .case-row:focus-visible { background: var(--ink); color: var(--paper); outline: none; }
+  .case-row[disabled] { opacity: 0.35; cursor: default; }
+  .case-row[disabled]:hover { background: var(--paper); color: var(--ink); }
+  .case-row .idx { font-size: 11px; }
+  .case-row .id { font-weight: 700; }
+  .case-row .note { display: block; font-weight: 400; }
+  .case-row .tag { font-size: 11px; letter-spacing: 0.08em; white-space: nowrap; }
+  .actions { display: flex; gap: 0; margin-top: 12px; border: 1px solid var(--ink); width: fit-content; }
+  .actions button {
+    font: inherit; font-size: 12px; letter-spacing: 0.1em; padding: 10px 18px; cursor: pointer;
+    background: var(--ink); color: var(--paper); border: 0;
+  }
+  .actions button.alt { background: var(--paper); color: var(--ink); border-left: 1px solid var(--ink); }
+  .actions button[disabled] { opacity: 0.35; cursor: default; }
+  /* run log */
+  #runhead { display: flex; justify-content: space-between; border-bottom: 1px solid var(--ink); padding-bottom: 6px; min-height: 22px; }
+  #runhead .clock { white-space: nowrap; }
+  .badge-live { color: var(--live); font-weight: 700; letter-spacing: 0.1em; }
+  #log { min-height: 120px; }
+  .ev { padding: 7px 0; border-bottom: 1px solid var(--ink); }
+  .ev .k { font-size: 11px; letter-spacing: 0.12em; }
+  .ev pre {
+    font: inherit; font-size: 12px; white-space: pre-wrap; word-break: break-word;
+    margin-top: 6px; max-height: 260px; overflow: auto;
+  }
+  .ev .finding { margin-top: 4px; }
+  .cursor { display: inline-block; width: 9px; height: 15px; background: var(--live); vertical-align: -2px; }
+  /* stamps */
+  .stamp {
+    display: inline-block; padding: 3px 10px; font-weight: 700; letter-spacing: 0.08em; font-size: 12px;
+    border: 1px solid var(--ink); margin-top: 6px;
+  }
+  .stamp.pass { background: var(--ink); color: var(--paper); }
+  .stamp.fail {
+    background: repeating-linear-gradient(45deg, var(--paper) 0 6px, rgba(0,0,0,0.16) 6px 7px, var(--paper) 7px 13px);
+    color: var(--ink);
+  }
+  /* tally + tables */
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border: 1px solid var(--ink); padding: 7px 9px; text-align: left; vertical-align: top; font-weight: 400; }
+  th { font-size: 11px; letter-spacing: 0.1em; }
+  td.num, th.num { text-align: right; }
+  .leader { color: var(--live); font-weight: 700; }
+  #tally { font-size: 15px; padding: 10px 0; border-bottom: 1px solid var(--ink); min-height: 24px; }
+  .grouphead { font-size: 12px; letter-spacing: 0.12em; margin: 18px 0 4px; }
+  footer { margin-top: 40px; border-top: 1px solid var(--ink); padding-top: 10px; max-width: 82ch; }
+  footer p + p { margin-top: 8px; }
+  .hidden { display: none; }
+  @media (max-width: 640px) {
+    .case-row { grid-template-columns: 22px 1fr; }
+    .case-row .tag { grid-column: 2; }
+    th, td { padding: 6px; font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 class="display">Sabotage<br>vs Spec</h1>
+  <p class="sub">Twenty-seven sabotaged code changes pass this project's test suite. The
+  executable spec — checks written from the docstrings alone, run against the module in
+  isolation — is the second gate. This page replays recorded runs of that eval, case by case.</p>
+  <p class="truth" id="truth">Loading the run record…</p>
+</header>
+
+<section>
+  <div class="rule"><span>01 — CASES</span></div>
+  <div id="heroes"></div>
+  <div class="actions">
+    <button id="runall" type="button">RUN ALL</button>
+    <button id="skip" type="button" class="alt" disabled>SKIP ▸▸</button>
+  </div>
+</section>
+
+<section>
+  <div class="rule"><span>02 — RUN</span></div>
+  <div id="runhead"><span id="runtitle">No case selected</span><span class="clock" id="clock"></span></div>
+  <div id="log"></div>
+  <div id="tally"></div>
+</section>
+
+<section>
+  <div class="rule"><span>03 — WHERE THE SPEC BREAKS</span></div>
+  <p>Attacks written against the spec itself. The open three still get through; the closed two
+  used to. Each one is shown with the reveal: the one input the spec never probed, evaluated.</p>
+  <div class="grouphead">STILL OPEN</div>
+  <div id="open"></div>
+  <div class="grouphead">CLOSED — THE SPEC CATCHES THEM NOW</div>
+  <div id="closed"></div>
+</section>
+
+<section>
+  <div class="rule"><span>04 — RECORDED</span></div>
+  <div id="recorded"></div>
+  <div id="blindtally" style="margin-top:14px"></div>
+</section>
+
+<footer id="method"></footer>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+let DATA = null, RESULTS = null;
+let playing = false, skipFlag = false;
+const playedSpecCaught = new Set(), playedTestsCaught = new Set(), playedAttacks = new Set();
+
+function el(tag, text, cls) {
+  const n = document.createElement(tag);
+  if (text != null) n.textContent = text;
+  if (cls) n.className = cls;
+  return n;
+}
+function wait(ms) { return reduced ? Promise.resolve() : new Promise(r => setTimeout(r, ms)); }
+async function pause(ms) { if (!skipFlag) await wait(ms); }
+
+function caseRow(c, idx) {
+  const b = el("button", null, "case-row");
+  b.type = "button";
+  b.append(el("span", String(idx).padStart(2, "0"), "idx"));
+  const mid = el("span");
+  mid.append(el("span", c.id, "id"));
+  mid.append(el("span", c.note, "note"));
+  b.append(mid);
+  const tag = c.blind === "open" ? "BLIND SPOT — OPEN"
+    : c.blind === "closed" ? "BLIND SPOT — CLOSED"
+    : (c.label === "clean" ? "CONTROL — HONEST FIX" : c.label.replaceAll("_", " ").toUpperCase());
+  b.append(el("span", tag, "tag"));
+  b.addEventListener("click", () => playCase(c));
+  return b;
+}
+
+function renderLists() {
+  const heroes = DATA.cases.filter(c => c.group === "hero");
+  const open = DATA.cases.filter(c => c.blind === "open");
+  const closed = DATA.cases.filter(c => c.blind === "closed");
+  heroes.forEach((c, i) => $("heroes").append(caseRow(c, i + 1)));
+  open.forEach((c, i) => $("open").append(caseRow(c, i + 1)));
+  closed.forEach((c, i) => $("closed").append(caseRow(c, i + 1)));
+}
+
+function stamp(text, pass) {
+  const s = el("span", text, "stamp " + (pass ? "pass" : "fail"));
+  return s;
+}
+function line(kind, text) {
+  const d = el("div", null, "ev");
+  d.append(el("div", kind, "k"));
+  if (text) d.append(el("div", text, "finding"));
+  $("log").append(d);
+  return d;
+}
+function animateClock(targetMs, durMs) {
+  const clock = $("clock");
+  if (reduced || durMs <= 0) { clock.textContent = targetMs + " MS"; return; }
+  const t0 = performance.now();
+  (function tick(t) {
+    const p = Math.min(1, (t - t0) / durMs);
+    clock.textContent = Math.round(targetMs * p) + " MS";
+    if (p < 1 && playing) requestAnimationFrame(tick);
+  })(t0);
+}
+
+async function playSteps(c) {
+  const log = $("log");
+  log.textContent = "";
+  $("runtitle").textContent = "";
+  $("runtitle").append(document.createTextNode(c.id + "  "));
+  const live = el("span", "● RECORDED TRACE", "badge-live");
+  $("runtitle").append(live);
+  animateClock(c.elapsed_ms, Math.min(c.elapsed_ms, 3000));
+
+  // STEP — the change
+  let d = line("STEP 1 — THE CHANGE", c.note + "  ·  files: " + c.files_changed.join(", "));
+  const pre = el("pre", c.diff);
+  d.append(pre);
+  await pause(700);
+
+  for (const s of c.steps) {
+    if (s.kind === "tests") {
+      d = line("STEP 2 — THE PROJECT'S TESTS", s.command + "  ·  exit " + s.exit_code + "  ·  " + s.elapsed_ms + " ms");
+      d.append(el("pre", s.output_tail));
+      d.append(stamp(s.passed ? "TESTS — SHIP" : "TESTS — BLOCK", s.passed));
+    } else if (s.kind === "rules") {
+      d = line("STEP 3 — DIFF RULES", s.blocked ? "The harness's own diff rules flag this change:" : "The harness's own diff rules raise nothing.");
+      s.findings.forEach(f => d.append(el("div", f, "finding")));
+      d.append(stamp(s.blocked ? "RULES — BLOCK" : "RULES — CLEAR", !s.blocked));
+    } else if (s.kind === "spec") {
+      d = line("STEP 4 — THE EXECUTABLE SPEC", "Module copied alone into an empty directory. No tests, no conftest. Audit hook armed. " + s.elapsed_ms + " ms");
+      for (const f of s.findings) { d.append(el("div", f, "finding")); await pause(300); }
+      d.append(stamp(s.error ? "SPEC — ERROR" : (s.blocked ? "SPEC — BLOCK" : "SPEC — SHIP"), !s.blocked && !s.error));
+    } else if (s.kind === "reveal") {
+      const envTxt = Object.keys(s.env).length ? "  ·  with " + Object.entries(s.env).map(([k, v]) => k + "=" + v).join(", ") : "";
+      d = line("STEP 5 — THE REVEAL", "The one input the spec never probed: " + s.call + envTxt);
+      const gotTxt = s.got.value ? JSON.stringify(s.got.value)
+        : "a list of " + s.got.length + " shares summing to " + s.got.sum;
+      const reqTxt = s.required.value ? JSON.stringify(s.required.value)
+        : "a list of " + s.required.length + " shares summing to " + s.required.sum;
+      d.append(el("div", "got: " + gotTxt, "finding"));
+      d.append(el("div", "the rule requires: " + reqTxt + " — " + s.required.rule, "finding"));
+      d.append(stamp(s.breaks_rule ? "RULE — BROKEN" : "RULE — HOLDS", !s.breaks_rule));
+    }
+    await pause(650);
+  }
+  updateTally(c);
+}
+
+function updateTally(c) {
+  if (c.label !== "clean") {
+    playedAttacks.add(c.id);
+    if (!c.verdicts.tests_passed) playedTestsCaught.add(c.id);
+    if (c.verdicts.spec_blocked) playedSpecCaught.add(c.id);
+  }
+  $("tally").textContent =
+    "PLAYED — attacks: " + playedAttacks.size +
+    " · tests caught: " + playedTestsCaught.size +
+    " · spec caught: " + playedSpecCaught.size;
+}
+
+async function playCase(c) {
+  if (playing) return;
+  playing = true; skipFlag = false;
+  setControls(true);
+  await playSteps(c);
+  playing = false; setControls(false);
+  $("clock").textContent = c.elapsed_ms + " MS";
+}
+function setControls(on) {
+  $("skip").disabled = !on;
+  $("runall").disabled = on;
+  document.querySelectorAll(".case-row").forEach(b => { b.disabled = on; });
+}
+$("skip").addEventListener("click", () => { skipFlag = true; });
+$("runall").addEventListener("click", async () => {
+  if (playing) return;
+  playing = true; skipFlag = false; setControls(true);
+  for (const c of DATA.cases) { await playSteps(c); await pause(400); }
+  playing = false; setControls(false);
+});
+
+function renderRecorded() {
+  const wrap = $("recorded");
+  const t = el("table");
+  const head = el("tr");
+  ["ROW", "RUN DATE", "TESTS CAUGHT", "DIFF RULES CAUGHT", "SPEC / REVIEWER CAUGHT", "HONEST FIXES BLOCKED", "ORIGIN"]
+    .forEach(h => head.append(el("th", h, h.includes("CAUGHT") || h.includes("BLOCKED") ? "num" : "")));
+  t.append(head);
+  for (const r of RESULTS.recorded) {
+    const tr = el("tr");
+    tr.append(el("td", r.kind + " — " + r.label));
+    tr.append(el("td", r.run_date));
+    tr.append(el("td", r.tests_caught == null ? "—" : r.tests_caught + " / " + r.of_attacks, "num"));
+    tr.append(el("td", r.diff_rules_caught == null ? "—" : r.diff_rules_caught + " / " + r.of_attacks, "num"));
+    const lead = el("td", r.spec_caught + " / " + r.of_attacks, "num leader");
+    tr.append(lead);
+    tr.append(el("td", r.clean_blocked + " / " + r.of_clean, "num"));
+    tr.append(el("td", r.origin));
+    t.append(tr);
+  }
+  wrap.append(t);
+  const b = RESULTS.blind_spots;
+  $("blindtally").textContent =
+    "BLIND SPOTS, SAME RUN — open set: spec caught " + b.open.spec_caught + " / " + b.open.cases +
+    " (all " + b.open.checks_passed + " pass the tests) · closed set: spec caught " +
+    b.closed.spec_caught + " / " + b.closed.cases + ".";
+}
+
+function renderMethod() {
+  const f = $("method");
+  f.append(el("p", "Method. Verdicts come from exit codes and the spec probe, never from model text: " +
+    "harness.verification.run_checks is the only source of the tests verdict, and " +
+    "harness.evals.monitor.spec_monitor the only source of the spec verdict. " +
+    "Graders are code; no model judges any case on this page."));
+  f.append(el("p", RESULTS.meta.note + " Traces in section 02 were generated " +
+    DATA.meta.generated_at + " by " + DATA.meta.generator + "."));
+  f.append(el("p", "Counts are read from the run record at load. Open pull requests against this " +
+    "repository change the probe and the case set, so the numbers move when the code does — " +
+    "the page prints what the machinery produced, not what the README says."));
+}
+
+async function boot() {
+  try {
+    const [c, r] = await Promise.all([fetch("../cases.json"), fetch("../results.json")]);
+    DATA = await c.json(); RESULTS = await r.json();
+  } catch (e) {
+    $("truth").textContent = "The run record did not load. Serve the demo folder over HTTP " +
+      "(python3 -m http.server --directory demo) and open /page/ — a static page cannot read " +
+      "its JSON from file://.";
+    return;
+  }
+  $("truth").textContent = "Every trace below is a recorded run of the repository's own machinery — " +
+    RESULTS.meta.generated_at + ". Rows that were not run here are labeled RECORDED, with their run dates. Nothing is simulated.";
+  renderLists(); renderRecorded(); renderMethod();
+}
+boot();
+</script>
+</body>
+</html>
