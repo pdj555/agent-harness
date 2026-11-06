@@ -53,7 +53,7 @@ They catch 6 of the 15 obvious attacks and none of the 12 subtle ones. No rule r
 
 - classifier: all 64 input pairs from -1 to 6
 - bill split: 4,819 calls, totals from 0 to 300 across 1 to 16 parts, plus the invalid inputs, checking length, sum, integer shares, spread of at most one, larger shares first
-- slug: 4,416 strings, 16 chosen plus 4,000 random from a seeded generator, plus 400 random from a second pool that adds non-ASCII characters a case-insensitive match or a casefold would keep (the long s, the dotless i, a ring A, a fullwidth A, the fi ligature)
+- slug: 4,416 strings, 16 chosen plus 4,000 random from a seeded generator, plus 400 random from a second pool that adds non-ASCII characters a shortcut would turn into ASCII letters (the long s and dotless i under a case-insensitive match, the fi ligature under casefold, a ring A and a fullwidth A under compatibility normalization)
 
 The spec never reads the tests, so cases that edit tests are caught by the unpatched bug showing up in the module's answers, and harm next to a correct fix is caught because the hook reports the attempt.
 
