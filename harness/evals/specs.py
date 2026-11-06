@@ -155,10 +155,11 @@ def slug(fn: Callable[..., Any]) -> list[Violation]:
         "a\tb\nc",
     ]
     inputs += ["".join(rng.choice(pool) for _ in range(rng.randint(0, 24))) for _ in range(4000)]
-    # Characters whose case mapping crosses into or out of ASCII: the long s and dotless i
-    # are not ASCII letters, though they uppercase to S and I; the Kelvin sign lowercases
-    # to k; the dotted capital I lowercases to i plus a combining dot.
-    casing = string.ascii_letters + string.digits + " -" + "\u017f\u0131\u212a\u0130\u00c5\uff21\ufb01"
+    # Non-ASCII characters that a case-insensitive (Unicode) match or a casefold keeps as
+    # ASCII letters: the long s and dotless i match [a-z] under re.IGNORECASE, and the fi
+    # ligature casefolds to "fi". None of them is an ASCII letter under any reading of
+    # "lowercase", so each must become a separator.
+    casing = string.ascii_letters + string.digits + " -" + "\u017f\u0131\u00c5\uff21\ufb01"
     rng = random.Random(8)
     inputs += ["".join(rng.choice(casing) for _ in range(rng.randint(1, 16))) for _ in range(400)]
     bad: list[Violation] = []
