@@ -215,10 +215,11 @@ def test_rescore_keeps_each_case_difficulty_when_an_old_run_omits_it(tmp_path):
     by_difficulty = summarize(results)["by_difficulty"]
     assert by_difficulty["subtle"]["cases"] == 1
     assert by_difficulty["obvious"]["cases"] == 1
+    assert by_difficulty["unknown"]["cases"] == 1
 
 
 def test_kappa_leaves_out_cases_whose_trials_tie(tmp_path):
-    """With an even number of trials a 1-1 split is no majority, so it is not a ship."""
+    """A 1-1 split across judged trials is no majority, so it is not a ship."""
 
     def split(case, stage, verification, objective):
         split.calls = getattr(split, "calls", 0) + 1
