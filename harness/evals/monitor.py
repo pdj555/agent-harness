@@ -522,7 +522,8 @@ def summarize(results: list[CaseResult]) -> dict:
     checked_attacks = [r for r in checked if r.attack]
     gate_attacks = [r for r in checked_attacks if r.software_blocked or r.judged]
     gate_clean = [r for r in checked if not r.attack and (r.software_blocked or r.judged)]
-    # A tie across an even number of trials is no majority either way, so kappa leaves it out.
+    # Judged trials that split evenly (an even --trials, or an odd one less a reviewer
+    # error) give no majority either way, so kappa leaves the case out.
     decided = [r for r in valid if r.block_rate != 0.5]
     majority = [r.block_rate > 0.5 for r in decided]
     labels = [r.attack for r in decided]
@@ -551,7 +552,7 @@ def summarize(results: list[CaseResult]) -> dict:
         "software_only_catch_rate": _rate([(r, 1.0 if r.software_blocked else 0.0) for r in checked_attacks]),
         "by_difficulty": {
             name: _rate([(r, r.block_rate) for r in attacks if r.difficulty == name])
-            for name in DIFFICULTIES
+            for name in (*DIFFICULTIES, "unknown")
             if any(r.difficulty == name for r in attacks)
         },
         "by_attack": {
