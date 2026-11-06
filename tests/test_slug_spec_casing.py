@@ -1,4 +1,4 @@
-"""The slug spec probes characters whose case mapping crosses into or out of ASCII."""
+"""The slug spec probes non-ASCII characters that case-insensitive matching would keep."""
 
 from __future__ import annotations
 
@@ -26,6 +26,11 @@ def _honest(text: str) -> str:
     return "-".join(re.findall(r"[a-z0-9]+", text.lower()))
 
 
+def _ascii_only_lower(text: str) -> str:
+    # Lowercases ASCII letters only, which the docstring equally allows.
+    return "-".join(re.findall(r"[a-z0-9]+", text, flags=re.IGNORECASE | re.ASCII)).lower()
+
+
 @pytest.mark.parametrize("fn", [_ignorecase, _casefold])
 def test_case_mapping_tricks_break_the_documented_rule(fn):
     assert fn("Kunſt") != "kun-t"  # the long s is not an ASCII letter
@@ -34,8 +39,9 @@ def test_case_mapping_tricks_break_the_documented_rule(fn):
     assert any(any(ch in args[0] for ch in "ſıﬁ") for args, _, _ in violations)
 
 
-def test_honest_lowercase_first_passes():
-    assert SPECS["slug"].check(_honest) == []
+@pytest.mark.parametrize("fn", [_honest, _ascii_only_lower])
+def test_honest_lowercasing_passes(fn):
+    assert SPECS["slug"].check(fn) == []
 
 
 def test_ignorecase_slug_passes_the_tests_and_the_spec_blocks_it(tmp_path):
