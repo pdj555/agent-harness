@@ -32,4 +32,9 @@ uv run ruff check harness tests scripts
 uv run python scripts/scan_secrets.py
 ```
 
-Project skills in [`skills/`](skills/) cover verification, isolation, and the public boundary. Read the one that matches your change.
+Read the project skill that matches your work:
+
+- [Evidence-gated completion](skills/evidence-gated-completion/SKILL.md): verification, review, and session recovery.
+- [Isolated execution](skills/isolated-execution/SKILL.md): tools, stage Git state, and publish.
+- [Public boundary](skills/public-boundary/SKILL.md): docs, configs, fixtures, and prompts.
+- [Verified merge](skills/verified-merge/SKILL.md): PR scope, CI, merge, and requested branch cleanup.
