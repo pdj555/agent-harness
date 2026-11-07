@@ -436,27 +436,36 @@ def test_cross_vendor_reviewer_blocks_then_approves_after_repair(tmp_path: Path,
     assert any("codex reviews the diff" in event["detail"] for event in run.events)
 
 
-def test_review_sees_staged_edits_additions_deletions_and_unstaged_edits(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("stage_final_edit", [False, True])
+def test_review_sees_staged_edits_additions_deletions_and_unstaged_edits(
+    tmp_path: Path, monkeypatch, stage_final_edit: bool
+):
     store, config, run_id = _setup(tmp_path)
     config.max_repairs = 0
     source = config.workspace_roots[0]
     before = (source / "tracker.py").read_bytes()
     reviewer = _Reviewer([{"ship": False, "findings": ["needs another change"]}])
     monkeypatch.setattr("harness.runtime.make_reviewer", lambda _name: reviewer)
+    calls = [
+        ToolCall("run_shell", {
+            "command": (
+                'python -c "from pathlib import Path; '
+                "Path('added.py').write_text('def review_marker():\\n    return 42\\n')\""
+            ),
+        }),
+        ToolCall("run_shell", {"command": "git rm README.md"}),
+        ToolCall("run_shell", {"command": "git add -A"}),
+        ToolCall("edit_file", {
+            "path": "tracker.py",
+            "old": "# Bug: high and low labels are reversed. Tests pin the documented spec.",
+            "new": "# Classify the documented priority bands.",
+        }),
+    ]
+    if stage_final_edit:
+        calls.append(ToolCall("run_shell", {"command": "git add -A"}))
     provider = ScriptedProvider([
         *_fix_calls()[:-1],
-        Completion(tool_calls=[
-            ToolCall("edit_file", {
-                "path": "added.py", "old": "", "new": "def review_marker():\n    return 42\n",
-            }),
-            ToolCall("run_shell", {"command": "git rm README.md"}),
-            ToolCall("run_shell", {"command": "git add -A"}),
-            ToolCall("edit_file", {
-                "path": "tracker.py",
-                "old": "# Bug: high and low labels are reversed. Tests pin the documented spec.",
-                "new": "# Classify the documented priority bands.",
-            }),
-        ]),
+        Completion(tool_calls=calls),
         Completion(text="Fixed."),
     ])
     provider.name = "openrouter"
