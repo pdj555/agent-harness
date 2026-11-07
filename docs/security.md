@@ -73,13 +73,15 @@ reference is disabled.
 
 ## Verification is not a tool the model owns
 
-Each stage records its starting file contents, symlink targets, and executable
-bits in a sibling baseline file outside the model's file-tool root. Verification
-binds that baseline along with the staged contents. Applying a verified delta
-checks every affected source path before writing any file. An overlapping source
+Each stage records its starting Git commit, file contents, symlink targets, and
+executable bits in a sibling baseline file outside the model's file-tool root.
+Moving the stage's HEAD, including committing or amending changes, fails the run;
+edits must remain uncommitted so review and apply see the complete delta.
+Verification binds that baseline along with the staged contents. Applying a
+verified delta checks every affected source path before writing any file. An overlapping source
 edit, deletion, new-file collision, or replaced parent path rejects the apply;
 unrelated edits and files already equal to the verified result are preserved.
-Runs created before baseline tracking must be rerun before they can be applied.
+Runs created without a recorded starting commit must be rerun before they can be applied.
 
 Harness applies to the same checkout share an exclusive lock in Git's common
 directory (or `.harness` for non-Git sources), including across harness data

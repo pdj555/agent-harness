@@ -181,21 +181,35 @@ def _file_state(path: Path) -> list | None:
 
 def _save_source_state(stage: Stage) -> None:
     files = {name: _file_state(stage.root / name) for name in _working_paths(stage.root)}
-    _source_state_path(stage.root).write_text(json.dumps(files, sort_keys=True), encoding="utf-8")
+    head = _git(["rev-parse", "HEAD"], stage.root)
+    if head.returncode:
+        raise IsolationError("cannot read the isolated stage's Git state")
+    baseline = {"head": head.stdout.strip(), "files": files}
+    _source_state_path(stage.root).write_text(json.dumps(baseline, sort_keys=True), encoding="utf-8")
 
 
 def _read_source_state(root: Path) -> dict:
     try:
-        files = json.loads(_source_state_path(root).read_text(encoding="utf-8"))
-        if not isinstance(files, dict):
+        baseline = json.loads(_source_state_path(root).read_text(encoding="utf-8"))
+        if (
+            not isinstance(baseline, dict)
+            or not isinstance(baseline.get("head"), str)
+            or not baseline["head"]
+            or not isinstance(baseline.get("files"), dict)
+        ):
             raise ValueError("invalid baseline")
-        for name, state in files.items():
+        for name, state in baseline["files"].items():
             _validate_overlay_path(Path(name))
             if state is not None and (not isinstance(state, list) or not state):
                 raise ValueError("invalid file state")
-        return files
     except (OSError, ValueError, TypeError) as exc:
         raise IsolationError("source baseline is missing or invalid; run it again") from exc
+    head = _git(["rev-parse", "HEAD"], root)
+    if head.returncode or head.stdout.strip() != baseline["head"]:
+        raise IsolationError(
+            "Git history changed in the isolated stage; leave edits uncommitted and run the objective again"
+        )
+    return baseline
 
 
 @contextmanager
@@ -434,6 +448,9 @@ class Stage:
 
     def assert_safe(self) -> None:
         _assert_symlinks_stay_in_stage(self.root)
+        # Runtime stages persist a source baseline; standalone eval fixtures do not.
+        if _source_state_path(self.root).exists():
+            _read_source_state(self.root)
 
     def content_digest(self) -> str:
         """Bind verification to Git's baseline and the publishable working files."""
@@ -493,7 +510,7 @@ class Stage:
         files = self.changed_files()
         # Check the complete delta before writing anything. Unrelated source
         # edits are allowed; conflicting files make the entire apply fail.
-        _check_source_state(self, files, baseline)
+        _check_source_state(self, files, baseline["files"])
         source_root = self.source.resolve()
         for rel in files:
             src = self.root / rel

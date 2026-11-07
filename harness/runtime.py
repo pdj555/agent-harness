@@ -297,7 +297,7 @@ def _fail_unsafe_stage(store: Store, run_id: str, phase: str, exc: IsolationErro
     store.update_run(
         run_id,
         status="failed",
-        result="Run stopped because the isolated stage failed safety checks.",
+        result=f"Run stopped because the isolated stage failed safety checks: {exc}",
         blockers=blockers,
         active_work="",
         investigating="",

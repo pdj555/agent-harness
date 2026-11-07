@@ -116,9 +116,12 @@ def test_binary_file_is_a_recoverable_tool_error(tmp_path: Path, tool: str):
 
 def test_file_read_os_error_is_recoverable(tmp_path: Path, monkeypatch):
     stage = _ctx(tmp_path)
+    read_text = Path.read_text
 
-    def denied(_path, **_kwargs):
-        raise PermissionError("file is not readable")
+    def denied(path, **kwargs):
+        if path == stage.root / "tracker.py":
+            raise PermissionError("file is not readable")
+        return read_text(path, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", denied)
     with pytest.raises(ToolError, match="file is not readable"):

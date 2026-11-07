@@ -34,6 +34,7 @@ No drive-by refactors and no work the user did not ask for.
 Inspect the repository until you can name the change, then make it.
 Never claim tests passed. Software runs the project's checks after you stop and decides the result.
 Stay inside the working directory. Do not touch git internals. Do not request credentials.
+Leave edits uncommitted so software can verify and apply the full change.
 """
 
 AGENT_NAMES = ("claude", "codex", "openrouter")
