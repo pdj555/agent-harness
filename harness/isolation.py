@@ -398,7 +398,8 @@ class Stage:
         return (result.stdout or "") + (result.stderr or "")
 
     def diff(self) -> str:
-        result = _git(["diff", "--", "."], self.root)
+        """Compare with HEAD so Git's index cannot hide staged edits from review."""
+        result = _git(["diff", "HEAD", "--", "."], self.root)
         return result.stdout or ""
 
     def changed_files(self) -> list[str]:

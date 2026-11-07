@@ -57,7 +57,7 @@ def execute(
     if name == "git_status":
         return _git(["status", "--short"], stage.root)
     if name == "git_diff":
-        return _git(["diff", "--", "."], stage.root)
+        return _git(["diff", "HEAD", "--", "."], stage.root)
     if name == "delegate":
         if helper is None:
             raise ToolError("delegation is unavailable")
@@ -135,7 +135,7 @@ def tool_specs(role: str) -> list[dict]:
         "edit_file": "Replace exactly one occurrence of old with new in a file.",
         "run_shell": "Run a command with cwd set to the isolated worktree.",
         "git_status": "Show git status of the isolated worktree.",
-        "git_diff": "Show git diff of the isolated worktree.",
+        "git_diff": "Show staged and unstaged changes against HEAD in the isolated worktree.",
         "delegate": "Ask a helper to inspect an independent question and return evidence.",
         "set_plan": "Replace the live plan with evidence-backed steps before editing.",
     }
