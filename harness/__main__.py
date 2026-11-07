@@ -178,6 +178,8 @@ def _run(repo_path: Path, objective: str, config: Config, *, config_path: Path |
 
 def _print_run(run: Run) -> None:
     print(f"status: {run.status}")
+    if run.stage_path:
+        print(f"stage: {run.stage_path}")
     if run.verification:
         verification = run.verification
         print(f"checks: {verification.get('command', '')} (exit {verification.get('exit_code')})")

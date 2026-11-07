@@ -477,7 +477,8 @@ def test_review_sees_staged_edits_additions_deletions_and_unstaged_edits(
     assert len(reviewer.prompts) == 1
     for content in (
         '-        return "low"\n+        return "high"',
-        "+def review_marker():",
+        "new file added.py",
+        "def review_marker():",
         "deleted file mode",
         "a/README.md",
         "+    # Classify the documented priority bands.",

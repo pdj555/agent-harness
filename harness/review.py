@@ -103,8 +103,7 @@ MAX_NEW_FILE = 20_000
 def review_diff(stage: Stage) -> str:
     """Everything that would publish: tracked edits plus every new file, in full or marked as cut."""
     parts = [stage.diff() or ""]
-    untracked = _git(["ls-files", "--others", "--exclude-standard", "-z", "--", "."], stage.root)
-    for rel in sorted(name for name in (untracked.stdout or "").split("\0") if name):
+    for rel in stage.new_files():
         path = stage.root / rel
         try:
             text = path.read_text(encoding="utf-8")

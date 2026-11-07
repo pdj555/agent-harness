@@ -74,6 +74,74 @@ def test_run_prepares_proof_and_only_explicit_apply_changes_source(cli_config, c
     assert cli_config.auto_publish is True
 
 
+@pytest.mark.parametrize("temporary", ["modification", "addition", "deletion"])
+def test_apply_accepts_staged_changes_reverted_in_working_files(cli_config, capsys, temporary):
+    source = cli_config.workspace_roots[0]
+    readme = (source / "README.md").read_text()
+    if temporary == "modification":
+        edits = [
+            ToolCall("edit_file", {"path": "README.md", "old": readme, "new": readme + "temporary\n"}),
+            ToolCall("run_shell", {"command": "git add -A"}),
+            ToolCall("edit_file", {"path": "README.md", "old": readme + "temporary\n", "new": readme}),
+        ]
+    elif temporary == "addition":
+        edits = [
+            ToolCall("edit_file", {"path": "temporary.txt", "old": "", "new": "temporary\n"}),
+            ToolCall("run_shell", {"command": "git add -A"}),
+            ToolCall("run_shell", {"command": "rm temporary.txt"}),
+        ]
+    else:
+        edits = [
+            ToolCall("run_shell", {"command": "git rm README.md"}),
+            ToolCall("edit_file", {"path": "README.md", "old": "", "new": readme}),
+        ]
+    cli_config.provider_instance = ScriptedProvider([
+        Completion(tool_calls=[
+            ToolCall("edit_file", {"path": "tracker.py", "old": BUGGY_PRIORITY, "new": FIXED_PRIORITY}),
+            *edits,
+        ]),
+        Completion(text="Fixed."),
+    ])
+
+    assert main(["run", str(source), "Fix the priority bug."]) == 0
+    store, run = _latest_run(cli_config)
+    assert run.files_changed == ["tracker.py"]
+    assert FIXED_PRIORITY not in (source / "tracker.py").read_text()
+    capsys.readouterr()
+
+    assert main(["apply", run.id]) == 0
+
+    assert store.get_run(run.id).published_at
+    assert FIXED_PRIORITY in (source / "tracker.py").read_text()
+    assert (source / "README.md").read_text() == readme
+    assert not (source / "temporary.txt").exists()
+
+
+def test_run_shows_new_file_contents_before_apply(cli_config, capsys):
+    source = cli_config.workspace_roots[0]
+    new_file = "def added():\n    return 42\n"
+    cli_config.provider_instance = ScriptedProvider([
+        Completion(tool_calls=[
+            ToolCall("edit_file", {"path": "tracker.py", "old": BUGGY_PRIORITY, "new": FIXED_PRIORITY}),
+            ToolCall("edit_file", {"path": "new_module.py", "old": "", "new": new_file}),
+        ]),
+        Completion(text="Ready."),
+    ])
+
+    assert main(["run", str(source), "Fix the priority bug and add the module."]) == 0
+
+    output = capsys.readouterr().out
+    _, run = _latest_run(cli_config)
+    assert "new file new_module.py" in output
+    assert new_file in output
+    assert f"stage: {run.stage_path}" in output
+    assert new_file in run.diff
+    assert not (source / "new_module.py").exists()
+
+    assert main(["apply", run.id]) == 0
+    assert (source / "new_module.py").read_text() == new_file
+
+
 def test_run_rejects_repository_outside_allowlist(cli_config, tmp_path, capsys):
     outside = tmp_path / "another-repo"
     outside.mkdir()
