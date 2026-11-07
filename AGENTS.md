@@ -16,6 +16,8 @@ A local coding agent with one rule: models propose, software verifies. A user pi
 
 ## How to work here
 
+Use a pull request for changes to `main`, including documentation and skills. Administrator push access is not the default delivery path.
+
 Inspect before you plan. Make the smallest change that does the job and keep it isolated. Run the tests as you go, and repair failures yourself instead of handing them back. Ask the user only when evidence can't decide.
 
 Write tests that drive the shipped entry points and would fail if the behavior broke. Prefer a small architecture someone can read in an afternoon over a clever one.
