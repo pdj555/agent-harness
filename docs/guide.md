@@ -67,7 +67,7 @@ harness/
   authority.py      role and path checks
   tools.py          OpenRouter loop tools
   provider.py       deterministic, scripted, OpenRouter providers
-  triage.py         Suggest a fix scanning
+  triage.py         scans tests, TODOs, and commits to pick an objective
   app.py            FastAPI server and web client
   store.py          SQLite users, sessions, runs
   auth.py           scrypt hashes, session tokens
