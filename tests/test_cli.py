@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 from harness.__main__ import main
 from harness.config import Config
-from harness.provider import Completion, DeterministicProvider, ScriptedProvider
+from harness.provider import (
+    BUGGY_PRIORITY,
+    FIXED_PRIORITY,
+    Completion,
+    DeterministicProvider,
+    ScriptedProvider,
+    ToolCall,
+)
 from harness.store import Store
 
 
@@ -24,10 +31,19 @@ def _latest_run(config: Config):
     return store, store.list_runs(user.id)[0]
 
 
-def test_run_prepares_proof_and_only_explicit_apply_changes_source(cli_config, capsys):
+@pytest.mark.parametrize("staged", [False, True])
+def test_run_prepares_proof_and_only_explicit_apply_changes_source(cli_config, capsys, staged):
     source = cli_config.workspace_roots[0]
     before = (source / "tracker.py").read_bytes()
     cli_config.auto_publish = True
+    if staged:
+        cli_config.provider_instance = ScriptedProvider([
+            Completion(tool_calls=[
+                ToolCall("edit_file", {"path": "tracker.py", "old": BUGGY_PRIORITY, "new": FIXED_PRIORITY}),
+                ToolCall("run_shell", {"command": "git add -A"}),
+            ]),
+            Completion(text="Fixed."),
+        ])
 
     assert main(["run", str(source), "Fix the failing priority behavior."]) == 0
 
@@ -45,6 +61,7 @@ def test_run_prepares_proof_and_only_explicit_apply_changes_source(cli_config, c
     assert "checks:" in output
     assert "review:" in output
     assert "diff --git" in output
+    assert '-        return "low"\n+        return "high"' in output
     assert f"harness apply {run.id}" in output
 
     assert main(["apply", run.id]) == 0
