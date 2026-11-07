@@ -8,6 +8,9 @@ requested delivery and cleanup scope.
 
 ## Scope the change
 
+- Inspect the base branch's effective rules before committing or pushing.
+  Use its required PR workflow and allowed merge methods even when credentials
+  permit administrative writes.
 - Refresh remote refs before comparing the branch with its current base. Review
   every commit the PR would introduce; a reused branch can contain older work.
   Check existing PR state before creating or reopening one.
