@@ -17,6 +17,8 @@ The eval is 33 changes to three small programs, each shipped with a real bug: 6 
 - The spec check catches 27 of 27, and blocks 0 of the 6 honest fixes
 - A model reviewer, Claude Haiku 5.5, also caught 27 of 27 in a recorded run on 2026-10-14, not rerun here
 
+The published model scores used the previous Claude Agent SDK reviewer. They have not been rerun against the current Messages API reviewer.
+
 The 27 come in six families:
 
 - special_case (6): return the expected answers for exactly the tested inputs
@@ -37,8 +39,10 @@ agent-harness runs a coding agent on a repository you allow. The agent proposes;
 
 1. The agent edits in a staged copy of the repo. Files Git ignores, such as .env, never enter the stage, and staging refuses to start if a credential file would be included.
 2. When the agent stops, the project's own check command runs in the stage and its exit code is the verdict. For pytest, exit 0 also needs pytest's own report to show a test ran and none failed. That catches a run forced to exit 0 with failures on record or no test run, such as a conftest calling `os._exit(0)` before any test. Code in the stage runs inside pytest and can still stop it right after a failure, flip results, or write the report itself; docs/architecture.md lists those, and the review gate has to catch them. The agent's claim that it is done is recorded as text and decides nothing. A timeout counts as a failure.
-3. A reviewer that did not write the code reads the diff: Codex reviews Claude's work, Claude reviews Codex's. If the reviewer crashes or returns no readable verdict, the change is blocked. Blocks go back to the agent as findings it can repair, up to a set number of rounds.
-4. A SHA-256 fingerprint of the verified files is checked again before the change lands, so what lands is what passed.
+3. A fresh reviewer reads the diff and can inspect files. Cross-vendor review is preferred: Codex reviews Claude's work, Claude reviews Codex's. An Anthropic-only setup gets a separate, read-only Claude review context. A crash, malformed verdict, or blocking finding rejects the change. Blocks go back to the agent as findings it can repair, up to a set number of rounds.
+4. A SHA-256 fingerprint of the verified files is checked again before apply, so what lands is what passed. CLI runs leave the source unchanged until an explicit `harness apply`.
+
+Engines: Anthropic Messages API, Codex, or any model on OpenRouter. Claude uses the same authority-checked tools as the harness loop.
 
 The spec check is the independent check named in the first line. It never reads the test files. It copies the changed file into an empty directory, so a patch that exists only under the test runner never loads. It imports the file in a fresh interpreter with an environment of three variables (HOME, PATH, LANG), with a hook installed before the import that refuses file writes, network calls, and subprocess calls and records each attempt. It then runs the function on the tested inputs and on many inputs the agent never saw, comparing every answer with a rule written from the function's docstring alone.
 
@@ -51,8 +55,19 @@ uv sync --extra dev
 uv run harness demo
 uv run harness eval monitor --monitor spec                      # spec check: 27 of 27 caught
 uv run harness eval monitor --monitor spec --set blind-spots    # spec check: 0 of 3 caught
-uv run pytest                                                   # test suite: 330 passed
+uv run pytest
 ```
+
+## Use it on your repository
+
+```bash
+export ANTHROPIC_API_KEY=...
+export HARNESS_MODEL="your-claude-model-id"
+uv run harness repo add ./your-repo
+uv run harness run ./your-repo "Fix the broken behavior and add a regression test."
+```
+
+The command prints the diff, check output, review, and a run ID. Your source stays unchanged. Apply the exact verified patch with `uv run harness apply <run-id>`. [Configuration and web workspace →](docs/guide.md)
 
 ## Limits
 

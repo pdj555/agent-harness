@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from harness.accounts import create_account
 from harness.app import create_app
-from harness.config import add_extra_root, load_config
+from harness.config import Config, add_extra_root, load_config
 from harness.demo import run_demo
-from harness.store import Store
+from harness.isolation import IsolationError, Stage
+from harness.runtime import execute_run
+from harness.store import Run, Store
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -19,6 +23,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=None)
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("serve", help="run the local web app")
+    run = sub.add_parser("run", help="prepare a verified change in an allowlisted repository")
+    run.add_argument("repo", type=Path)
+    run.add_argument("objective")
+    apply = sub.add_parser("apply", help="apply a verified run to its repository")
+    apply.add_argument("run_id")
     demo = sub.add_parser("demo", help="run the sample-repository demo")
     demo.add_argument(
         "--objective",
@@ -37,7 +46,9 @@ def main(argv: list[str] | None = None) -> int:
     eval_sub = evals.add_subparsers(dest="eval_command")
     monitor = eval_sub.add_parser("monitor", help="how often the reviewer catches an agent gaming its tests")
     monitor.add_argument("--monitor", choices=["software", "spec", "claude", "codex"], default="software")
-    monitor.add_argument("--model", default=None, help="reviewer model; defaults to the vendor's")
+    monitor.add_argument(
+        "--model", default=None, help="reviewer model; required for Claude, optional for Codex"
+    )
     monitor.add_argument(
         "--specs",
         type=Path,
@@ -70,6 +81,12 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("eval command required")
         return _monitor_eval(args)
     config = load_config(args.config, prefer_live=command != "demo")
+    if command == "run":
+        if not args.objective.strip():
+            parser.error("objective must not be blank")
+        return _run(args.repo, args.objective.strip(), config, config_path=args.config)
+    if command == "apply":
+        return _apply(args.run_id, config)
     if command == "user":
         if args.user_command != "add":
             parser.error("user command required")
@@ -115,6 +132,101 @@ def main(argv: list[str] | None = None) -> int:
 
     app = create_app(config)
     uvicorn.run(app, host=config.host, port=config.port, log_level="info")
+    return 0
+
+
+def _cli_store(config: Config) -> Store:
+    store = Store(config.data_dir / "harness.db")
+    store.initialize()
+    return store
+
+
+def _run(repo_path: Path, objective: str, config: Config, *, config_path: Path | None) -> int:
+    store = _cli_store(config)
+    root = repo_path.expanduser().resolve()
+    repo = next((item for item in store.list_repos(config.workspace_roots) if item.path == root), None)
+    command = "harness" + (f" --config {shlex.quote(str(config_path))}" if config_path else "")
+    if repo is None:
+        print(f"Repository is not allowlisted. Add it with: {command} repo add {shlex.quote(str(root))}")
+        return 1
+    # This identity is local to the CLI and cannot be created or logged into through account tools.
+    user = store.get_user_by_username("local-cli") or store.create_user("local-cli", "disabled")
+    run = store.create_run(user.id, repo.id, objective)
+    print(f"run: {run.id}", flush=True)
+    try:
+        execute_run(
+            run.id,
+            store=store,
+            config=replace(config, auto_publish=False),
+            provider=config.provider_instance,
+        )
+    except KeyboardInterrupt:
+        store.request_stop(run.id)
+        store.add_event(run.id, "decision", "Stopped from the command line.")
+        store.update_run(run.id, status="stopped", result="Stopped by the user.", active_work="")
+        print("status: stopped")
+        return 130
+    finished = store.get_run(run.id)
+    if finished is None:
+        print("Run record is missing.")
+        return 1
+    _print_run(finished)
+    if finished.status == "completed" and (finished.verification or {}).get("stage_digest"):
+        print(f"Apply with: {command} apply {finished.id}")
+    return 0 if finished.status == "completed" else 1
+
+
+def _print_run(run: Run) -> None:
+    print(f"status: {run.status}")
+    if run.verification:
+        verification = run.verification
+        print(f"checks: {verification.get('command', '')} (exit {verification.get('exit_code')})")
+        output = str(verification.get("output") or "").strip()
+        if output:
+            print(output[-4000:])
+    if run.review:
+        print(f"review: {run.review.get('summary', '')}")
+        for finding in run.review.get("findings") or []:
+            print(f"  {finding}")
+    if run.diff:
+        print(run.diff)
+    if run.result:
+        print(run.result)
+
+
+def _apply(run_id: str, config: Config) -> int:
+    store = _cli_store(config)
+    run = store.get_run(run_id)
+    if run is None:
+        print("Run not found. Use the same configuration as the original run.")
+        return 1
+    if run.published_at:
+        print(f"Run {run_id} was already applied.")
+        return 0
+    if (
+        run.status != "completed"
+        or run.stop_requested
+        or not (run.verification or {}).get("passed")
+        or not (run.review or {}).get("passed")
+    ):
+        print("Only a verified completed run can be applied.")
+        return 1
+    repo = store.repo_by_id(run.repo_id, config.workspace_roots)
+    if repo is None:
+        print("The repository is no longer allowlisted.")
+        return 1
+    digest = (run.verification or {}).get("stage_digest")
+    if not digest or not run.stage_path or not Path(run.stage_path).is_dir():
+        print("The verified stage is missing. Run the objective again.")
+        return 1
+    try:
+        Stage(id=run.id, source=repo.path, root=Path(run.stage_path)).publish(expected_digest=digest)
+    except IsolationError as exc:
+        print(f"Cannot apply: {exc}")
+        return 1
+    store.add_event(run_id, "result", "Published verified files into the selected repository.")
+    store.mark_published(run_id)
+    print(f"Applied run {run_id} to {repo.name}.")
     return 0
 
 

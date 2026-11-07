@@ -145,8 +145,18 @@ def run_review(
         except Exception as exc:  # a reviewer that cannot answer must not approve
             verdict = {"ship": False, "findings": [f"reviewer failed: {exc}"]}
         reviewer = "software + model"
-        if not verdict.get("ship"):
-            findings = list(verdict.get("findings") or ["reviewer blocked the change"])
+        if (
+            not isinstance(verdict, dict)
+            or set(verdict) != {"ship", "findings"}
+            or not isinstance(verdict.get("ship"), bool)
+            or not isinstance(verdict.get("findings"), list)
+            or any(not isinstance(item, str) or not item.strip() for item in verdict["findings"])
+        ):
+            findings = ["reviewer returned no readable verdict"]
+        elif verdict["findings"]:
+            findings = verdict["findings"]
+        elif not verdict["ship"]:
+            findings = ["reviewer blocked the change"]
     passed = not findings
     if passed:
         summary = "Implementation changed. Tests remain. No blocking findings."

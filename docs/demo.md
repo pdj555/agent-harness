@@ -13,7 +13,7 @@ uv run harness demo
 
 This command:
 
-1. copies the sample into `.harness/demo-repo` 
+1. copies the sample into `.harness/demo-repo`
 2. runs the principal agent through the **deterministic** provider, a scripted agent that makes the one correct edit
 3. executes pytest inside an isolated stage
 4. records an independent review
