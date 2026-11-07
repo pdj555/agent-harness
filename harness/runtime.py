@@ -21,7 +21,7 @@ from harness.agents import (
 from harness.config import Config
 from harness.isolation import IsolationError, create_stage
 from harness.provider import Provider
-from harness.review import run_review
+from harness.review import review_diff, run_review
 from harness.store import TERMINAL_STATUSES, Store
 from harness.triage import scan as triage_scan
 from harness.verification import run_checks
@@ -243,7 +243,7 @@ def _drive(
             run_id,
             verification=evidence.as_dict(),
             files_changed=stage.changed_files(),
-            diff=stage.diff(),
+            diff=review_diff(stage),
             checks=[evidence.as_dict()],
         )
         store.add_event(
