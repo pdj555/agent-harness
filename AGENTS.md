@@ -39,4 +39,4 @@ Read the project skill that matches your work:
 - [Evidence-gated completion](skills/evidence-gated-completion/SKILL.md): verification, review, and session recovery.
 - [Isolated execution](skills/isolated-execution/SKILL.md): tools, stage Git state, and publish.
 - [Public boundary](skills/public-boundary/SKILL.md): docs, configs, fixtures, and prompts.
-- [Verified merge](skills/verified-merge/SKILL.md): PR scope, CI, merge, and requested branch cleanup.
+- [Verified merge](skills/verified-merge/SKILL.md): focused PRs, CI ownership, post-merge verification, and requested cleanup.
