@@ -16,7 +16,6 @@ from harness.agents import (
     make_agent,
     make_reviewer,
     parse_verdict,
-    stage_guard,
 )
 from harness.isolation import create_stage
 from harness.provider import DeterministicProvider, OpenRouterProvider
@@ -51,6 +50,7 @@ def test_make_agent_wraps_loop_providers_and_builds_frontier_agents(monkeypatch)
     with pytest.raises(AgentFailed, match="ANTHROPIC_API_KEY"):
         make_agent("claude")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
+    monkeypatch.setenv("HARNESS_MODEL", "claude-test")
     assert isinstance(make_agent("claude"), ClaudeAgent)
     with pytest.raises(ValueError, match="provider"):
         make_agent("ollama")
@@ -63,13 +63,15 @@ def test_make_agent_wraps_loop_providers_and_builds_frontier_agents(monkeypatch)
         ("codex", {"ANTHROPIC_API_KEY": "a", "OPENAI_API_KEY": "o"}, "claude"),
         ("openrouter", {"ANTHROPIC_API_KEY": "a"}, "claude"),
         ("openrouter", {"OPENAI_API_KEY": "o"}, "codex"),
-        ("claude", {"ANTHROPIC_API_KEY": "a"}, None),
+        ("claude", {"ANTHROPIC_API_KEY": "a"}, "claude"),
         ("codex", {"OPENAI_API_KEY": "o"}, None),
     ],
 )
 def test_reviewer_is_the_other_vendor(monkeypatch, principal, keys, expected):
     for name, value in keys.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.setenv("HARNESS_MODEL", "claude-test")
+    monkeypatch.setenv("HARNESS_REVIEWER_MODEL", "claude-review-test")
     reviewer = make_reviewer(principal)
     assert (reviewer.name if reviewer else None) == expected
 
@@ -80,6 +82,7 @@ def test_reviewer_override_and_off(monkeypatch):
     monkeypatch.setenv("HARNESS_REVIEWER", "none")
     assert make_reviewer("claude") is None
     monkeypatch.setenv("HARNESS_REVIEWER", "claude")
+    monkeypatch.setenv("HARNESS_MODEL", "claude-test")
     assert make_reviewer("claude").name == "claude"
     monkeypatch.setenv("HARNESS_REVIEWER", "grok")
     with pytest.raises(AgentFailed):
@@ -91,7 +94,7 @@ def test_default_agent_name_and_describe(monkeypatch):
     monkeypatch.setenv("HARNESS_MODEL", "claude-opus-5-5")
     info = describe("claude")
     assert info["model"] == "claude-opus-5-5"
-    assert info["engine"] == "Claude Code via the Claude Agent SDK"
+    assert info["engine"] == "Anthropic Messages API on authority-checked harness tools"
 
 
 @pytest.mark.parametrize(
@@ -101,121 +104,145 @@ def test_default_agent_name_and_describe(monkeypatch):
         ('Verdict:\n```json\n{"ship": false, "findings": ["drops a test"]}\n```', False, ["drops a test"]),
         ("looks great to me", False, ["reviewer returned no readable verdict"]),
         ('{"ship": "yes"}', False, ["reviewer returned no readable verdict"]),
+        ('{"ship": true}', False, ["reviewer returned no readable verdict"]),
+        ('{"ship": true, "findings": "unsafe"}', False, ["reviewer returned no readable verdict"]),
+        ('{"ship": true, "findings": ["unsafe"]}', False, ["unsafe"]),
+        ('{"ship": true, "findings": [42]}', False, ["reviewer returned no readable verdict"]),
     ],
 )
 def test_parse_verdict_blocks_anything_unreadable(text, ship, findings):
     assert parse_verdict(text) == {"ship": ship, "findings": findings}
 
 
-# ---------------------------------------------------------------- stage guard
-
-
-def test_stage_guard_confines_paths_and_honours_stop(ctx: TurnContext):
-    guard = stage_guard(ctx, writable=True)
-    assert guard("Read", {"file_path": "tracker.py"}) is None
-    assert guard("Read", {"file_path": str(ctx.stage.root / "tracker.py")}) is None
-    assert "outside the workspace" in guard("Read", {"file_path": "/etc/passwd"})
-    assert "outside the workspace" in guard("Edit", {"file_path": "../source/tracker.py"})
-    assert "git internals" in guard("Write", {"file_path": ".git/config"})
-    assert "outside the workspace" in guard("Grep", {"pattern": "x", "path": "/"})
-    assert "not allowed" in guard("Read", {"file_path": "~/.ssh/id_rsa"})
-    assert "not allowed" in guard("Write", {"file_path": "$HOME/.bashrc"})
-    reviewer = stage_guard(ctx, writable=False)
-    assert "not allowed for a reviewer" in reviewer("Edit", {"file_path": "tracker.py"})
-    assert "not allowed for a reviewer" in reviewer("Bash", {"command": "ls"})
-    ctx.store.request_stop(ctx.run_id)
-    assert "stop was requested" in guard("Read", {"file_path": "tracker.py"})
-
-
 # ---------------------------------------------------------------- claude
 
 
-def _claude_messages(*, tool_input: dict, is_error: bool = False, errors=None):
-    from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
+def _claude_setup(monkeypatch, replies):
+    from harness.anthropic import AnthropicProvider
 
-    return [
-        AssistantMessage(
-            content=[TextBlock(text="fixing"), ToolUseBlock(id="t1", name="Edit", input=tool_input)],
-            model="claude",
-        ),
-        ResultMessage(
-            subtype="success",
-            duration_ms=1,
-            duration_api_ms=1,
-            is_error=is_error,
-            num_turns=2,
-            session_id="session-1",
-            total_cost_usd=0.25,
-            result="Fixed the priority labels.",
-            errors=errors,
-        ),
-    ]
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+    monkeypatch.setenv("HARNESS_MODEL", "claude-test")
+    payloads = []
+
+    def request(self, payload):
+        payloads.append(payload)
+        return replies.pop(0)
+
+    monkeypatch.setattr(AnthropicProvider, "_request", request)
+    return payloads
 
 
-def test_claude_agent_streams_actions_resumes_and_confines(monkeypatch, ctx: TurnContext):
-    import claude_agent_sdk
+def _tool(name, arguments, call_id="tool-1"):
+    return {
+        "stop_reason": "tool_use",
+        "content": [{"type": "tool_use", "id": call_id, "name": name, "input": arguments}],
+    }
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
-    monkeypatch.setenv("OPENAI_API_KEY", "o")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "r")
-    seen_options = []
 
-    async def fake_query(*, prompt, options):
-        seen_options.append(options)
-        for message in _claude_messages(tool_input={"file_path": "tracker.py"}):
-            yield message
+def _text(text):
+    return {"stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}
 
-    monkeypatch.setattr(claude_agent_sdk, "query", fake_query)
+
+def test_claude_uses_harness_authority_and_keeps_history(monkeypatch, ctx: TurnContext):
+    before = (ctx.stage.source / "tracker.py").read_text()
+    payloads = _claude_setup(monkeypatch, [
+        _tool("edit_file", {"path": "../escape.py", "old": "", "new": "escaped"}),
+        _tool("edit_file", {"path": "tracker.py", "old": 'return "low"', "new": 'return "high"'}),
+        _text("Ready for checks."),
+        _text("Repair considered."),
+    ])
     agent = ClaudeAgent()
-
-    assert agent.turn("fix it", ctx) == "Fixed the priority labels."
-    assert agent.turn("again", ctx) == "Fixed the priority labels."
-
-    first, second = seen_options
-    assert first.cwd == str(ctx.stage.root)
-    assert first.resume is None and second.resume == "session-1"
-    assert first.setting_sources == []
-    assert first.env["ANTHROPIC_API_KEY"] == "a"
-    assert first.env["OPENAI_API_KEY"] == "" and first.env["OPENROUTER_API_KEY"] == ""
-    assert "WebFetch" not in first.tools and "Bash" in first.tools
-    assert agent.cost_usd == pytest.approx(0.5)
+    assert isinstance(agent, LoopAgent)
+    assert agent.turn("fix it", ctx) == "Ready for checks."
+    assert agent.turn("check this finding", ctx) == "Repair considered."
+    assert (ctx.stage.source / "tracker.py").read_text() == before
+    assert (ctx.stage.root / "tracker.py").read_text() != before
+    assert not (ctx.stage.root.parent / "escape.py").exists()
+    denied = payloads[1]["messages"][-1]["content"][0]
+    assert denied["is_error"] is True
+    assert "outside the workspace" in denied["content"]
+    assert payloads[-1]["messages"][0]["content"][0]["text"] == "fix it"
+    assert payloads[-1]["messages"][-1]["content"][0]["text"] == "check this finding"
     events = [event["detail"] for event in ctx.store.get_run(ctx.run_id).events]
     assert "Edited tracker.py" in events
 
-    import asyncio
 
-    hook = first.hooks["PreToolUse"][0].hooks[0]
-    denied = asyncio.run(hook({"tool_name": "Read", "tool_input": {"file_path": "/etc/passwd"}}, "t", None))
-    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-    allowed = asyncio.run(hook({"tool_name": "Read", "tool_input": {"file_path": "tracker.py"}}, "t", None))
-    assert allowed == {}
+def test_claude_review_is_fresh_structured_and_read_only(monkeypatch, ctx: TurnContext):
+    payloads = _claude_setup(monkeypatch, [
+        _text("principal private history"),
+        _tool("read_file", {"path": "tracker.py"}),
+        _text('{"ship": true, "findings": []}'),
+    ])
+    agent = ClaudeAgent()
+    agent.turn("principal instruction", ctx)
+    assert agent.review("independent diff evidence", ctx) == {"ship": True, "findings": []}
+    first_review = payloads[1]
+    assert "principal private history" not in str(first_review)
+    assert "principal instruction" not in str(first_review)
+    assert first_review["output_config"]["format"]["type"] == "json_schema"
+    assert {tool["name"] for tool in first_review["tools"]} == {
+        "read_file", "search", "list_files", "git_diff", "git_status"
+    }
+    assert "classify_priority" in payloads[2]["messages"][-1]["content"][0]["content"]
 
 
-def test_claude_agent_error_result_fails_the_turn(monkeypatch, ctx: TurnContext):
-    import claude_agent_sdk
+def test_reviewer_cannot_mutate_or_change_plan_even_if_provider_requests_it(ctx: TurnContext):
+    from dataclasses import replace
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
+    from harness.provider import ScriptedProvider
 
-    async def fake_query(*, prompt, options):
-        for message in _claude_messages(tool_input={}, is_error=True, errors=["overloaded"]):
-            yield message
+    agent = LoopAgent(ScriptedProvider([]), role="reviewer")
+    before = (ctx.stage.root / "tracker.py").read_text()
+    quiet = replace(ctx, quiet=True)
+    result = agent._run_tool("edit_file", "edit", {
+        "path": "tracker.py", "old": 'return "low"', "new": 'return "high"'
+    }, quiet)
+    assert result["is_error"] is True
+    assert (ctx.stage.root / "tracker.py").read_text() == before
+    result = agent._run_tool("set_plan", "plan", {"steps": ["wrong"]}, quiet)
+    assert result["is_error"] is True
+    assert ctx.store.get_run(ctx.run_id).plan == []
 
-    monkeypatch.setattr(claude_agent_sdk, "query", fake_query)
-    with pytest.raises(AgentFailed, match="overloaded"):
+
+def test_claude_stops_before_executing_response_tools(monkeypatch, ctx: TurnContext):
+    from harness.anthropic import AnthropicProvider
+
+    _claude_setup(monkeypatch, [])
+    before = (ctx.stage.root / "tracker.py").read_text()
+
+    def stop_during_request(self, payload):
+        ctx.store.request_stop(ctx.run_id)
+        return _tool("edit_file", {"path": "tracker.py", "old": 'return "low"', "new": 'return "high"'})
+
+    monkeypatch.setattr(AnthropicProvider, "_request", stop_during_request)
+    with pytest.raises(RunStopped):
+        ClaudeAgent().turn("fix it", ctx)
+    assert (ctx.stage.root / "tracker.py").read_text() == before
+    assert any(
+        "edit_file skipped because stop was requested" in event["detail"]
+        for event in ctx.store.get_run(ctx.run_id).events
+    )
+
+
+def test_claude_step_budget_is_enforced(monkeypatch, ctx: TurnContext):
+    from harness.agents import StepLimit
+
+    _claude_setup(monkeypatch, [_tool("read_file", {"path": "tracker.py"})])
+    ctx.max_steps = 1
+    with pytest.raises(StepLimit):
         ClaudeAgent().turn("fix it", ctx)
 
 
-def test_claude_agent_stops_mid_stream(monkeypatch, ctx: TurnContext):
-    import claude_agent_sdk
+def test_stop_during_api_failure_finishes_stopped(monkeypatch, ctx: TurnContext):
+    from harness.anthropic import AnthropicProvider
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
+    _claude_setup(monkeypatch, [])
 
-    async def fake_query(*, prompt, options):
+    def stop_then_fail(self, payload):
         ctx.store.request_stop(ctx.run_id)
-        for message in _claude_messages(tool_input={"file_path": "tracker.py"}):
-            yield message
+        raise RuntimeError("connection failed")
 
-    monkeypatch.setattr(claude_agent_sdk, "query", fake_query)
+    monkeypatch.setattr(AnthropicProvider, "_request", stop_then_fail)
     with pytest.raises(RunStopped):
         ClaudeAgent().turn("fix it", ctx)
 
@@ -322,33 +349,24 @@ def test_codex_turn_that_is_not_completed_fails(monkeypatch, ctx: TurnContext):
         agent.turn("fix it", ctx)
 
 
-def test_claude_max_turns_is_a_step_limit(monkeypatch, ctx: TurnContext):
-    import claude_agent_sdk
-    from claude_agent_sdk import ResultMessage
-    from harness.agents import StepLimit
-
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
-
-    async def fake_query(*, prompt, options):
-        yield ResultMessage(
-            subtype="error_max_turns", duration_ms=1, duration_api_ms=1, is_error=True, num_turns=24,
-            session_id="s",
-        )
-
-    monkeypatch.setattr(claude_agent_sdk, "query", fake_query)
-    with pytest.raises(StepLimit):
-        ClaudeAgent().turn("fix it", ctx)
-
-
-def test_reviewers_never_inherit_the_principal_model(monkeypatch):
+def test_cross_vendor_review_never_inherits_the_principal_model(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
     monkeypatch.setenv("OPENAI_API_KEY", "o")
     monkeypatch.setenv("HARNESS_MODEL", "qwen/qwen3-coder")
-    assert make_reviewer("openrouter").model is None
-    assert make_reviewer("claude").model is None
-    monkeypatch.setenv("HARNESS_REVIEWER_MODEL", "gpt-6")
-    assert make_reviewer("claude").model == "gpt-6"
+    with pytest.raises(AgentFailed, match="HARNESS_REVIEWER_MODEL"):
+        make_reviewer("openrouter")
+    assert make_reviewer("claude").model is None  # Codex keeps its vendor default
+    monkeypatch.setenv("HARNESS_REVIEWER_MODEL", "claude-review-test")
+    assert make_reviewer("openrouter").model == "claude-review-test"
     assert ClaudeAgent().model == "qwen/qwen3-coder"
+
+
+def test_anthropic_only_run_uses_same_model_in_a_separate_reviewer(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
+    monkeypatch.setenv("HARNESS_MODEL", "claude-test")
+    reviewer = make_reviewer("claude")
+    assert reviewer.model == "claude-test"
+    assert reviewer.role == "reviewer"
 
 
 def test_agent_env_blanks_host_secrets_and_home(monkeypatch, ctx: TurnContext):

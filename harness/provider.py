@@ -21,6 +21,7 @@ class ToolCall:
 class Completion:
     text: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
+    content_blocks: list[dict] | None = None
 
 
 class Provider(Protocol):

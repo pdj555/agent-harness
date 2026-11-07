@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
+
 from harness.agents import (
     AGENT_NAMES,
     Agent,
     AgentFailed,
-    ClaudeAgent,
     LoopAgent,
     RunStopped,
     StepLimit,
@@ -41,9 +42,11 @@ SUGGESTED_OBJECTIVE = (
 
 def configuration_answer(objective: str, engine: str) -> str | None:
     text = " ".join((objective or "").lower().split())
-    if not any(
-        phrase in text
-        for phrase in ("what model", "which model", "what provider", "which provider", "what llm")
+    if not re.fullmatch(
+        r"(?:what|which) (?:model|provider|llm)"
+        r"(?: (?:is this(?: using| running)?|are you(?: using| running)?|"
+        r"is (?:configured|being used)|does this use))?[?!.]*",
+        text,
     ):
         return None
     info = describe(engine)
@@ -102,19 +105,6 @@ def _execute_run(
             result=answer,
             files_changed=[],
             diff="",
-            verification={
-                "passed": True,
-                "command": "not applicable",
-                "exit_code": 0,
-                "output": "No repository checks; no code change was requested.",
-            },
-            review={
-                "role": "reviewer",
-                "passed": True,
-                "summary": "No repository change requested.",
-                "findings": [],
-                "files_reviewed": [],
-            },
         )
         store.add_event(run_id, "result", answer)
         return
@@ -195,8 +185,8 @@ def _wake_agent(agent: Agent, *, run, store: Store) -> tuple[Agent, bool]:
 
     The stage is always provisioned fresh; the session is what carries
     over. A loop agent resumes with its full conversation and step count.
-    A Claude agent resumes through the vendor session id recorded on the
-    run. Terminal runs are never woken: re-driving one is a fresh start.
+    Claude uses the same persisted conversation as other loop agents.
+    Terminal runs are never woken: re-driving one is a fresh start.
     """
     if run.status in TERMINAL_STATUSES:
         return agent, False
@@ -209,9 +199,6 @@ def _wake_agent(agent: Agent, *, run, store: Store) -> tuple[Agent, bool]:
         return LoopAgent.restore(
             agent.provider, messages, steps=steps if isinstance(steps, int) else 0
         ), True
-    if isinstance(agent, ClaudeAgent) and run.vendor_session_id:
-        agent.session_id = run.vendor_session_id
-        return agent, True
     return agent, False
 
 
@@ -344,7 +331,7 @@ def _fail_unsafe_stage(store: Store, run_id: str, phase: str, exc: IsolationErro
     store.update_run(
         run_id,
         status="failed",
-        result="Run stopped because the isolated stage failed safety checks.",
+        result=f"Run stopped because the isolated stage failed safety checks: {exc}",
         blockers=blockers,
         active_work="",
         investigating="",

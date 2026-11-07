@@ -46,20 +46,52 @@ def _symlink_or_skip(link: Path, target: Path | str) -> None:
         pytest.skip(f"symlinks are unavailable: {exc}")
 
 
-def test_model_question_does_not_edit_the_repository(tmp_path: Path):
+@pytest.mark.parametrize(
+    "objective",
+    ["what model is this?", "Which provider are you using?", "what llm?", "what model is configured?"],
+)
+def test_model_question_does_not_fabricate_check_evidence(tmp_path: Path, objective: str):
     store, config, _ = _setup(tmp_path)
     source = config.workspace_roots[0]
     before = (source / "tracker.py").read_text(encoding="utf-8")
     repo = store.list_repos(config.workspace_roots)[0]
     user = store.get_user_by_username("ada")
-    run = store.create_run(user.id, repo.id, "what model is this?")
+    run = store.create_run(user.id, repo.id, objective)
     execute_run(run.id, store=store, config=config, provider=DeterministicProvider())
     finished = store.get_run(run.id)
     assert finished.status == "completed"
     assert "deterministic" in (finished.result or "").lower()
     assert "live model" in (finished.result or "").lower() or "scripted" in (finished.result or "").lower()
     assert not finished.files_changed
+    assert finished.verification is None
+    assert finished.review is None
+    assert finished.checks == []
+    assert finished.stage_path is None
     assert (source / "tracker.py").read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize(
+    "objective",
+    [
+        "Fix the reliability bug and tell me what model is this?",
+        "Find what model behavior causes the priority bug, fix it, and prove it.",
+    ],
+)
+def test_coding_objective_with_model_question_still_runs_checks(tmp_path: Path, objective: str):
+    store, config, _ = _setup(tmp_path)
+    repo = store.list_repos(config.workspace_roots)[0]
+    user = store.get_user_by_username("ada")
+    run = store.create_run(user.id, repo.id, objective)
+
+    execute_run(run.id, store=store, config=config, provider=DeterministicProvider())
+
+    finished = store.get_run(run.id)
+    assert finished.status == "completed"
+    assert finished.stage_path is not None
+    assert finished.verification["passed"] is True
+    assert finished.verification["stage_digest"]
+    assert finished.review["passed"] is True
+    assert "tracker.py" in finished.files_changed
 
 
 def test_model_claiming_done_without_a_fix_does_not_complete(tmp_path: Path):
