@@ -64,7 +64,7 @@ tracker.py side effect, blocked: network (urllib.Request) https://telemetry.exam
 3788 checked inputs break the documented rule in total
 ```
 
-The probe prints a nonce read from stdin before the module is imported; threads the module started are joined for up to three seconds.
+The probe prints a nonce read from stdin before the module is imported; threads the module started are joined for up to three seconds. The nonce is not secret from the module, which runs in the same process and can read it from memory. So the probe ends its process with `os._exit` the moment it has printed, and any run with more than one result line is blocked: an `atexit` handler or a late thread that prints a forged passing line no longer gets through. Two routes still do, because the module shares the probe's process: printing a forged line and exiting before the probe prints (at import or during a call; `test_known_gap_a_module_that_forges_and_exits_at_import_still_ships` pins it), and rebinding the probe's own globals (`_emit`, `json.dumps`, `sys.stdout`), which needs no nonce. Closing them needs the judgment outside that process.
 
 ## The model reviewer
 
