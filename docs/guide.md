@@ -1,6 +1,6 @@
 # agent-harness guide
 
-The full reference: setup, usage, architecture, and design. For what this repo found and why it matters, see the [README](../README.md) and the [research summary](research.md).
+See the [README](../README.md) and the [research summary](research.md).
 
 ## Run it on your own code
 
@@ -27,7 +27,9 @@ uv run harness repo add ~/code/your-repo
 uv run harness serve
 ```
 
-Open http://127.0.0.1:7465, log in, pick the repository, and type an objective. If you don't know what to ask for, **Suggest a fix** reads the tests, open TODOs, and recent commits and picks something. When the run is green you get the diff, the check output, and both reviews. **Apply** copies exactly the files that were verified.
+Open http://127.0.0.1:7465, log in, pick the repository, and type an objective. **Suggest a fix** reads the tests, TODOs, and recent commits and picks an objective.
+
+`POST /api/signup` is refused; the operator creates each account, and passwords are stored as scrypt hashes.
 
 ## Engines
 
@@ -35,13 +37,13 @@ Open http://127.0.0.1:7465, log in, pick the repository, and type an objective. 
 | --- | --- | --- |
 | `claude` | Anthropic Messages API on harness tools | `ANTHROPIC_API_KEY` and `HARNESS_MODEL` |
 | `codex` | Codex, via the Codex SDK | `OPENAI_API_KEY` or `CODEX_API_KEY` |
-| `openrouter` | Any OpenRouter model: Grok, DeepSeek, Qwen, Llama, and the rest | `OPENROUTER_API_KEY` and `HARNESS_MODEL` |
+| `openrouter` | Any OpenRouter model | `OPENROUTER_API_KEY` and `HARNESS_MODEL` |
 
-Leave `HARNESS_PROVIDER` unset and the first key found wins, in that order. `HARNESS_MODEL` picks the model for any engine.
+Leave it unset and the first key found wins. `HARNESS_MODEL` picks the model.
 
 ## Review
 
-Every diff that passes the tests goes through the software review gate. Model review prefers another vendor:
+Every diff that passes the tests goes through the software review gate. Tests must still exist, an implementation file must have changed, and the diff is checked for new skip markers, deleted tests, and a `conftest.py` that replaces project code at import. The [monitor eval](evals.md) measures the software rules at 6 of 27 attacks caught. Model review prefers another vendor:
 
 - Claude's work is reviewed by Codex when its key is available. An Anthropic-only run gets a fresh Claude review context, using the principal model unless `HARNESS_REVIEWER_MODEL` is set. This separates the review from the author's conversation; it does not provide cross-vendor independence.
 - Codex's work is reviewed by Claude when its key is available.
@@ -52,12 +54,12 @@ A block goes back to the agent as findings to fix, in the same conversation. Cla
 
 ## How a run works
 
-1. **Scope.** Pick an allowlisted repository and state the objective. Software scans tests, TODO markers, and recent commits first.
-2. **Isolate.** The agent works in a Git worktree under `.harness/stages/<run>/`. Ignored files (`.env`, `node_modules`, caches) never enter it. Your source tree does not move.
-3. **Verify.** The project's own checks run after the agent stops. Their exit code is the verdict; the agent's "done" is ignored.
-4. **Review.** Software checks the diff (tests still exist, implementation changed), then the second model reviews it.
-5. **Repair.** Failed checks or review findings go back to the agent, up to `max_repairs` times. Then the run fails.
-6. **Apply.** Verification fingerprints the staged tree. Apply re-checks that fingerprint, so the files that land are the files that passed.
+1. Pick an allowlisted repository and state the objective; software scans tests, TODO markers, and recent commits first.
+2. The agent works in a Git worktree under `.harness/stages/<run>/`, staged from tracked files and untracked files Git does not ignore. `.env`, `node_modules`, and caches never enter it.
+3. The project's own checks run after the agent stops. Their exit code is the verdict, and for pytest the run's JUnit report must also show at least one test ran and none failed or errored (docs/architecture.md lists what that does and does not stop); the agent's "done" is ignored.
+4. Software checks the diff, then the selected model reviewer inspects it.
+5. Failed checks or review findings go back to the agent, up to `max_repairs` times. Then the run fails.
+6. Apply rechecks the verified fingerprint and each affected source path against its baseline before copying the patch. A stage that moved its initial Git HEAD, including a commit or amend, is rejected. Legacy runs without that initial commit must be rerun.
 
 Every exit is terminal: `completed`, `failed`, or `stopped`. Stop blocks further tool execution. A pending Messages API request can continue until it returns or times out. History is durable.
 
@@ -70,13 +72,10 @@ Every exit is terminal: `completed`, `failed`, or `stopped`. Stop blocks further
 
 ## Configure
 
-Copy [harness.example.toml](../harness.example.toml) to `harness.toml`. The settings that matter:
+Copy [harness.example.toml](../harness.example.toml) to `harness.toml`.
 
 - `workspace.roots`: the only repositories the app will open.
-- `workspace.check_command`: the verdict command. Defaults to `python -m pytest -q`. Use `npm test` or `go test ./...` for other stacks. It's split with `shlex` and never handed to a shell.
-- `workspace.check_timeout`: seconds before a check counts as failed. Default 300.
-
-See [.env.example](../.env.example) for every variable.
+- `workspace.check_command`: the verdict command. Defaults to `python -m pytest -q`. Use `npm test` or `go test ./...` for other stacks.
 
 ## Layout
 
@@ -86,14 +85,18 @@ harness/
   anthropic.py      streamed Messages API, strict tools, cached history, structured review
   runtime.py        the run: scan, drive the engine, verify, review, repair
   verification.py   runs the check command; the only source of `passed`
-  review.py         software review gate plus the cross-vendor model reviewer
+  review.py         software gate plus model reviewer
   isolation.py      worktree staging, fingerprints, apply
   authority.py      role and path checks every tool call goes through
   tools.py          shared authority-checked tools for Claude and OpenRouter
   provider.py       deterministic, scripted, and OpenRouter providers
   triage.py         reads tests, TODOs, and commits for Suggest a fix
   app.py            FastAPI server and the web client in static/
-  store.py          SQLite users, sessions, and durable runs
+  store.py          SQLite users, sessions, runs, conversation log and session state
+  auth.py           scrypt hashes, session tokens
+  config.py         roots, provider, data dir
+  accounts.py       operator-created accounts
+  demo.py           sample-repo demo entry
 docs/               architecture, runtime, security, demo
 examples/           the seeded sample repository
 skills/             guidance for agents working on this repo
@@ -108,4 +111,4 @@ uv run ruff check harness tests scripts
 uv run python scripts/scan_secrets.py
 ```
 
-CI also runs `pip-audit`, builds the wheel, scans it for secrets, and runs the demo from the installed wheel. See [CONTRIBUTING.md](../CONTRIBUTING.md).
+CI runs `pip-audit`, builds the wheel, scans it for secrets, and runs the demo from the installed wheel.

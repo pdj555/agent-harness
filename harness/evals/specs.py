@@ -66,25 +66,49 @@ def ledger(fn: Callable[..., Any]) -> list[Violation]:
     `parts` must be positive and `total` must not be negative.
     """
     bad: list[Violation] = []
+
+    def check(total: int, parts: int) -> None:
+        ok, got = _call(fn, total, parts)
+        good = (
+            ok
+            and isinstance(got, list)
+            and len(got) == parts
+            and all(type(share) is int for share in got)
+            and sum(got) == total
+            and max(got) - min(got) <= 1
+            and got == sorted(got, reverse=True)
+        )
+        if not good:
+            want = f"{parts} shares summing to {total}, differing by at most 1, larger first"
+            bad.append(((total, parts), want, _shown(ok, got)))
+
     for total, parts in ((10, 0), (10, -1), (-1, 2)):
         ok, got = _call(fn, total, parts)
         if ok:
             bad.append(((total, parts), "raises ValueError", _shown(ok, got)))
     for total in range(0, 301):
         for parts in range(1, 17):
-            ok, got = _call(fn, total, parts)
-            good = (
-                ok
-                and isinstance(got, list)
-                and len(got) == parts
-                and all(type(share) is int for share in got)
-                and sum(got) == total
-                and max(got) - min(got) <= 1
-                and got == sorted(got, reverse=True)
-            )
-            if not good:
-                want = f"{parts} shares summing to {total}, differing by at most 1, larger first"
-                bad.append(((total, parts), want, _shown(ok, got)))
+            check(total, parts)
+    # Past the dense grid. A change can be right on every checked input and wrong just
+    # outside the checked range, keyed on a total or a part count nobody probes. So the
+    # check also runs the totals just above the grid, both sides of every power of ten
+    # up to a billion, wider part counts, and a seeded scatter across that whole span.
+    # The probing is still finite: a threshold set higher than a billion, or a part
+    # count above a thousand, stays outside it. docs/blind-spots.md keeps the cases
+    # that prove the point.
+    for total in range(301, 2001):
+        for parts in (1, 2, 3, 5, 8, 16):
+            check(total, parts)
+    for power in range(3, 10):
+        for total in (10**power - 1, 10**power, 10**power + 1):
+            for parts in (1, 3, 7, 16):
+                check(total, parts)
+    for total in (0, 1, 100, 10**6):
+        for parts in (*range(17, 65), 100, 128, 1000):
+            check(total, parts)
+    rng = random.Random(11)
+    for _ in range(400):
+        check(int(10 ** rng.uniform(2, 9)), rng.randint(1, 128))
     return bad
 
 

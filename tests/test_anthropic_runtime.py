@@ -80,6 +80,9 @@ def test_anthropic_only_runtime_requires_real_checks_and_separate_review(
     review_request = next(payload for is_review, payload in requests if is_review)
     assert "The change is ready for independent verification." not in str(review_request)
     assert {spec["name"] for spec in review_request["tools"]}.isdisjoint({"edit_file", "run_shell"})
+    messages = store.get_messages(run.id)
+    assert '"id": "review-read"' not in json.dumps(messages)
+    assert store.get_session_state(run.id) == {"steps": 4}
     if verdict["findings"]:
         assert finished.status == "failed"
         assert finished.review["passed"] is False

@@ -138,12 +138,73 @@ class LoopAgent:
         self.role = role
         self.messages: list[dict] = [{"role": "system", "content": system}]
         self.steps = 0
+        self._bound: tuple[int, str] | None = None
+        self._stored = 0
+
+    @classmethod
+    def restore(cls, provider: Provider, messages: list[dict], steps: int = 0) -> LoopAgent:
+        """Rebuild an agent from a run's persisted conversation (the wake path)."""
+        agent = cls(provider)
+        if messages:
+            agent.messages = [dict(message) for message in messages]
+        pending: dict[str, dict] = {}
+        for message in agent.messages:
+            if message["role"] == "assistant":
+                pending = {call["id"]: call for call in message.get("tool_calls") or []}
+            elif message["role"] == "tool":
+                pending.pop(message["tool_call_id"], None)
+        for call in pending.values():
+            agent.messages.append({
+                "role": "tool",
+                "name": call["name"],
+                "tool_call_id": call["id"],
+                "arguments": call.get("arguments") or {},
+                "content": (
+                    "The run was interrupted before this tool result was recorded. "
+                    "The tool may have run. Inspect the stage before continuing; "
+                    "do not assume success or repeat a mutation without checking."
+                ),
+                "is_error": True,
+            })
+        agent.steps = steps
+        return agent
+
+    def _bind(self, ctx: TurnContext) -> None:
+        """Attach this conversation to the run's session log on first use.
+
+        The store holds a prefix of the conversation: a fresh agent starts
+        at zero, a restored agent's messages are exactly the stored ones,
+        so the count resumes where the log ends.
+        """
+        if ctx.quiet or self.role != "principal":
+            return
+        key = (id(ctx.store), ctx.run_id)
+        if self._bound == key:
+            return
+        self._bound = key
+        stored = ctx.store.get_messages(ctx.run_id)
+        if stored == self.messages[: len(stored)]:
+            self._stored = len(stored)
+        else:
+            self._stored = len(self.messages)
+
+    def _persist(self, ctx: TurnContext) -> None:
+        """Append any not-yet-stored messages to the run's session log."""
+        if self._bound != (id(ctx.store), ctx.run_id):
+            return
+        while self._stored < len(self.messages):
+            ctx.store.append_message(ctx.run_id, self.messages[self._stored])
+            self._stored += 1
+        ctx.store.save_session_state(ctx.run_id, {"steps": self.steps})
 
     def turn(self, prompt: str, ctx: TurnContext) -> str:
+        self._bind(ctx)
         self.messages.append({"role": "user", "content": prompt})
+        self._persist(ctx)
         tools = tool_specs(self.role)
         while self.steps < ctx.max_steps:
             self.steps += 1
+            self._persist(ctx)
             ctx.check("continuing the run")
             try:
                 completion = self.provider.complete(self.messages, tools)
@@ -160,12 +221,14 @@ class LoopAgent:
             if not completion.tool_calls:
                 return completion.text or ""
             self.messages.append(_assistant_message(completion))
+            self._persist(ctx)
             for call in completion.tool_calls:
                 if ctx.stop_requested():
                     skipped = f"{call.name} skipped because stop was requested"
                     ctx.store.add_event(ctx.run_id, "decision", skipped)
                     raise RunStopped()
                 self.messages.append(self._run_tool(call.name, call.id, call.arguments or {}, ctx))
+                self._persist(ctx)
                 ctx.check("continuing after a tool call")
         raise StepLimit()
 
@@ -309,6 +372,9 @@ class CodexAgent:
                     model=self.model,
                     sandbox=Sandbox.workspace_write,
                 )
+                thread_id = getattr(self._thread, "id", None)
+                if thread_id:
+                    ctx.store.update_run(ctx.run_id, vendor_session_id=str(thread_id))
             return self._drive(self._thread.turn(prompt), ctx)
         except (RunStopped, UnsafeStage, AgentFailed):
             raise

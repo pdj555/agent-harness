@@ -13,7 +13,7 @@ queued -> running -> {completed | failed | stopped}
 | `claude` | Anthropic Messages API on harness tools | the harness |
 | `codex` | Codex via the Codex SDK | OpenAI |
 | `openrouter` | any OpenRouter model, on the harness tools | the harness |
-| `deterministic` | scripted sample agent for tests and `harness demo` | the harness |
+| `deterministic` | scripted agent for tests and `harness demo` | the harness |
 
 All engines implement `Agent.turn(prompt, ctx)` in `harness/agents.py`.
 Claude and OpenRouter share `LoopAgent`; each tool call goes through the same
@@ -28,21 +28,12 @@ and a HOME beside the stage. Every other inherited variable is blanked.
 ## Loop
 
 1. Load the run, resolve the allowlisted repository, create a stage.
-2. Hand the objective and the software scan to the engine. It works
-   until it stops. Every tool use is recorded as an event; stop and stage
-   safety are checked around each one.
-3. **Ignore any claim of success** and run `run_checks`.
+2. Hand the objective and the software scan to the engine.
+3. Ignore any claim of success and run `run_checks`.
 4. Run independent review against the diff and the check output.
-5. If checks and review passed, optionally publish, then mark `completed`.
-6. Otherwise hand the engine the check output or the reviewer's findings in
-   the same session and let it repair, up to `max_repairs`. Then mark `failed`.
-
-Every exit lands in a terminal status. A provider error, a check that times
-out, or an unexpected exception inside the loop marks the run `failed` with a
-blocker; nothing is left in `running` for the UI to poll forever.
-
-Events recorded for the UI are actions, evidence, artifacts, decisions, and
-results. They are not a chain of thought dump.
+5. If checks and review passed, optionally publish, then mark `completed`. CLI runs always leave a staged patch for explicit `harness apply`.
+6. Otherwise the engine repairs from the findings, up to `max_repairs`,
+   then the run is marked `failed`.
 
 ## Tools (harness loop)
 
@@ -52,16 +43,14 @@ results. They are not a chain of thought dump.
 | edit_file, run_shell | yes | yes | no |
 | delegate | yes | no | no |
 
-`delegate` runs a software helper that inspects the stage and returns evidence.
-The user never manages that helper.
+`delegate` runs a helper that inspects the stage and returns evidence.
 
 ## Independent review
 
 `harness.review.run_review` always writes `role: "reviewer"`. Software checks
-the isolated diff first, not pytest's exit code:
+the isolated diff first:
 
-- tests must still exist in the stage (Python, JavaScript, Go, and Ruby
-  layouts are recognised)
+- tests must still exist in the stage
 - there must be an isolated change
 - tests may not change unless an implementation file also changed
 
@@ -77,8 +66,7 @@ diff includes new files and says so when it is truncated. The reviewer answers
 unreadable answer, a reviewer error, or any finding blocks, including a
 contradictory approval with findings.
 
-Completion requires **both** `verification.passed` and `review.passed`. Green
-checks with no implementation change do not complete. The review summary is
+Completion requires both `verification.passed` and `review.passed`. The review summary is
 never the principal's "done" text.
 
 ## Stop
@@ -93,3 +81,14 @@ HTTP thread.
 For the Messages API, Stop is observed after the current streamed response returns,
 before its tools execute. An in-flight API request can continue until completion
 or timeout.
+
+## Persistence
+
+The store keeps the harness loop's conversation messages and step count alongside
+run events and proof. Claude uses this conversation persistence through the
+Messages API, not a vendor agent session id. Codex records its SDK session id;
+that record alone does not restore its process or stage.
+
+On wake, a tool call with no recorded result gets an interrupted error result.
+The harness does not replay it: execution is unknown, so the agent must inspect
+the stage before deciding whether to repeat a mutation.
