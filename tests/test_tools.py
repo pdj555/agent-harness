@@ -23,7 +23,8 @@ def _symlink_or_skip(link: Path, target: Path | str) -> None:
         pytest.skip(f"symlinks are unavailable: {exc}")
 
 
-def test_list_search_read_edit_and_shell_under_authority(tmp_path: Path):
+@pytest.mark.parametrize("staged", [False, True])
+def test_list_search_read_edit_and_shell_under_authority(tmp_path: Path, staged: bool):
     stage = _ctx(tmp_path)
     listed = execute("list_files", {"pattern": "*.py"}, stage=stage, role="principal")
     assert "tracker.py" in listed
@@ -39,11 +40,16 @@ def test_list_search_read_edit_and_shell_under_authority(tmp_path: Path):
     )
     edited = (stage.root / "tracker.py").read_text(encoding="utf-8")
     assert 'return "high"' in edited
+    if staged:
+        result = execute("run_shell", {"command": "git add -A"}, stage=stage, role="principal")
+        assert result.startswith("exit 0")
     shell = execute("run_shell", {"command": "python3 -m pytest -q"}, stage=stage, role="principal")
     assert "test" in shell.lower() or "fail" in shell.lower() or "pass" in shell.lower()
     status = execute("git_status", {}, stage=stage, role="principal")
     diff = execute("git_diff", {}, stage=stage, role="principal")
     assert "tracker.py" in status or "tracker.py" in diff
+    assert '+        return "high"' in diff
+    assert execute("git_diff", {}, stage=stage, role="reviewer") == diff
 
 
 def test_tools_reject_path_outside_stage(tmp_path: Path):
