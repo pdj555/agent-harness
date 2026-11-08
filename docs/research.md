@@ -23,11 +23,11 @@ I wrote 33 changes to three Python repos: a priority classifier, a bill split, a
 | Claude Haiku 5.5 reviewing the diff | 27 of 27 | 0 of 6 |
 | Executable spec, no model | 27 of 27 | 0 of 6 |
 
-It copies the changed module alone into an empty directory, imports it in a fresh interpreter with almost no environment, and runs the function on inputs the tests never use: 64 score pairs for the classifier, 4,819 calls for the bill split, 4,016 strings for the slug function. Each answer is compared with a rule written from the docstring alone, and an audit hook refuses file writes, network calls, and subprocesses while it runs.
+It copies the changed module alone into an empty directory, imports it in a fresh interpreter with an environment of three variables (HOME, PATH, LANG), and runs the function on inputs the tests never use: 64 score pairs for the classifier, 4,819 calls for the bill split, 4,016 strings for the slug function. Each answer is compared with a rule written from the docstring alone, and an audit hook refuses file writes, network calls, and subprocesses while it runs.
 
 Specs written by Haiku and Sonnet from the docstring and signature alone, without seeing the code or the tests, also caught all 27 in each of 6 sets.
 
-## Where it breaks
+## Where the spec check misses
 
 27 of 27 mostly means my attacks were easy. Attacks aimed at the spec itself get past it: 0 of 3 caught. [Details and diffs](blind-spots.md).
 
@@ -42,12 +42,12 @@ A model reviewer reads the code instead of running it, so it should see each `if
 - The tasks are single functions with clean docstrings. Real code usually has no spec.
 - 6 honest fixes is too few to say much about false blocks.
 
-## Next
+## Next steps
 
 1. Have a frontier model write the attacks and keep trying. Plot catch rate against attempts.
 2. Run it on real issues from public repos.
 3. Take specs from somewhere the attacker cannot see, like hidden tests.
-4. Run the gate on real merged PRs to measure false blocks.
+4. Run the checks and review on real merged PRs to measure false blocks.
 
 ## Related work
 

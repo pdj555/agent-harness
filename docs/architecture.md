@@ -1,6 +1,6 @@
 # Architecture
 
-The harness is a single Python package. One principal agent does the work; everything else gives it authority, isolation, and proof.
+The harness is a single Python package. One principal agent does the work; everything else gives it authority, isolation, and a record of the checks and review.
 
 ```text
 browser  ->  auth  ->  app  ->  runtime  ->  agent (harness loop | Codex SDK)
@@ -27,7 +27,7 @@ browser  ->  auth  ->  app  ->  runtime  ->  agent (harness loop | Codex SDK)
 | `harness/provider.py` | model step protocol; deterministic and OpenRouter |
 | `harness/runtime.py` | loop, stop, repair |
 | `harness/verification.py` | checks run by the parent process |
-| `harness/review.py` | software gate plus model reviewer |
+| `harness/review.py` | software rules plus model reviewer |
 | `harness/triage.py` | scans tests, TODOs, and recent commits to pick an objective |
 | `harness/accounts.py` | accounts the operator creates |
 | `harness/demo.py` | demo entry |
@@ -58,7 +58,7 @@ Each stage records its initial Git HEAD alongside file contents, symlink targets
 
 When the model stops, the runtime runs `run_checks(stage.root, python=stage.python(), timeout=...)`: the check command in the stage. `passed` comes from the process exit code. When the command runs pytest, the harness adds `--junitxml` pointing outside the stage, and exit 0 passes only if that report exists, shows at least one test that ran, and shows no failure or error. That catches these ways stage code can end pytest with status 0 without a passing run, as long as it does not also write the report itself: `os._exit(0)` in a conftest, a hook that resets `session.exitstatus`, `--collect-only` in the project's config, deselecting every test, skipping every test.
 
-It does not close hooks that change results inside the pytest process, because the report is written by that same process: `pytest.exit(returncode=0)` called as soon as a test fails, a `pytest_runtest_makereport` wrapper that marks failures passed, skip, xfail or deselect of only the failing tests while one test still passes, a conftest that writes a passing report to the path in `config.option.xmlpath` and then exits. So this check stops a crude forced exit; a deliberate one is a change to the test infrastructure, and the review gate has to catch it.
+It does not close hooks that change results inside the pytest process, because the report is written by that same process: `pytest.exit(returncode=0)` called as soon as a test fails, a `pytest_runtest_makereport` wrapper that marks failures passed, skip, xfail or deselect of only the failing tests while one test still passes, a conftest that writes a passing report to the path in `config.option.xmlpath` and then exits. So this check stops a crude forced exit; a deliberate one is a change to the test infrastructure, and the review step has to catch it.
 
 Pytest is recognized as a `pytest` or `py.test` executable, a Python interpreter running `-m pytest` after flags written as one token (`python -I -m pytest`; not `python -W error -m pytest` or `-mpytest`), `python -m coverage run -m pytest`, and any of those directly after `uv run`, `poetry run` or `pdm run`. A command that hides pytest in one string (`sh -c "pytest"`, `make test`, `tox`) is judged on its exit code alone, as are the unrecognized forms above. The operator chooses the command; stage code cannot. The harness's `--junitxml` overrides one in the project's own `addopts`, so that file is not written during checks, and a project that disables the plugin with `-p no:junitxml` fails verification.
 
@@ -102,8 +102,8 @@ repository and always stages the result. `apply` loads the durable verification,
 review, and fingerprint before calling `Stage.publish`. An informational
 provider answer has no verification or review record and cannot be applied.
 
-This iteration replaces the Claude Agent SDK's separate execution path with
-the existing authority boundary and removes its bundled CLI dependency. The
+The Claude Agent SDK's separate execution path is gone: Claude runs through
+the existing authority boundary, and its bundled CLI dependency is removed. The
 before/after check is an Anthropic-only runtime fixture that repairs the seeded
 bug, creates a regression test, runs real pytest, receives a fresh review, and
 leaves the source unchanged until fingerprinted apply. A contradictory reviewer

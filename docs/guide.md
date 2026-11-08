@@ -14,7 +14,7 @@ uv run harness run ./your-repo "Fix the broken behavior and add regression cover
 uv run harness apply <run-id>
 ```
 
-`run` prints the diff and proof. It leaves the source unchanged, even if `auto_publish` is enabled for the web workspace. `apply` requires the stored passing checks, review, and matching fingerprint. A failed or stopped run exits nonzero. Ctrl-C records a stopped run. Use the same `--config` for both commands when selecting a custom configuration.
+`run` prints the diff, the check output, and the review. It leaves the source unchanged, even if `auto_publish` is enabled for the web workspace. `apply` requires the stored passing checks, review, and matching fingerprint. A failed or stopped run exits nonzero. Ctrl-C records a stopped run. Use the same `--config` for both commands when selecting a custom configuration.
 
 For the web workspace:
 
@@ -43,7 +43,7 @@ Leave it unset and the first key found wins. `HARNESS_MODEL` picks the model.
 
 ## Review
 
-Every diff that passes the tests goes through the software review gate. Tests must still exist, an implementation file must have changed, and the diff is checked for new skip markers, deleted tests, and a `conftest.py` that replaces project code at import. The [monitor eval](evals.md) measures the software rules at 6 of 27 attacks caught. Model review prefers another vendor:
+Every diff that passes the tests goes through the software review step. Tests must still exist, an implementation file must have changed, and the diff is checked for new skip markers, deleted tests, and a `conftest.py` that replaces project code at import. The [monitor eval](evals.md) measures the software rules at 6 of 27 attacks caught. Model review prefers another vendor:
 
 - Claude's work is reviewed by Codex when its key is available. An Anthropic-only run gets a fresh Claude review context, using the principal model unless `HARNESS_REVIEWER_MODEL` is set. This separates the review from the author's conversation; it does not provide cross-vendor independence.
 - Codex's work is reviewed by Claude when its key is available.
@@ -61,9 +61,9 @@ A block goes back to the agent as findings to fix, in the same conversation. Cla
 5. Failed checks or review findings go back to the agent, up to `max_repairs` times. Then the run fails.
 6. Apply rechecks the verified fingerprint and each affected source path against its baseline before copying the patch. A stage that moved its initial Git HEAD, including a commit or amend, is rejected. Legacy runs without that initial commit must be rerun.
 
-Every exit is terminal: `completed`, `failed`, or `stopped`. Stop blocks further tool execution. A pending Messages API request can continue until it returns or times out. History is durable.
+Every exit is terminal: `completed`, `failed`, or `stopped`. Stop blocks further tool execution. A pending Messages API request can continue until it returns or times out. Run records stay in the store after the run ends.
 
-## Guarantees and limits
+## What is guaranteed, and what is not
 
 - Models propose. The project's checks and independent review decide.
 - Claude and OpenRouter use the same harness tools and authority checks. Claude has no separate built-in shell or file tools. Codex runs in its own workspace sandbox.
@@ -85,7 +85,7 @@ harness/
   anthropic.py      streamed Messages API, strict tools, cached history, structured review
   runtime.py        the run: scan, drive the engine, verify, review, repair
   verification.py   runs the check command; the only source of `passed`
-  review.py         software gate plus model reviewer
+  review.py         software rules plus model reviewer
   isolation.py      worktree staging, fingerprints, apply
   authority.py      role and path checks every tool call goes through
   tools.py          shared authority-checked tools for Claude and OpenRouter

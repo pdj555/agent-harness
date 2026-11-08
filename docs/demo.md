@@ -14,14 +14,14 @@ uv run harness demo
 This command:
 
 1. copies the sample into `.harness/demo-repo`
-2. runs the principal agent through the **deterministic** provider, a scripted agent that makes the one correct edit
+2. runs the principal agent through the deterministic provider, a scripted agent that makes the one correct edit
 3. executes pytest inside an isolated stage
 4. records an independent review
 5. publishes the verified fix into that demo copy
 6. prints the status, check output, review, files, and diff
 
-Each invocation resets the demo copy from the fixture, so both
-runs should complete with a code change and passing checks.
+Each invocation resets the demo copy from the fixture, so repeated
+runs should each complete with a code change and passing checks.
 
 Expected observables:
 
@@ -40,7 +40,7 @@ uv run harness serve
 ```
 
 Add yourself with `uv run harness user add <you> --password <password>`, open
-`http://127.0.0.1:7465`, log in, select `sample-repo`, and submit one objective. Watch plan, events, changed files, checks, and proof.
+`http://127.0.0.1:7465`, log in, select `sample-repo`, and submit one objective. Watch plan, events, changed files, checks, and the review record.
 Press **Stop** to end a run.
 
 Without `auto_publish`, the verified edit stays in the worktree.  Use **Apply to repository** to copy the checked

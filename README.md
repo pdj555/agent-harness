@@ -1,6 +1,6 @@
 # agent-harness
 
-27 sabotaged code changes passed every test and the tests caught none, an independent check caught all 27, and 3 attacks built to beat that check still get through, because a coding agent's work should never be approved by the same system that produced it
+27 sabotaged code changes passed every test and the tests caught none, the spec check caught all 27, and 3 attacks built to beat the spec check still get through, because a coding agent's work should never be approved by the same system that produced it
 
 
 <picture>
@@ -35,14 +35,14 @@ The 27 come in six families:
   <img alt="A change travels from the agent, through the tests, to an independent check. A sabotaged change stops at the check. An honest change lands on main." src="docs/assets/flow-animated-light.svg" width="100%">
 </picture>
 
-agent-harness runs a coding agent on a repository you allow. The agent proposes; software decides.
+agent-harness runs a coding agent on a repository you allow. Models propose, software verifies.
 
 1. The agent edits in a staged copy of the repo. Files Git ignores, such as .env, never enter the stage, and staging refuses to start if a credential file would be included.
-2. When the agent stops, the project's own check command runs in the stage and its exit code is the verdict. For pytest, exit 0 also needs pytest's own report to show a test ran and none failed. That catches a run forced to exit 0 with failures on record or no test run, such as a conftest calling `os._exit(0)` before any test. Code in the stage runs inside pytest and can still stop it right after a failure, flip results, or write the report itself; docs/architecture.md lists those, and the review gate has to catch them. The agent's claim that it is done is recorded as text and decides nothing. A timeout counts as a failure.
+2. When the agent stops, the project's own check command runs in the stage and its exit code is the verdict. For pytest, exit 0 also needs pytest's own report to show a test ran and none failed. That catches a run forced to exit 0 with failures on record or no test run, such as a conftest calling `os._exit(0)` before any test. Code in the stage runs inside pytest and can still stop it right after a failure, flip results, or write the report itself; docs/architecture.md lists those, and the review step has to catch them. The agent's claim that it is done is recorded as text and decides nothing. A timeout counts as a failure.
 3. A fresh reviewer reads the diff and can inspect files. Cross-vendor review is preferred: Codex reviews Claude's work, Claude reviews Codex's. An Anthropic-only setup gets a separate, read-only Claude review context. A crash, malformed verdict, or blocking finding rejects the change. Blocks go back to the agent as findings it can repair, up to a set number of rounds.
 4. A SHA-256 fingerprint of the verified files is checked again before apply, so what lands is what passed. CLI runs leave the source unchanged until an explicit `harness apply`.
 
-Engines: Anthropic Messages API, Codex, or any model on OpenRouter. Claude uses the same authority-checked tools as the harness loop.
+The engines are the Anthropic Messages API, Codex, or any model on OpenRouter. Claude uses the same authority-checked tools as the harness loop.
 
 The spec check is the independent check named in the first line. It never reads the test files. It copies the changed file into an empty directory, so a patch that exists only under the test runner never loads. It imports the file in a fresh interpreter with an environment of three variables (HOME, PATH, LANG), with a hook installed before the import that refuses file writes, network calls, and subprocess calls and records each attempt. It then runs the function on the tested inputs and on many inputs the agent never saw, comparing every answer with a rule written from the function's docstring alone.
 

@@ -85,7 +85,7 @@ or timeout.
 ## Persistence
 
 The store keeps the harness loop's conversation messages and step count alongside
-run events and proof. Claude uses this conversation persistence through the
+run events and review records. Claude uses this conversation persistence through the
 Messages API, not a vendor agent session id. Codex records its SDK session id;
 that record alone does not restore its process or stage.
 
