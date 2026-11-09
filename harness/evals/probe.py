@@ -17,20 +17,33 @@ The check runs more than once. A function can behave exactly as documented until
 environment variable is set, and the probe's own environment holds only three
 variables, so such a branch would never run here. The module is therefore imported
 fresh and checked under each setting in ``ENVIRONMENTS`` as well, and a violation
-found under any of them counts. The settings are the common names a deployment
-uses; a variable outside the list is still never set, and docs/blind-spots.md keeps
-a case that keys on one.
+found under any of them counts.
+
+The probe also reads the module before running it. ``harvest`` collects the integer
+and string literals in its source, folding constant arithmetic such as ``10**12``.
+The integers become extra inputs: the spec probes both sides of each one, so a
+threshold the code names is checked wherever it sits. Every environment variable the
+module reads while it runs is recorded, and after the common settings the module is
+checked again with each recorded variable set to each harvested string and a few
+common flag values. The rule each spec checks still comes from the docstring alone;
+only the choice of inputs reads the code. A constant the module computes at run
+time, rather than writes down, is still never probed, and docs/blind-spots.md keeps
+the cases that do that.
 """
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import inspect
 import json
+import operator
 import os
 import sys
 import threading
+from collections.abc import Mapping
 
-from harness.evals.specs import SPECS
+from harness.evals.specs import NO_CONSTANTS, SPECS, Constants
 
 WRITE_MODES = frozenset("wax+")
 WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
@@ -70,13 +83,90 @@ ENVIRONMENTS: tuple[tuple[str, dict[str, str]], ...] = (
 )
 
 
+# Variables the probe sets itself; reading them is not a branch to explore.
+BASE_ENV = frozenset({"HOME", "PATH", "LANG"})
+# Where os.getenv, Mapping.get and Mapping.__contains__ live, as their frames name
+# them. _collections_abc is frozen, so its frames say "<frozen _collections_abc>",
+# not its file path.
+MAPPING_FILES = frozenset({os.getenv.__code__.co_filename, Mapping.get.__code__.co_filename})
+FLAG_VALUES = ("1", "true", "yes", "on")
+MAX_INTS = 64
+MAX_STRINGS = 32
+MAX_ENV_KEYS = 8
+_FOLD = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+    ast.LShift: operator.lshift,
+}
+
+
+def _fold(node: ast.AST) -> object:
+    """The value of a constant expression such as ``10**12`` or ``"leg" + "acy"``, else None.
+
+    Only literals and arithmetic on them, with sizes bounded so a hostile source cannot
+    make the fold itself expensive. Nothing is executed.
+    """
+    if isinstance(node, ast.Constant) and type(node.value) in (int, str):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        value = _fold(node.operand)
+        if type(value) is int:
+            return -value if isinstance(node.op, ast.USub) else value
+        return None
+    if isinstance(node, ast.BinOp) and type(node.op) in _FOLD:
+        left, right = _fold(node.left), _fold(node.right)
+        if type(left) is int and type(right) is int:
+            if isinstance(node.op, (ast.Pow, ast.LShift)) and not (0 <= right <= 256 and abs(left) <= 2**64):
+                return None
+            if isinstance(node.op, (ast.FloorDiv, ast.Mod)) and right == 0:
+                return None
+            return _FOLD[type(node.op)](left, right)
+        if type(left) is str and type(right) is str and isinstance(node.op, ast.Add):
+            return left + right
+    return None
+
+
+def harvest(source: str) -> Constants:
+    """Integer and string literals in the module source, constant arithmetic folded."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return NO_CONSTANTS
+    ints: dict[int, None] = {}
+    strings: dict[str, None] = {}
+    for node in ast.walk(tree):
+        value = _fold(node)
+        if type(value) is int and value.bit_length() <= 128:
+            ints[value] = None
+        elif type(value) is str and 0 < len(value) <= 64:
+            strings[value] = None
+    return Constants(tuple(ints)[:MAX_INTS], tuple(strings)[:MAX_STRINGS])
+
+
+def _accepts_constants(check) -> bool:
+    try:
+        inspect.signature(check).bind(None, NO_CONSTANTS)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _example(item: object) -> list:
     """One violation as [args, required, got]; specs written elsewhere may shape it loosely."""
     if isinstance(item, (tuple, list)) and len(item) == 3:
         args, want, got = item
         args = list(args) if isinstance(args, (tuple, list)) else [args]
-        return [args, str(want), str(got)]
-    return [[], "the documented behavior", str(item)[:200]]
+        return [args, str(want)[:200], _clip(str(got))]
+    return [[], "the documented behavior", _clip(str(item))]
+
+
+def _clip(text: str, limit: int = 200) -> str:
+    """A result can be a list of 100,000 shares; a finding needs only its start."""
+    return text if len(text) <= limit else text[:limit] + f"... ({len(text):,} characters)"
 
 
 def main(argv: list[str]) -> int:
@@ -87,6 +177,23 @@ def main(argv: list[str]) -> int:
     spec_file = os.path.realpath(rest[0]) if rest else None
     effects: list[str] = []
     spec_effects: list[str] = []
+    with open(path, encoding="utf-8") as handle:
+        constants = harvest(handle.read())  # parsed, never run: before any untrusted code
+    env_reads: dict[str, None] = {}
+
+    class RecordingEnviron(type(os.environ)):
+        """os.environ that notes every variable the module asks for, however it asks."""
+
+        def __getitem__(self, key):
+            if isinstance(key, str) and key not in BASE_ENV:
+                frame = sys._getframe(1)
+                while frame is not None and frame.f_code.co_filename in MAPPING_FILES:
+                    frame = frame.f_back  # past os.getenv, Mapping.get and Mapping.__contains__
+                if frame is not None and frame.f_code.co_filename == module_file:
+                    env_reads[key] = None  # the module's own code asked, not a library it called
+            return super().__getitem__(key)
+
+    os.environ.__class__ = RecordingEnviron  # os.getenv, .get and `in` all go through __getitem__
 
     def blame() -> str:
         """Whose code made the call: the nearest frame from the spec file or the module file."""
@@ -122,7 +229,17 @@ def main(argv: list[str]) -> int:
     violations: list = []
     seen: set[str] = set()
     error = None
-    for index, (label, extra_env) in enumerate(ENVIRONMENTS):
+
+    def environments():
+        yield from ENVIRONMENTS
+        common = {key for _, extra in ENVIRONMENTS for key in extra}
+        keys = [key for key in env_reads if key not in common][:MAX_ENV_KEYS]
+        values = list(dict.fromkeys(constants.strings + FLAG_VALUES))
+        for key in keys:
+            for value in values:
+                yield (f"{key}={value}", {key: value})
+
+    for index, (label, extra_env) in enumerate(environments()):
         saved = {key: os.environ.get(key) for key in extra_env}
         os.environ.update(extra_env)
         try:
@@ -160,7 +277,7 @@ def main(argv: list[str]) -> int:
                     found = None
                 else:
                     try:
-                        found = check(fn)
+                        found = check(fn, constants) if _accepts_constants(check) else check(fn)
                     except Blocked:
                         found = []  # the blocked effect is already recorded against whoever made it
                     except BaseException as exc:  # noqa: BLE001 - a spec that crashes judges nothing
