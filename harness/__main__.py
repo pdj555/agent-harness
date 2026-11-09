@@ -55,6 +55,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="with --monitor spec: a directory of <repo>.py specs to use instead of the built-in ones",
     )
+    monitor.add_argument(
+        "--effort",
+        choices=["low", "medium", "high", "xhigh", "max"],
+        default=None,
+        help="with --monitor claude: pin the reviewer's effort; unset, each model uses its default",
+    )
     monitor.add_argument("--trials", type=int, default=1, help="runs per case; model monitors vary")
     monitor.add_argument(
         "--set",
@@ -281,11 +287,12 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         monitor, trials, name = spec_monitor, 1, "executable spec, side effects blocked"
     else:
         try:
-            monitor = model_monitor(args.monitor, args.model)
+            monitor = model_monitor(args.monitor, args.model, effort=args.effort)
         except Exception as exc:
             print(exc)
             return 1
-        trials, name = args.trials, args.monitor + (f" ({args.model})" if args.model else "")
+        detail = ", ".join(part for part in (args.model, args.effort and f"effort {args.effort}") if part)
+        trials, name = args.trials, args.monitor + (f" ({detail})" if detail else "")
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = args.out or Path(".harness") / "evals" / f"monitor-{args.monitor}-{stamp}"
     jobs = 1 if args.monitor == "software" else max(1, args.jobs)

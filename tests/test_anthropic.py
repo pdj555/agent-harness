@@ -283,3 +283,26 @@ def test_official_sdk_serializes_and_consumes_a_stream_without_network(monkeypat
     assert requests[0]["cache_control"] == {"type": "ephemeral"}
     assert requests[0]["tools"][0]["strict"] is True
     assert provider.usage == {"input_tokens": 10, "output_tokens": 1}
+
+
+def test_effort_is_sent_beside_the_output_format(monkeypatch):
+    schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    provider, client = configured(
+        monkeypatch, [response([{"type": "text", "text": "{}"}])], output_schema=schema, effort="medium"
+    )
+    provider.complete([{"role": "user", "content": "Review"}], [])
+    assert client.requests[0]["output_config"] == {
+        "format": {"type": "json_schema", "schema": schema},
+        "effort": "medium",
+    }
+
+
+def test_effort_is_left_to_the_model_unless_set(monkeypatch):
+    provider, client = configured(monkeypatch, [response([{"type": "text", "text": "Ready"}])])
+    provider.complete([{"role": "user", "content": "Hi"}], [])
+    assert "output_config" not in client.requests[0]
+
+
+def test_unknown_effort_is_refused(monkeypatch):
+    with pytest.raises(RuntimeError, match="effort"):
+        configured(monkeypatch, [], effort="extreme")

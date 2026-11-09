@@ -298,7 +298,9 @@ def _assistant_message(completion: Completion) -> dict:
 class ClaudeAgent(LoopAgent):
     """Claude on the same authority-checked tools as every harness-loop provider."""
 
-    def __init__(self, model: str | None = None, *, reviewer: bool = False) -> None:
+    def __init__(
+        self, model: str | None = None, *, reviewer: bool = False, effort: str | None = None
+    ) -> None:
         from harness.anthropic import AnthropicProvider
 
         if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -308,7 +310,9 @@ class ClaudeAgent(LoopAgent):
             if model is None:
                 raise AgentFailed("Claude review needs HARNESS_REVIEWER_MODEL")
         try:
-            provider = AnthropicProvider(model=model, output_schema=VERDICT_SCHEMA if reviewer else None)
+            provider = AnthropicProvider(
+                model=model, output_schema=VERDICT_SCHEMA if reviewer else None, effort=effort
+            )
         except RuntimeError as exc:
             raise AgentFailed(str(exc)) from exc
         super().__init__(
@@ -322,11 +326,13 @@ class ClaudeAgent(LoopAgent):
         )
 
     def review(self, prompt: str, ctx: TurnContext) -> dict:
-        reviewer = ClaudeAgent(self.model, reviewer=True)
+        reviewer = ClaudeAgent(self.model, reviewer=True, effort=self.provider.effort)
         try:
             text = reviewer.turn(prompt, replace(ctx, quiet=True, max_steps=12))
             return parse_verdict(text)
         finally:
+            # Tokens are billed whether or not the review finished, so keep them either way.
+            self.last_usage = dict(reviewer.provider.usage)
             reviewer.close()
 
 
