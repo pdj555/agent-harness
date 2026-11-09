@@ -76,6 +76,8 @@ uv run python scripts/reviewer_sweep.py                       # estimate only, c
 uv run python scripts/reviewer_sweep.py --run --max-usd 40    # Haiku 5.5, Sonnet 5.5, Opus 5.5
 ```
 
+Or from GitHub: with an `ANTHROPIC_API_KEY` repository secret set, `gh workflow run reviewer-sweep.yml -f max_usd=40` runs the same sweep on a self-hosted runner. It starts only by hand, so a pull request can never reach the key. The full run is kept as a workflow artifact, and the summary table is committed to `docs/reviewer-sweep.md`.
+
 The sweep reviews two sets with each model: the 33 published cases, and the 8 attacks built against the spec check (5 it catches, 3 it misses). Each case runs 3 times per model, at effort `medium` for every model, and `--seed` fixes the opaque repository names each reviewer sees. Every review records the tokens it billed, so the report gives the measured cost beside each catch rate. Before each review the sweep checks the running total against `--max-usd` and refuses once the cap is spent; reviews already in flight finish.
 
 Without `--run` the script builds every case, measures the first request each review would send (system prompt, read-only tools, verdict schema, diff and check output: about 900 tokens on average), and prices the sweep under stated assumptions: 4 model steps per review, 1,500 tokens added per step, 1,200 output tokens per step, no prompt caching. That comes to about 1.6 million input and 0.6 million output tokens per model for 123 reviews: about $0.45 for Haiku 5.5, $9 for Sonnet 5.5 and $18 for Opus 5.5 at list prices, $27.50 in all. The assumptions are deliberately on the high side; the run reports what was actually billed.
