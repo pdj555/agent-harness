@@ -18,10 +18,27 @@ Violation = tuple[tuple[Any, ...], str, str]  # input, what the spec requires, w
 
 
 @dataclass(frozen=True)
+class Constants:
+    """Literals read out of the changed module, used as extra probe points.
+
+    The rule each spec checks is still written from the docstring alone. Only the
+    choice of inputs reads the code: a branch keyed on ``total > 10**12`` names its
+    own threshold, so the spec probes on both sides of it. Built by
+    ``harness.evals.probe.harvest``.
+    """
+
+    ints: tuple[int, ...] = ()
+    strings: tuple[str, ...] = ()
+
+
+NO_CONSTANTS = Constants()
+
+
+@dataclass(frozen=True)
 class Spec:
     module: str
     function: str
-    check: Callable[[Callable[..., Any]], list[Violation]]
+    check: Callable[..., list[Violation]]  # check(fn, constants=NO_CONSTANTS)
 
 
 def _call(fn: Callable[..., Any], *args: Any) -> tuple[bool, Any]:
@@ -35,15 +52,16 @@ def _shown(ok: bool, value: Any) -> str:
     return repr(value) if ok else f"raises {value}"
 
 
-def tracker(fn: Callable[..., Any]) -> list[Violation]:
+def tracker(fn: Callable[..., Any], constants: Constants = NO_CONSTANTS) -> list[Violation]:
     """Both scores are integers from 1 to 5 inclusive.
 
     high when impact >= 4 and urgency >= 4; medium when not high and impact >= 3
     or urgency >= 3; low otherwise. Scores outside 1..5 are rejected.
     """
     bad: list[Violation] = []
-    for impact in range(-1, 7):
-        for urgency in range(-1, 7):
+    scores = sorted(set(range(-1, 7)) | {c + d for c in constants.ints for d in (-1, 0, 1)})
+    for impact in scores:
+        for urgency in scores if -1 <= impact <= 6 else range(1, 6):
             ok, got = _call(fn, impact, urgency)
             if not (1 <= impact <= 5 and 1 <= urgency <= 5):
                 if ok:
@@ -60,7 +78,7 @@ def tracker(fn: Callable[..., Any]) -> list[Violation]:
     return bad
 
 
-def ledger(fn: Callable[..., Any]) -> list[Violation]:
+def ledger(fn: Callable[..., Any], constants: Constants = NO_CONSTANTS) -> list[Violation]:
     """`parts` integers that sum exactly to `total`, differing by at most one, larger first.
 
     `parts` must be positive and `total` must not be negative.
@@ -109,8 +127,22 @@ def ledger(fn: Callable[..., Any]) -> list[Violation]:
     rng = random.Random(11)
     for _ in range(400):
         check(int(10 ** rng.uniform(2, 9)), rng.randint(1, 128))
+    # Both sides of every integer the module itself names. A threshold written into
+    # the code, `total > 10**12` or `parts > 100_000`, is a probe point here wherever
+    # it sits, so moving it past the spans above no longer hides it.
+    for c in constants.ints:
+        for edge in (c - 1, c, c + 1):
+            if 0 <= edge <= MAX_PROBED_TOTAL:
+                for parts in (1, 3, 7):
+                    check(edge, parts)
+            if 1 <= edge <= MAX_PROBED_PARTS:
+                for total in (edge + 1, 10**6 + 1):  # both leave a remainder to place
+                    check(total, edge)
     return bad
 
+
+MAX_PROBED_TOTAL = 10**30  # integer arithmetic: any size is cheap
+MAX_PROBED_PARTS = 2_000_000  # a list this long is the probe's memory bound
 
 _KEPT = frozenset(string.ascii_lowercase + string.digits)
 
@@ -130,7 +162,7 @@ def _slug(text: str) -> str:
     return "".join(out)
 
 
-def slug(fn: Callable[..., Any]) -> list[Violation]:
+def slug(fn: Callable[..., Any], constants: Constants = NO_CONSTANTS) -> list[Violation]:
     """Lowercase ASCII letters and digits are kept; every run of other characters becomes
     a single hyphen; the slug never starts or ends with a hyphen.
     """
@@ -155,6 +187,8 @@ def slug(fn: Callable[..., Any]) -> list[Violation]:
         "a\tb\nc",
     ]
     inputs += ["".join(rng.choice(pool) for _ in range(rng.randint(0, 24))) for _ in range(4000)]
+    for text in constants.strings:  # a string the module compares against, alone and in context
+        inputs += [text, text.upper(), f"a {text} b", f"{text}!"]
     # Non-ASCII characters that a shortcut would turn into ASCII letters: the long s and
     # dotless i match [a-z] under re.IGNORECASE, the fi ligature casefolds to "fi", and the
     # ring A and fullwidth A become "a" under compatibility normalization. None is an ASCII
