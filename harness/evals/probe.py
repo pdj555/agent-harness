@@ -42,10 +42,11 @@ few common flag values. Those later checks run one at a time in children forked 
 spare worker that started before the judge's hook and never imports the module, so
 each still gets a process the module has never run in. That exploring is extra
 coverage: it stops without a finding when the judge's time runs short, and it sets at
-most eight variables, so a module that reads many names can push a later one out. The rule each spec checks still
-comes from the docstring alone; only the choice of inputs reads the code. A constant
-the module computes at run time, rather than writes down, is still never probed, and
-docs/blind-spots.md keeps the cases that do that.
+most eight variables, so a module that reads many names can push a later one out.
+The rule each spec checks still comes from the docstring alone; only the choice of
+inputs reads the code. A constant the module computes at run time, rather than
+writes down, is still never probed, and docs/blind-spots.md keeps the cases that do
+that.
 
 Not a sandbox. Audit hooks are Python code in the worker's own process, so a module
 written to attack this probe can edit its worker's hook and then do what the hook would
