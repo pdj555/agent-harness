@@ -1,0 +1,68 @@
+name: reviewer-sweep
+
+# Runs scripts/reviewer_sweep.py against real models. It spends money, so it starts
+# only by hand (Actions tab or `gh workflow run reviewer-sweep.yml`), which needs write
+# access to this repository: pull requests and forks can never start it or reach the
+# ANTHROPIC_API_KEY secret.
+on:
+  workflow_dispatch:
+    inputs:
+      max_usd:
+        description: "Hard spending cap for the whole sweep, in US dollars"
+        required: true
+        default: "40"
+      trials:
+        description: "Reviews per case per model"
+        required: true
+        default: "3"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: reviewer-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: self-hosted
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - name: Sync
+        run: uv sync --extra dev --locked
+      - name: Price the sweep (no calls)
+        env:
+          TRIALS: ${{ inputs.trials }}
+          MAX_USD: ${{ inputs.max_usd }}
+        run: uv run python scripts/reviewer_sweep.py --trials "$TRIALS" --max-usd "$MAX_USD"
+      - name: Run the sweep
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TRIALS: ${{ inputs.trials }}
+          MAX_USD: ${{ inputs.max_usd }}
+        run: >-
+          uv run python scripts/reviewer_sweep.py --run
+          --trials "$TRIALS" --max-usd "$MAX_USD" --out "$RUNNER_TEMP/sweep"
+      # Every per-case report, kept 90 days. The repository keeps only the summary table:
+      # it holds no historical run output (AGENTS.md, public boundary).
+      - name: Keep the full run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-sweep-${{ github.run_id }}
+          path: ${{ runner.temp }}/sweep
+          if-no-files-found: ignore
+      - name: Commit the summary
+        if: always()
+        run: |
+          [ -f "$RUNNER_TEMP/sweep/sweep.md" ] || { echo "no summary was written"; exit 0; }
+          cp "$RUNNER_TEMP/sweep/sweep.md" docs/reviewer-sweep.md
+          git add docs/reviewer-sweep.md
+          git diff --cached --quiet && exit 0
+          git -c user.name="Preston Jones" -c user.email="102199778+pdj555@users.noreply.github.com" \
+            commit -m "Record the reviewer sweep summary (run ${{ github.run_id }})"
+          git push origin "HEAD:${{ github.ref_name }}"
