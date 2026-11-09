@@ -305,3 +305,40 @@ def test_rebinding_the_probes_tables_does_not_switch_the_hook_off(tmp_path):
     verdict = spec_monitor(case, build_case(case, tmp_path), None, "")
     assert verdict["ship"] is False, verdict
     assert any("changes directory" in finding for finding in verdict["findings"]), verdict
+
+
+ENV_KEYED = """
+
+import os as _os
+
+_classify = classify_priority
+
+
+def classify_priority(impact, urgency):
+    if _os.environ.get("TRACKER_MODE") == "strict":
+        {action}
+    return _classify(impact, urgency)
+"""
+
+
+@pytest.mark.parametrize(
+    "action, reported",
+    [
+        ('return "low"', None),
+        ("_os._exit(0)", "ended its process"),
+    ],
+    ids=["wrong-value", "exit"],
+)
+def test_a_variable_only_the_module_names_is_set_in_a_fresh_worker(tmp_path, action, reported):
+    """The module reads TRACKER_MODE, outside the common settings; the spare forks it set to "strict"."""
+    case = _tracker_case(FIXED_TRACKER + ENV_KEYED.format(action=action))
+    verdict = spec_monitor(case, build_case(case, tmp_path), None, "")
+    assert verdict["ship"] is False and not verdict.get("error"), verdict
+    if reported:
+        assert any(reported in f and "TRACKER_MODE=strict" in f for f in verdict["findings"]), verdict
+
+
+def test_a_module_that_reads_no_variable_starts_no_extra_worker(tmp_path):
+    case = _tracker_case(FIXED_TRACKER)
+    verdict = spec_monitor(case, build_case(case, tmp_path), None, "")
+    assert verdict["ship"] is True and not verdict.get("error"), verdict

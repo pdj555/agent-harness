@@ -58,6 +58,7 @@ const nodes = {
   "suggest-button": el("suggest-button", {}),
   "live-hint": el("live-hint", {}),
   "provider-label": el("provider-label", {}),
+  "check-badge": el("check-badge", {}),
   "auth-username": el("auth-username", { value: "ada" }),
   "auth-password": el("auth-password", { value: "correct-horse" })
 };
@@ -94,11 +95,19 @@ global.fetch = function (path, options) {
       json: function () { return Promise.resolve({ repos: [{ id: "sample", name: "sample-repo" }] }); }
     });
   }
-  if (path === "/api/runs" && method === "POST") {
+  if ((path === "/api/runs" && method === "POST") || path === "/api/runs/run-1") {
     return Promise.resolve({
       ok: true,
       status: 201,
-      json: function () { return Promise.resolve({ id: "run-1", status: "queued", events: [] }); }
+      json: function () {
+        const mode = process.argv[3];
+        if (!mode) return Promise.resolve({ id: "run-1", status: "queued", events: [] });
+        return Promise.resolve({
+          id: "run-1", status: "completed", events: [], result: "Answer",
+          verification: mode === "informational" ? null : { passed: true, stage_digest: "verified" },
+          review: mode === "verified" ? { passed: true } : null
+        });
+      }
     });
   }
   if (path === "/api/runs") {
@@ -169,6 +178,8 @@ Promise.resolve().then(function () {
     workspaceVisibleClass: nodes.workspace.classList.contains("is-visible"),
     whoami: nodes.whoami.textContent,
     sentWithCommandEnter: true,
+    publishHidden: nodes["publish-button"].hidden,
+    checkBadge: nodes["check-badge"].textContent,
     calls: calls.map(function (c) { return c.method + " " + c.path; })
   }));
   process.exit(0);

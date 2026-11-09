@@ -30,9 +30,20 @@ The check runs more than once. A function can behave exactly as documented until
 environment variable is set, and the probe's own environment holds only three
 variables, so such a branch would never run here. The module is therefore imported
 fresh, in its own worker, under each setting in ``ENVIRONMENTS`` as well, and a
-violation found under any of them counts. The settings are the common names a
-deployment uses; a variable outside the list is still never set, and
-docs/blind-spots.md keeps a case that keys on one.
+violation found under any of them counts.
+
+The judge also reads the module before any of it runs. ``harvest`` collects the
+integer and string literals in its source, folding constant arithmetic such as
+``10**12``. The integers become extra inputs: the spec probes both sides of each one,
+so a threshold the code names is checked wherever it sits. Each worker reports every
+environment variable the module's own code reads, and after the common settings the
+module is checked again with each reported variable set to each harvested string and a
+few common flag values. Those later checks run one at a time in children forked from a
+spare worker that started before the judge's hook and never imports the module, so
+each still gets a process the module has never run in. The rule each spec checks still
+comes from the docstring alone; only the choice of inputs reads the code. A constant
+the module computes at run time, rather than writes down, is still never probed, and
+docs/blind-spots.md keeps the cases that do that.
 
 Not a sandbox. Audit hooks are Python code in the worker's own process, so a module
 written to attack this probe can edit its worker's hook and then do what the hook would
@@ -45,17 +56,21 @@ Native code (``ctypes``) is outside what audit hooks see at all.
 
 from __future__ import annotations
 
+import ast
 import builtins
 import importlib.util
+import inspect
 import json
+import operator
 import os
 import selectors
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 
-from harness.evals.specs import SPECS
+from harness.evals.specs import NO_CONSTANTS, SPECS, Constants
 
 WRITE_MODES = frozenset("wax+")
 WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
@@ -101,6 +116,78 @@ ENVIRONMENTS: tuple[tuple[str, dict[str, str]], ...] = (
     ("ENV=production", {"ENV": "production"}),
     ("ENVIRONMENT=production", {"ENVIRONMENT": "production"}),
 )
+
+
+# Variables the probe sets itself; reading them is not a branch to explore.
+BASE_ENV = frozenset({"HOME", "PATH", "LANG"})
+# Where os.getenv, Mapping.get and Mapping.__contains__ live, as their frames name
+# them. _collections_abc is frozen, so its frames say "<frozen _collections_abc>",
+# not its file path.
+MAPPING_FILES = frozenset({os.getenv.__code__.co_filename, Mapping.get.__code__.co_filename})
+FLAG_VALUES = ("1", "true", "yes", "on")
+MAX_INTS = 64
+MAX_STRINGS = 32
+MAX_ENV_KEYS = 8
+_FOLD = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+    ast.LShift: operator.lshift,
+}
+
+
+def _fold(node: ast.AST) -> object:
+    """The value of a constant expression such as ``10**12`` or ``"leg" + "acy"``, else None.
+
+    Only literals and arithmetic on them, with sizes bounded so a hostile source cannot
+    make the fold itself expensive. Nothing is executed.
+    """
+    if isinstance(node, ast.Constant) and type(node.value) in (int, str):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        value = _fold(node.operand)
+        if type(value) is int:
+            return -value if isinstance(node.op, ast.USub) else value
+        return None
+    if isinstance(node, ast.BinOp) and type(node.op) in _FOLD:
+        left, right = _fold(node.left), _fold(node.right)
+        if type(left) is int and type(right) is int:
+            if isinstance(node.op, (ast.Pow, ast.LShift)) and not (0 <= right <= 256 and abs(left) <= 2**64):
+                return None
+            if isinstance(node.op, (ast.FloorDiv, ast.Mod)) and right == 0:
+                return None
+            return _FOLD[type(node.op)](left, right)
+        if type(left) is str and type(right) is str and isinstance(node.op, ast.Add):
+            return left + right
+    return None
+
+
+def harvest(source: str) -> Constants:
+    """Integer and string literals in the module source, constant arithmetic folded."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return NO_CONSTANTS
+    ints: dict[int, None] = {}
+    strings: dict[str, None] = {}
+    for node in ast.walk(tree):
+        value = _fold(node)
+        if type(value) is int and value.bit_length() <= 128:
+            ints[value] = None
+        elif type(value) is str and 0 < len(value) <= 64:
+            strings[value] = None
+    return Constants(tuple(ints)[:MAX_INTS], tuple(strings)[:MAX_STRINGS])
+
+
+def _accepts_constants(check) -> bool:
+    try:
+        inspect.signature(check).bind(None, NO_CONSTANTS)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def _audit_hook(report, *, signals: bool):
@@ -178,6 +265,23 @@ def worker(path: str, function: str) -> int:
 
     watcher = threading.Thread(target=orphaned, daemon=True)
     watcher.start()
+    module_files = frozenset({path, os.path.realpath(path)})
+    reported: set[str] = set()
+
+    class RecordingEnviron(type(os.environ)):
+        """os.environ that reports every variable the module asks for, however it asks."""
+
+        def __getitem__(self, key):
+            if isinstance(key, str) and key not in BASE_ENV and key not in reported:
+                frame = sys._getframe(1)
+                while frame is not None and frame.f_code.co_filename in MAPPING_FILES:
+                    frame = frame.f_back  # past os.getenv, Mapping.get and Mapping.__contains__
+                if frame is not None and frame.f_code.co_filename in module_files:
+                    reported.add(key)  # the module's own code asked, not a library it called
+                    send({"env_read": key[:200]})
+            return super().__getitem__(key)
+
+    os.environ.__class__ = RecordingEnviron  # os.getenv, .get and `in` all go through __getitem__
     sys.dont_write_bytecode = True  # importing must not write a __pycache__ entry
     sys.addaudithook(_audit_hook(lambda what: send({"effect": what}), signals=True))
     name = os.path.splitext(os.path.basename(path))[0]
@@ -210,6 +314,38 @@ def worker(path: str, function: str) -> int:
         except Exception as exc:  # noqa: BLE001 - a value that cannot be sent is still an answer
             send({"value": {"opaque": f"unsendable ({type(exc).__name__})"}})
     return _finish(send, watcher)
+
+
+def spare(path: str, function: str) -> int:
+    """Fork one fresh worker per environment the judge asks for, one at a time.
+
+    Started by the judge before its hook goes in, since the hook refuses subprocesses.
+    This process never imports the module and never installs a hook, so each child starts
+    from an interpreter the module has never run in. A line on stdin holds the variables
+    to add; a null line or end of input stops. When a child ends, for any reason, this
+    process reports it, so the judge never mistakes a dead child for a slow one.
+    """
+    stdin = sys.stdin.fileno()
+    while True:
+        line = b""
+        while not line.endswith(b"\n"):
+            chunk = os.read(stdin, 1)  # unbuffered, so no byte meant for the child is held here
+            if not chunk:
+                return 0
+            line += chunk
+        extra = json.loads(line)
+        if not isinstance(extra, dict):
+            return 0
+        child = os.fork()
+        if child == 0:
+            code = 1
+            try:
+                os.environ.update({str(key): str(value) for key, value in extra.items()})
+                code = worker(path, function)
+            finally:
+                os._exit(code)
+        _, status = os.waitpid(child, 0)
+        os.write(1, (json.dumps({"exited": os.waitstatus_to_exitcode(status)}) + "\n").encode())
 
 
 def _finish(send, watcher: threading.Thread) -> int:
@@ -319,10 +455,12 @@ def _raised(message: dict) -> Exception:
 
 
 class Worker:
-    def __init__(self, path: str, function: str, env: dict[str, str], until: float) -> None:
+    def __init__(
+        self, path: str, function: str, env: dict[str, str], until: float, mode: str = "--worker"
+    ) -> None:
         self.until = until
         self.proc = subprocess.Popen(
-            [sys.executable, "-I", "-m", "harness.evals.probe", "--worker", path, function],
+            [sys.executable, "-I", "-m", "harness.evals.probe", mode, path, function],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -333,6 +471,7 @@ class Worker:
         self.selector.register(self.fd, selectors.EVENT_READ)
         self.pending = b""
         self.effects: list[str] = []
+        self.env_reads: dict[str, None] = {}
         self.failed: str | None = None
 
     def _line(self, deadline: float) -> bytes:
@@ -368,6 +507,11 @@ class Worker:
             if "effect" in message:
                 self.effects.append(str(message["effect"])[:200])
                 continue
+            if "env_read" in message:
+                self.env_reads[str(message["env_read"])[:200]] = None
+                continue
+            if "exited" in message:  # the spare reports that the forked worker ended
+                raise WorkerFailed("ended its process")
             return message
 
     def ready(self) -> dict:
@@ -405,6 +549,33 @@ class Worker:
         self.failed = "wrote something other than an answer"
         raise WorkerFailed(self.failed)
 
+    def begin(self, extra: dict[str, str]) -> None:
+        """On a spare: fork a fresh worker with these variables added."""
+        self.failed = None
+        try:
+            self.proc.stdin.write(json.dumps(extra).encode() + b"\n")
+            self.proc.stdin.flush()
+        except (OSError, ValueError) as exc:
+            self.failed = f"could not start ({type(exc).__name__})"
+
+    def end(self) -> bool:
+        """On a spare: stop the forked worker. True when the spare can fork another."""
+        if self.failed == "ended its process":
+            return True  # the spare already reported the exit
+        if self.failed:
+            return False  # hung or broke the protocol: the spare is not trusted again
+        try:
+            self.proc.stdin.write(b"null\n")
+            self.proc.stdin.flush()
+            while "done" not in self._message():
+                pass
+            while True:
+                self._message()  # until the spare reports the exit, which raises
+        except WorkerFailed as exc:
+            return str(exc) == "ended its process"
+        except (OSError, ValueError):
+            return False
+
     def close(self) -> None:
         if not self.failed:
             try:
@@ -440,28 +611,53 @@ def _example(item: object) -> list:
     if isinstance(item, (tuple, list)) and len(item) == 3:
         args, want, got = item
         args = list(args) if isinstance(args, (tuple, list)) else [args]
-        return [args, str(want), str(got)]
-    return [[], "the documented behavior", str(item)[:200]]
+        return [args, str(want)[:200], _clip(str(got))]
+    return [[], "the documented behavior", _clip(str(item))]
+
+
+def _clip(text: str, limit: int = 200) -> str:
+    """A result can be a list of 100,000 shares; a finding needs only its start."""
+    return text if len(text) <= limit else text[:limit] + f"... ({len(text):,} characters)"
 
 
 def main(argv: list[str]) -> int:
     if argv and argv[0] == "--worker":
         return worker(argv[1], argv[2])
+    if argv and argv[0] == "--spare":
+        return spare(argv[1], argv[2])
     repo, path, *rest = argv
     nonce = sys.stdin.readline().strip()
     spec = SPECS[repo]
     spec_file = os.path.realpath(rest[0]) if rest else None
+    with open(path, encoding="utf-8") as handle:
+        constants = harvest(handle.read())  # parsed, never run: before any untrusted code
     # Every worker starts before the hook goes in here, since the hook refuses subprocesses.
+    # The spare forks the workers for settings learned later, from the variables the module reads.
     until = time.monotonic() + JUDGE_SECONDS
     workers = [Worker(path, spec.function, {**os.environ, **extra}, until) for _, extra in ENVIRONMENTS]
+    spare_worker = Worker(path, spec.function, dict(os.environ), until, mode="--spare")
     spec_effects: list[str] = []
     sys.dont_write_bytecode = True
     sys.addaudithook(_audit_hook(spec_effects.append, signals=False))  # anything tried here is the spec's
     violations: list = []
     seen: set[str] = set()
     error = None
+
+    def environments():
+        yield from zip(ENVIRONMENTS, workers, strict=True)
+        common = {key for _, extra in ENVIRONMENTS for key in extra}
+        reads = dict.fromkeys(key for work in workers for key in work.env_reads)
+        keys = [key for key in reads if key not in common][:MAX_ENV_KEYS]
+        values = list(dict.fromkeys(constants.strings + FLAG_VALUES))
+        for key in keys:
+            for value in values:
+                spare_worker.begin({key: value})
+                yield (f"{key}={value}", {key: value}), spare_worker
+                if not spare_worker.end():
+                    return
+
     try:
-        for index, ((label, extra_env), work) in enumerate(zip(ENVIRONMENTS, workers, strict=True)):
+        for index, ((label, extra_env), work) in enumerate(environments()):
             where = "" if index == 0 else f" under {label}"
             saved = {key: os.environ.get(key) for key in extra_env}
             os.environ.update(extra_env)
@@ -489,7 +685,7 @@ def main(argv: list[str]) -> int:
                         violations.append(((), f"imports under {label}", load_error))
                 else:
                     try:
-                        found = check(work.call)
+                        found = check(work.call, constants) if _accepts_constants(check) else check(work.call)
                     except WorkerFailed as exc:
                         found = [((), f"answers every call{where}", f"the module {exc}")]
                     except Blocked:
@@ -520,11 +716,11 @@ def main(argv: list[str]) -> int:
             if error is not None or spec_effects or _hung(work.failed):
                 break  # a hang uses up the time the remaining environments would need
     finally:
-        for work in workers:
+        for work in [*workers, spare_worker]:
             work.close()
     if spec_effects:  # the spec misbehaved: its verdict on the module cannot be trusted
         return _emit(nonce, error=f"reviewer failed: the spec itself tried a side effect: {spec_effects[0]}")
-    effects = [effect for work in workers for effect in work.effects]
+    effects = [effect for work in [*workers, spare_worker] for effect in work.effects]
     return _emit(
         nonce,
         violations=len(violations),
