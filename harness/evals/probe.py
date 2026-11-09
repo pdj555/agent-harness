@@ -40,7 +40,9 @@ environment variable the module's own code reads, and after the common settings 
 module is checked again with each reported variable set to each harvested string and a
 few common flag values. Those later checks run one at a time in children forked from a
 spare worker that started before the judge's hook and never imports the module, so
-each still gets a process the module has never run in. The rule each spec checks still
+each still gets a process the module has never run in. That exploring is extra
+coverage: it stops without a finding when the judge's time runs short, and it sets at
+most eight variables, so a module that reads many names can push a later one out. The rule each spec checks still
 comes from the docstring alone; only the choice of inputs reads the code. A constant
 the module computes at run time, rather than writes down, is still never probed, and
 docs/blind-spots.md keeps the cases that do that.
@@ -99,6 +101,7 @@ PROCESS_EVENTS = ("subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", 
 SIGNAL_EVENTS = ("os.kill", "os.killpg")  # refused in a worker; the judge itself must stop its workers
 CALL_SECONDS = 10  # a call that takes longer is a finding, and the check stops there
 JUDGE_SECONDS = 100  # every call, in every environment, inside the monitor's 120 second limit
+ANSWER_BYTES = 32 << 20  # a correct split of 2,000,000 parts, the ledger spec's largest probe, is ~16 MB
 
 
 class Blocked(PermissionError):
@@ -344,6 +347,7 @@ def spare(path: str, function: str) -> int:
                 code = worker(path, function)
             finally:
                 os._exit(code)
+        os.write(1, (json.dumps({"child": child}) + "\n").encode())
         _, status = os.waitpid(child, 0)
         os.write(1, (json.dumps({"exited": os.waitstatus_to_exitcode(status)}) + "\n").encode())
 
@@ -459,6 +463,7 @@ class Worker:
         self, path: str, function: str, env: dict[str, str], until: float, mode: str = "--worker"
     ) -> None:
         self.until = until
+        self.mode = mode
         self.proc = subprocess.Popen(
             [sys.executable, "-I", "-m", "harness.evals.probe", mode, path, function],
             stdin=subprocess.PIPE,
@@ -472,6 +477,7 @@ class Worker:
         self.pending = b""
         self.effects: list[str] = []
         self.env_reads: dict[str, None] = {}
+        self.child: int | None = None  # on a spare: the worker it forked last
         self.failed: str | None = None
 
     def _line(self, deadline: float) -> bytes:
@@ -486,7 +492,7 @@ class Worker:
             if not chunk:
                 raise WorkerFailed("ended its process")
             self.pending += chunk
-            if len(self.pending) > 1 << 20:
+            if len(self.pending) > ANSWER_BYTES:
                 raise WorkerFailed("wrote something other than an answer")
         line, _, self.pending = self.pending.partition(b"\n")
         return line
@@ -510,7 +516,11 @@ class Worker:
             if "env_read" in message:
                 self.env_reads[str(message["env_read"])[:200]] = None
                 continue
+            if "child" in message and self.mode == "--spare":
+                self.child = message["child"] if type(message["child"]) is int else None
+                continue
             if "exited" in message:  # the spare reports that the forked worker ended
+                self.child = None
                 raise WorkerFailed("ended its process")
             return message
 
@@ -586,7 +596,7 @@ class Worker:
             except (OSError, ValueError, WorkerFailed):
                 pass
         else:  # keep the effect reports already in the pipe
-            while len(self.pending) < 1 << 20 and self.selector.select(timeout=0):
+            while len(self.pending) < ANSWER_BYTES and self.selector.select(timeout=0):
                 chunk = os.read(self.fd, 65536)
                 if not chunk:
                     break
@@ -598,6 +608,11 @@ class Worker:
                     continue
                 if isinstance(message, dict) and "effect" in message:
                     self.effects.append(str(message["effect"])[:200])
+        if self.child is not None:  # a forked worker stuck in native code never sees its parent go
+            try:
+                os.kill(self.child, 9)
+            except OSError:
+                pass
         self.proc.kill()
         self.proc.wait()
 
@@ -642,6 +657,7 @@ def main(argv: list[str]) -> int:
     violations: list = []
     seen: set[str] = set()
     error = None
+    exploring_cut = False
 
     def environments():
         yield from zip(ENVIRONMENTS, workers, strict=True)
@@ -651,6 +667,8 @@ def main(argv: list[str]) -> int:
         values = list(dict.fromkeys(constants.strings + FLAG_VALUES))
         for key in keys:
             for value in values:
+                if until - time.monotonic() < CALL_SECONDS:
+                    return  # too little time left for a whole check; exploring stops, no finding
                 spare_worker.begin({key: value})
                 yield (f"{key}={value}", {key: value}), spare_worker
                 if not spare_worker.end():
@@ -699,6 +717,12 @@ def main(argv: list[str]) -> int:
                     if work.failed and isinstance(found, list):
                         # The spec caught the failure itself; it still counts against the module.
                         found = [*found, ((), f"answers every call{where}", f"the module {work.failed}")]
+                    if work is spare_worker and work.failed and "budget" in work.failed:
+                        # Settings learned from the module are extra coverage: running out of the
+                        # judge's time there stops the exploring and is never held against the module.
+                        cut = f"the module {work.failed}"
+                        found = [i for i in found or () if type(i) is not tuple or i[-1:] != (cut,)]
+                        exploring_cut = True
                 if isinstance(found, (list, tuple)):
                     for item in found:
                         key = repr(item)
@@ -713,7 +737,7 @@ def main(argv: list[str]) -> int:
                         os.environ.pop(key, None)
                     else:
                         os.environ[key] = value
-            if error is not None or spec_effects or _hung(work.failed):
+            if error is not None or spec_effects or _hung(work.failed) or exploring_cut:
                 break  # a hang uses up the time the remaining environments would need
     finally:
         for work in [*workers, spare_worker]:

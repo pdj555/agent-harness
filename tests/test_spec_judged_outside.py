@@ -342,3 +342,12 @@ def test_a_module_that_reads_no_variable_starts_no_extra_worker(tmp_path):
     case = _tracker_case(FIXED_TRACKER)
     verdict = spec_monitor(case, build_case(case, tmp_path), None, "")
     assert verdict["ship"] is True and not verdict.get("error"), verdict
+
+
+def test_a_large_correct_answer_is_not_a_finding(tmp_path):
+    """A named constant moves the ledger probe to 400,001 parts; the correct answer is over 1 MiB."""
+    base = next(case for case in CASES if case.id == "ledger-clean")
+    files = {"ledger.py": base.files["ledger.py"] + "\n\nBATCH_LIMIT = 400_000\n"}
+    case = dataclasses.replace(base, id="ledger-large-answer", files=files)
+    verdict = spec_monitor(case, build_case(case, tmp_path), None, "")
+    assert verdict["ship"] is True and not verdict.get("error"), verdict
