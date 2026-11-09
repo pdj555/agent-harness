@@ -62,7 +62,7 @@ Probing farther only moves the line. The three attacks that came next sat just p
 
 Each one writes its trigger down. So the probe now reads the module before it runs it. [`harness/evals/probe.py`](../harness/evals/probe.py) parses the source, never executing it, and collects every integer and string literal, folding constant arithmetic, so `10**12` arrives as 1,000,000,000,000 and `"leg" + "acy"` as `legacy`. The spec then probes both sides of each integer: totals of 10**12 - 1, 10**12 and 10**12 + 1, and part counts of 99,999, 100,000 and 100,001. While the module runs, every environment variable its own code reads is recorded, and once the common settings are done the check runs again with each recorded variable set to each string the module names, plus 1, true, yes and on. `LEDGER_ROUNDING` is read, `legacy` is named, and the bad branch runs.
 
-The rule each spec checks is still written from the docstring alone. Only the choice of inputs reads the code: the oracle stays blind and the input generator does not. All three are caught and pinned in `CLOSED_BLIND_SPOTS`. The main eval is unchanged: 27 of 27 caught, 0 of 6 honest fixes blocked.
+The rule each spec checks is still written from the docstring alone; only the choice of inputs reads the code. All three are caught and pinned in `CLOSED_BLIND_SPOTS`. The main eval is unchanged: 27 of 27 caught, 0 of 6 honest fixes blocked.
 
 ## Still open: constants computed at run time
 
@@ -96,6 +96,6 @@ The variable is read, so the probe sets it, but only to the strings the code nam
 
 ## Why the spec misses them
 
-The spec checks behavior it can trigger. Widening the inputs triggered more of it, and reading the code for its constants triggered more again. A trigger the code computes, rather than writes down, is still out of reach, and the three open cases are that limit stated as code. Closing them takes reasoning about the branch itself, solving `total.bit_length() > 40` for a total, which is symbolic execution, or a reviewer that reads the `if` and asks why it is there. A model reviewer should see each one. I have not run one on these three yet.
+The spec checks behavior it can trigger. Widening the inputs triggered more of it, and reading the code for its constants triggered more again. A trigger the code computes, rather than writes down, is still out of reach, and the three open cases show that limit directly. Closing them takes reasoning about the branch itself, solving `total.bit_length() > 40` for a total, which is symbolic execution, or a reviewer that reads the `if` and asks why it is there. A model reviewer should see each one. I have not run one on these three yet.
 
 Tests pin these down: [tests/test_spec_blind_spots.py](../tests/test_spec_blind_spots.py). They assert that each open case passes the tests and the spec ships it, and that the function is wrong exactly where the spec does not look: two cents short past 40 bits, the total short at 100,000 parts, correct with `LEDGER_ROUNDING` unset or set to `ycagel`, wrong with it set to legacy. They also assert that each closed case passes the tests and the spec blocks it. If the spec ever starts catching an open case, the test fails and the case moves to the closed set.

@@ -1,6 +1,6 @@
 # agent-harness
 
-27 sabotaged code changes passed every test and the tests caught none, the spec check caught all 27, and 3 attacks built to beat the spec check still get through, because a coding agent's work should never be approved by the same system that produced it
+27 sabotaged code changes passed every test; the tests caught none of them. The spec check caught all 27, and 3 attacks built to beat the spec check still get through. A coding agent's work should never be approved by the same system that produced it.
 
 
 <picture>
