@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -462,7 +463,9 @@ def test_baseline_tampering_invalidates_verification_and_missing_baseline_fails_
     (stage.root / "tracker.py").write_text("agent\n")
     digest = stage.content_digest()
     baseline = stage.root.parent / f"{stage.root.name}.source-state.json"
-    baseline.write_text("{}")
+    state = json.loads(baseline.read_text())
+    state["files"] = {}
+    baseline.write_text(json.dumps(state))
     with pytest.raises(IsolationError, match="changed since verification"):
         stage.publish(expected_digest=digest)
     baseline.unlink()

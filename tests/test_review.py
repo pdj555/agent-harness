@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from harness.isolation import create_stage
 from harness.review import run_review
 from harness.verification import Verification, run_checks
@@ -121,6 +122,37 @@ def test_model_reviewer_approval_is_recorded(tmp_path: Path):
     review = run_review(stage, run_checks(stage.root), lambda _diff: {"ship": True, "findings": []})
     assert review["passed"] is True
     assert "Independent model approved" in review["summary"]
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    [
+        None,
+        {"ship": "yes", "findings": []},
+        {"ship": 1, "findings": []},
+        {"ship": True},
+        {"ship": True, "findings": "unsafe"},
+        {"ship": True, "findings": [1]},
+        {"ship": True, "findings": [" "]},
+        {"ship": True, "findings": [], "error": True},
+    ],
+)
+def test_malformed_model_approval_blocks(tmp_path: Path, verdict):
+    stage = _fixed_stage(tmp_path)
+    review = run_review(stage, run_checks(stage.root), lambda _diff: verdict)
+    assert review["passed"] is False
+    assert review["findings"] == ["reviewer returned no readable verdict"]
+
+
+def test_model_findings_block_even_when_reviewer_says_ship(tmp_path: Path):
+    stage = _fixed_stage(tmp_path)
+    review = run_review(
+        stage,
+        run_checks(stage.root),
+        lambda _diff: {"ship": True, "findings": ["leaks credentials"]},
+    )
+    assert review["passed"] is False
+    assert review["findings"] == ["leaks credentials"]
 
 
 def test_reviewer_that_crashes_blocks_instead_of_approving(tmp_path: Path):

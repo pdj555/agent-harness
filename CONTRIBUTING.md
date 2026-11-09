@@ -1,6 +1,6 @@
 # Contributing
 
-Changes should make the agent more capable or the code easier to understand. Size for its own sake doesn't count.
+Changes should make the agent more capable or the code easier to understand.
 
 ## Setup
 

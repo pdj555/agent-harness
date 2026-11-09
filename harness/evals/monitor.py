@@ -28,6 +28,7 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from harness.evals.cases import (
     ATTACKS,
@@ -188,7 +189,7 @@ class _QuietStore:
         return None
 
 
-def model_monitor(name: str, model: str | None = None) -> Monitor:
+def model_monitor(name: str, model: str | None = None, *, effort: str | None = None) -> Monitor:
     """The live reviewer: the same agent, prompt, and diff a real run uses.
 
     Each review gets a fresh reviewer object. Codex binds its client and home to the
@@ -198,24 +199,30 @@ def model_monitor(name: str, model: str | None = None) -> Monitor:
     from harness.agents import ClaudeAgent, CodexAgent, TurnContext, review_prompt
 
     if name == "claude":
-        make = ClaudeAgent
+        def make(model: str | None) -> Any:
+            return ClaudeAgent(model, reviewer=True, effort=effort)
     elif name == "codex":
-        make = CodexAgent
+        if effort is not None:
+            raise ValueError("effort applies to the claude monitor only")
+
+        def make(model: str | None) -> Any:
+            return CodexAgent(model, reviewer=True)
     else:
         raise ValueError(f"unknown monitor: {name}")
-    make(model, reviewer=True)  # fail now, before any case runs, if the key is missing
+    make(model)  # fail now, before any case runs, if the key is missing
 
     def monitor(_case: Case, stage: Stage, verification: Verification, objective: str) -> dict:
         ctx = TurnContext(stage=stage, store=_QuietStore(), run_id=stage.id, quiet=True)
         prompt = review_prompt(objective, review_diff(stage), verification.exit_code, verification.output)
-        reviewer = make(model, reviewer=True)
+        reviewer = make(model)
         try:
             verdict = reviewer.review(prompt, ctx)
         except Exception as exc:  # a reviewer that cannot answer must not approve
-            return {"ship": False, "findings": [f"reviewer failed: {exc}"], "error": True}
+            verdict = {"ship": False, "findings": [f"reviewer failed: {exc}"], "error": True}
         finally:
             reviewer.close()
-        return {**verdict, "error": is_error(verdict)}
+        usage = dict(getattr(reviewer, "last_usage", None) or {})
+        return {**verdict, "error": is_error(verdict), "usage": usage}
 
     return monitor
 
@@ -250,6 +257,7 @@ class CaseResult:
     findings: list[list[str]] = field(default_factory=list)  # every trial, judged or not
     errors: int = 0  # trials where the reviewer crashed or gave no readable verdict
     checks_output: str = ""  # the end of the checks' output, kept only when they failed
+    usage: dict[str, int] = field(default_factory=dict)  # tokens billed across every trial
 
     @property
     def judged(self) -> bool:
@@ -328,6 +336,8 @@ def _run_case(
             if guard.tripped:
                 break
             verdict = monitor(case, stage, verification, objective)
+            for key, value in (verdict.get("usage") or {}).items():
+                result.usage[key] = result.usage.get(key, 0) + int(value)
             result.findings.append([str(item) for item in verdict.get("findings") or []][:5])
             error = is_error(verdict)
             guard.record(error)
@@ -359,17 +369,20 @@ def run_eval(
     progress: Callable[[str], None] | None = None,
     jobs: int = 1,
     max_consecutive_errors: int = 0,
+    salt: str | None = None,
 ) -> list[CaseResult]:
     """Run every case. ``jobs`` reviews cases in parallel; results keep case order.
 
     ``max_consecutive_errors`` (0 = off) stops the run early and raises ``EvalAborted``.
+    ``salt`` fixes the opaque repository names so a run can be repeated exactly; by
+    default each run draws a fresh one.
     """
     if trials < 1:
         raise ValueError("trials must be at least 1")
     if jobs < 1:
         raise ValueError("jobs must be at least 1")
     cases = list(cases)
-    salt = secrets.token_hex(8)
+    salt = salt if salt is not None else secrets.token_hex(8)
     parent = workdir or Path(tempfile.gettempdir())
     parent.mkdir(parents=True, exist_ok=True)
     guard = _ErrorGuard(max_consecutive_errors)
@@ -509,6 +522,14 @@ def _rate(scored: list[tuple[CaseResult, float]]) -> dict:
     }
 
 
+def _total_usage(results: list[CaseResult]) -> dict[str, int]:
+    total: dict[str, int] = {}
+    for result in results:
+        for key, value in result.usage.items():
+            total[key] = total.get(key, 0) + value
+    return total
+
+
 def summarize(results: list[CaseResult]) -> dict:
     """Model rates use judged trials only. Cases the reviewer never judged are listed, not scored.
 
@@ -533,6 +554,7 @@ def summarize(results: list[CaseResult]) -> dict:
         "unjudged_cases": [r.id for r in results if r.checks_passed and not r.judged],
         "trials": max((r.trials for r in results), default=0),
         "judged_trials": sum(len(r.verdicts) for r in results if r.checks_passed),
+        "usage": _total_usage(results),
         "monitor": {
             "catch_rate": _rate([(r, r.block_rate) for r in attacks]),
             "false_block_rate": _rate([(r, r.block_rate) for r in clean]),
@@ -601,6 +623,14 @@ def render_markdown(summary: dict, results: list[CaseResult], *, monitor_name: s
         f"| Reviewer errors (excluded from rates) | {m['reviewer_errors']} "
         f"({errors_by['attack']} on attacks, {errors_by['clean']} on clean) |",
         f"| Cases never judged (excluded) | {len(summary['unjudged_cases'])} |",
+    ]
+    usage = summary.get("usage") or {}
+    if usage:
+        lines.append(
+            f"| Reviewer tokens, input / output | {usage.get('input_tokens', 0):,} / "
+            f"{usage.get('output_tokens', 0):,} |"
+        )
+    lines += [
         "",
         "## By attack",
         "",
@@ -669,6 +699,7 @@ def rescore(results_json: Path) -> tuple[str, list[CaseResult]]:
                     result.verdicts.append(blocked)
         else:
             result.verdicts, result.errors = verdicts, int(row.get("errors") or 0)
+        result.usage = {str(k): int(v) for k, v in (row.get("usage") or {}).items()}
         results.append(result)
     return str(payload.get("monitor", "rescored")), results
 
