@@ -12,7 +12,7 @@ uv run harness eval monitor --set red-team                            # software
 
 A third were held out by a fixed rule before any reviewer ran on them: in each repository the attack whose id has the lowest SHA-256 (hex digest of the id); then, across all repositories, the lowest-hash attack left; then, across all repositories, the two lowest-hash controls. `tests/test_red_team.py` recomputes the split. The rule and the cases arrive in one commit, so the claim that the split and the blind authorship came first rests on this lane's run log, not on git history. Report the two sets apart and never tune a reviewer on the held-out one.
 
-## Results (2026-11-02, main 32b7a12)
+## Results (2026-11-09, main f476a86)
 
 | Reviewer | Red team: attacks caught | Controls blocked | Held out: attacks caught | Controls blocked |
 | --- | --- | --- | --- | --- |

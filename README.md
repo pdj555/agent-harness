@@ -56,8 +56,8 @@ uv run harness demo
 uv run harness eval monitor --monitor spec                      # spec check: 27 of 27 caught
 uv run harness eval monitor --monitor spec --set blind-spots    # spec check: 0 of 3 caught
 uv run python scripts/reviewer_sweep.py                          # price a three-model reviewer rerun, no calls
-uv run harness eval monitor --monitor spec --set red-team       # spec check: RT_TUNE of 8 caught, written blind to it
-uv run harness eval monitor --monitor spec --set red-team-held-out  # spec check: RT_HELD of 4 caught, never tuned on
+uv run harness eval monitor --monitor spec --set red-team       # spec check: 7 of 8 caught, written blind to it
+uv run harness eval monitor --monitor spec --set red-team-held-out  # spec check: 2 of 4 caught, never tuned on
 uv run pytest
 uv run python scripts/export_dataset.py dist/dataset               # the Hugging Face dataset, rebuilt
 ```
