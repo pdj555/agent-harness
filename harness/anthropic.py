@@ -9,12 +9,20 @@ from typing import Any
 
 from harness.provider import SECRET_ENV, Completion, ToolCall
 
+# Messages API `output_config.effort`. Left unset, each model uses its own default.
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
 
 class AnthropicProvider:
     name = "claude"
 
     def __init__(
-        self, model: str | None = None, *, client: Any = None, output_schema: dict | None = None
+        self,
+        model: str | None = None,
+        *,
+        client: Any = None,
+        output_schema: dict | None = None,
+        effort: str | None = None,
     ) -> None:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError("Claude requires ANTHROPIC_API_KEY")
@@ -23,6 +31,9 @@ class AnthropicProvider:
             raise RuntimeError("Claude requires HARNESS_MODEL with an explicit Claude model ID")
         self._client = client
         self._output_schema = copy.deepcopy(output_schema)
+        if effort is not None and effort not in EFFORTS:
+            raise RuntimeError(f"effort must be one of {', '.join(EFFORTS)}")
+        self.effort = effort
         self.usage: dict[str, int] = {}
 
     def _request(self, payload: dict) -> dict:
@@ -58,8 +69,13 @@ class AnthropicProvider:
         }
         if system:
             payload["system"] = system
+        output_config: dict = {}
         if self._output_schema is not None:
-            payload["output_config"] = {"format": {"type": "json_schema", "schema": self._output_schema}}
+            output_config["format"] = {"type": "json_schema", "schema": self._output_schema}
+        if self.effort is not None:
+            output_config["effort"] = self.effort
+        if output_config:
+            payload["output_config"] = output_config
         if tools:
             payload["tools"] = [
                 {
