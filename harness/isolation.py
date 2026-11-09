@@ -64,7 +64,7 @@ def command_env(home: Path, python: str) -> dict[str, str]:
     }
 
 
-def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+def _git(args: list[str], cwd: Path, *, index: Path | None = None) -> subprocess.CompletedProcess[str]:
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -72,6 +72,8 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         "GIT_TERMINAL_PROMPT": "0",
         "HOME": str(cwd),
     }
+    if index is not None:
+        env["GIT_INDEX_FILE"] = str(index)
     return subprocess.run(
         ["git", "-c", "core.hooksPath=/dev/null", *args],
         cwd=cwd,
@@ -80,6 +82,16 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         check=False,
         env=env,
     )
+
+
+@contextmanager
+def _head_index(root: Path) -> Iterator[Path]:
+    """Compare actual working files with HEAD without changing the stage's index."""
+    with tempfile.TemporaryDirectory(prefix="harness-index-") as temp:
+        index = Path(temp) / "index"
+        if _git(["read-tree", "HEAD"], root, index=index).returncode:
+            raise IsolationError("cannot read the isolated stage's Git files")
+        yield index
 
 
 def _is_git_root(path: Path) -> bool:
@@ -181,21 +193,35 @@ def _file_state(path: Path) -> list | None:
 
 def _save_source_state(stage: Stage) -> None:
     files = {name: _file_state(stage.root / name) for name in _working_paths(stage.root)}
-    _source_state_path(stage.root).write_text(json.dumps(files, sort_keys=True), encoding="utf-8")
+    head = _git(["rev-parse", "HEAD"], stage.root)
+    if head.returncode:
+        raise IsolationError("cannot read the isolated stage's Git state")
+    baseline = {"head": head.stdout.strip(), "files": files}
+    _source_state_path(stage.root).write_text(json.dumps(baseline, sort_keys=True), encoding="utf-8")
 
 
 def _read_source_state(root: Path) -> dict:
     try:
-        files = json.loads(_source_state_path(root).read_text(encoding="utf-8"))
-        if not isinstance(files, dict):
+        baseline = json.loads(_source_state_path(root).read_text(encoding="utf-8"))
+        if (
+            not isinstance(baseline, dict)
+            or not isinstance(baseline.get("head"), str)
+            or not baseline["head"]
+            or not isinstance(baseline.get("files"), dict)
+        ):
             raise ValueError("invalid baseline")
-        for name, state in files.items():
+        for name, state in baseline["files"].items():
             _validate_overlay_path(Path(name))
             if state is not None and (not isinstance(state, list) or not state):
                 raise ValueError("invalid file state")
-        return files
     except (OSError, ValueError, TypeError) as exc:
         raise IsolationError("source baseline is missing or invalid; run it again") from exc
+    head = _git(["rev-parse", "HEAD"], root)
+    if head.returncode or head.stdout.strip() != baseline["head"]:
+        raise IsolationError(
+            "Git history changed in the isolated stage; leave edits uncommitted and run the objective again"
+        )
+    return baseline
 
 
 @contextmanager
@@ -246,11 +272,7 @@ def _overlay_working_tree(source: Path, root: Path) -> None:
             )
     # The worktree already contains HEAD. Overlay only its working-tree delta,
     # while still inspecting every tracked name for credential-like files.
-    changed = _git(["diff", "HEAD", "--name-only", "--no-renames", "-z", "--", "."], source)
-    untracked = _git(["ls-files", "--others", "--exclude-standard", "-z"], source)
-    if changed.returncode or untracked.returncode:
-        raise IsolationError("cannot read source working-tree changes")
-    dirty_paths = sorted(set((changed.stdout + untracked.stdout).split("\0")) - {""})
+    dirty_paths = _changed_paths(source)
     overlay_paths = _source_overlay_paths(source, [Path(raw) for raw in dirty_paths])
     for rel in overlay_paths:
         _validate_overlay_path(rel)
@@ -261,13 +283,33 @@ def _overlay_working_tree(source: Path, root: Path) -> None:
         _overlay_entry(source / rel, _prepare_overlay_destination(root, rel))
 
 
-def _working_paths(root: Path) -> list[str]:
+def _git_paths(root: Path) -> tuple[set[str], set[str]]:
     listed = _git(["ls-files", "--cached", "--others", "--exclude-standard", "-z"], root)
     baseline = _git(["ls-tree", "-r", "--name-only", "-z", "HEAD"], root)
     if listed.returncode or baseline.returncode:
         raise IsolationError("cannot read the isolated stage's Git files")
+    return set(listed.stdout.split("\0")) - {""}, set(baseline.stdout.split("\0")) - {""}
+
+
+def _working_paths(root: Path) -> list[str]:
+    listed, baseline = _git_paths(root)
     # HEAD paths keep staged deletions visible even after Git's index drops them.
-    return sorted(set((listed.stdout + baseline.stdout).split("\0")) - {""})
+    return sorted(listed | baseline)
+
+
+def _new_files(root: Path) -> list[str]:
+    listed, baseline = _git_paths(root)
+    return sorted(name for name in listed - baseline if os.path.lexists(root / name))
+
+
+def _changed_paths(root: Path) -> list[str]:
+    with _head_index(root) as index:
+        changed = _git(
+            ["diff", "HEAD", "--name-only", "--no-renames", "-z", "--", "."], root, index=index
+        )
+    if changed.returncode:
+        raise IsolationError("cannot read working-tree changes")
+    return sorted((set(changed.stdout.split("\0")) - {""}) | set(_new_files(root)))
 
 
 def _validate_overlay_path(rel: Path) -> None:
@@ -398,8 +440,16 @@ class Stage:
         return (result.stdout or "") + (result.stderr or "")
 
     def diff(self) -> str:
-        result = _git(["diff", "--", "."], self.root)
+        """Compare actual working files with HEAD, independently of staging."""
+        with _head_index(self.root) as index:
+            result = _git(["diff", "HEAD", "--", "."], self.root, index=index)
+        if result.returncode:
+            raise IsolationError("cannot read working-tree changes")
         return result.stdout or ""
+
+    def new_files(self) -> list[str]:
+        """Existing files absent from HEAD, whether staged or untracked."""
+        return _new_files(self.root)
 
     def changed_files(self) -> list[str]:
         """Every path that differs from the last commit, one file per entry.
@@ -408,31 +458,13 @@ class Stage:
         contents instead of being skipped as a directory. Renames contribute both
         the new and the old path.
         """
-        result = _git(
-            ["status", "--porcelain", "--untracked-files=all", "-z", "--", "."],
-            self.root,
-        )
-        entries = (result.stdout or "").split("\0")
-        names: list[str] = []
-        index = 0
-        while index < len(entries):
-            entry = entries[index]
-            index += 1
-            if len(entry) < 4:
-                continue
-            code, name = entry[:2], entry[3:]
-            paths = [name]
-            if "R" in code or "C" in code:
-                if index < len(entries) and entries[index]:
-                    paths.append(entries[index])
-                index += 1
-            for path in paths:
-                if path and path not in names:
-                    names.append(path)
-        return names
+        return _changed_paths(self.root)
 
     def assert_safe(self) -> None:
         _assert_symlinks_stay_in_stage(self.root)
+        # Runtime stages persist a source baseline; standalone eval fixtures do not.
+        if _source_state_path(self.root).exists():
+            _read_source_state(self.root)
 
     def content_digest(self) -> str:
         """Bind verification to Git's baseline and the publishable working files."""
@@ -458,7 +490,9 @@ class Stage:
                     raise IsolationError(f"unsupported stage file: {rel}")
                 entries.append((name, mode, content))
             except (FileNotFoundError, NotADirectoryError):
-                entries.append((name, None, None))
+                # A staged addition removed from disk has no publishable content.
+                # HEAD and changed_files still identify real tracked deletions.
+                continue
             except OSError as exc:
                 raise IsolationError(f"cannot read stage file: {rel}") from exc
         payload = [head.stdout.strip(), sorted(self.changed_files()), entries, _read_source_state(self.root)]
@@ -492,7 +526,7 @@ class Stage:
         files = self.changed_files()
         # Check the complete delta before writing anything. Unrelated source
         # edits are allowed; conflicting files make the entire apply fail.
-        _check_source_state(self, files, baseline)
+        _check_source_state(self, files, baseline["files"])
         source_root = self.source.resolve()
         for rel in files:
             src = self.root / rel

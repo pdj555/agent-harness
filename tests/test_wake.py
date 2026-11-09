@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from harness.agents import ClaudeAgent, LoopAgent, TurnContext
+from harness.anthropic import AnthropicProvider
 from harness.config import Config
 from harness.isolation import create_stage
 from harness.provider import Completion, DeterministicProvider, ScriptedProvider, ToolCall
@@ -127,21 +128,98 @@ def test_terminal_runs_are_not_woken(ctx: TurnContext):
     assert resumed is False
 
 
-def test_vendor_session_id_is_recorded_and_restored(ctx: TurnContext, monkeypatch):
+def test_claude_wakes_from_its_persisted_conversation(ctx: TurnContext, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
+    monkeypatch.setenv("HARNESS_MODEL", "claude-test")
+    replies = [
+        {
+            "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "id": "read", "name": "list_files", "input": {"pattern": "*"}}],
+        },
+        {"stop_reason": "end_turn", "content": [{"type": "text", "text": "finished"}]},
+        {"stop_reason": "end_turn", "content": [{"type": "text", "text": "continued"}]},
+    ]
+    requests = []
+
+    def request(_self, payload):
+        requests.append(payload)
+        return replies.pop(0)
+
+    monkeypatch.setattr(AnthropicProvider, "_request", request)
     agent = ClaudeAgent()
-    agent.session_id = "sess-123"
-    agent._record_session(ctx)
+    assert agent.turn("fix it", ctx) == "finished"
+    messages = ctx.store.get_messages(ctx.run_id)
+    assert messages == agent.messages
     run = ctx.store.get_run(ctx.run_id)
     assert run is not None
-    assert run.vendor_session_id == "sess-123"
 
     fresh = ClaudeAgent()
-    assert fresh.session_id is None
     woken, resumed = _wake_agent(fresh, run=run, store=ctx.store)
     assert resumed is True
-    assert isinstance(woken, ClaudeAgent)
-    assert woken.session_id == "sess-123"
+    assert woken.name == "claude"
+    assert woken.messages == messages
+    assert woken.turn("continue", ctx) == "continued"
+    blocks = [block for message in requests[-1]["messages"] for block in message["content"]]
+    assert len([block for block in blocks if block["type"] == "tool_use"]) == 1
+    assert len([block for block in blocks if block["type"] == "tool_result"]) == 1
+
+
+@pytest.mark.parametrize("interrupt_after", [0, 1])
+def test_claude_wake_closes_unrecorded_tool_results_without_repeating_mutations(
+    ctx: TurnContext, monkeypatch, interrupt_after: int
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
+    monkeypatch.setenv("HARNESS_MODEL", "claude-test")
+    calls = [
+        {
+            "type": "tool_use",
+            "id": name,
+            "name": "run_shell",
+            "input": {
+                "command": "python -c 'from pathlib import Path; "
+                f'Path("mutation.txt").open("a").write("{name}\\n")' + "'",
+            },
+        }
+        for name in ("first", "second")
+    ]
+    replies = [
+        {"stop_reason": "tool_use", "content": calls},
+        {"stop_reason": "end_turn", "content": [{"type": "text", "text": "continued"}]},
+    ]
+    requests = []
+
+    def request(_self, payload):
+        requests.append(payload)
+        return replies.pop(0)
+
+    monkeypatch.setattr(AnthropicProvider, "_request", request)
+    agent = ClaudeAgent()
+    run_tool = agent._run_tool
+
+    def interrupt(name, call_id, arguments, context):
+        result = run_tool(name, call_id, arguments, context)
+        if call_id == calls[interrupt_after]["id"]:
+            raise KeyboardInterrupt
+        return result
+
+    monkeypatch.setattr(agent, "_run_tool", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        agent.turn("Record both mutations.", ctx)
+    run = ctx.store.get_run(ctx.run_id)
+    woken, resumed = _wake_agent(ClaudeAgent(), run=run, store=ctx.store)
+
+    assert resumed is True
+    assert woken.turn("continue", ctx) == "continued"
+    assert (ctx.stage.root / "mutation.txt").read_text() == (
+        "first\n" if interrupt_after == 0 else "first\nsecond\n"
+    )
+    messages = requests[-1]["messages"]
+    assistant = next(index for index, message in enumerate(messages) if message["role"] == "assistant")
+    results = messages[assistant + 1]["content"]
+    assert all(block["type"] == "tool_result" for block in results)
+    assert {block["tool_use_id"] for block in results} == {"first", "second"}
+    errors = {block["tool_use_id"] for block in results if block.get("is_error")}
+    assert errors == ({"first", "second"} if interrupt_after == 0 else {"second"})
 
 
 # -------------------------------------------------------------------- runtime

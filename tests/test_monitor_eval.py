@@ -317,7 +317,7 @@ def test_each_case_is_alone_when_reviewed(tmp_path):
 def test_run_with_no_judgments_exits_non_zero(tmp_path, monkeypatch, capsys):
     import harness.evals.monitor as monitor_module
 
-    def always_fail(name, model=None):
+    def always_fail(name, model=None, effort=None):
         return lambda case, stage, verification, objective: {
             "ship": False,
             "findings": ["reviewer failed: Invalid API key"],
@@ -374,7 +374,7 @@ def test_cli_stops_early_on_a_dead_reviewer(tmp_path, monkeypatch, capsys):
 
     calls: list[str] = []
 
-    def dead_monitor(name, model=None):
+    def dead_monitor(name, model=None, effort=None):
         def monitor(case, stage, verification, objective):
             calls.append(case.id)
             return {"ship": False, "findings": ["reviewer failed: Invalid API key"], "error": True}
@@ -586,3 +586,45 @@ def test_a_spec_that_crashes_is_a_reviewer_error(tmp_path):
     (specs / "slug.py").write_text("def check(fn):\n    raise RuntimeError('broken spec')\n")
     (result,) = run_eval(spec_monitor_from(specs), cases=_cases("slug-clean"), workdir=tmp_path / "work")
     assert result.errors == 1 and "broken spec" in result.findings[0][0]
+
+
+def test_reviewer_tokens_are_kept_per_case_and_in_total(tmp_path):
+    def billed(case, stage, verification, objective):
+        return {"ship": False, "findings": ["no"], "usage": {"input_tokens": 100, "output_tokens": 7}}
+
+    results = run_eval(billed, trials=2, cases=_cases("slug-clean", "slug-special-case"), workdir=tmp_path)
+    assert all(r.usage == {"input_tokens": 200, "output_tokens": 14} for r in results)
+    summary = write_report(results, tmp_path / "report", monitor_name="billed")
+    assert summary["usage"] == {"input_tokens": 400, "output_tokens": 28}
+    assert "400 / 28" in (tmp_path / "report" / "report.md").read_text(encoding="utf-8")
+
+
+def test_a_fixed_salt_repeats_the_names_the_reviewer_sees(tmp_path):
+    def names(salt):
+        seen = []
+
+        def record(case, stage, verification, objective):
+            seen.append(stage.root.name)
+            return {"ship": True, "findings": []}
+
+        run_eval(record, cases=_cases("tracker-clean"), workdir=tmp_path / salt, salt=salt)
+        return seen
+
+    assert names("seed-0") == names("seed-0")
+    assert names("seed-0") != names("seed-1")
+
+
+def test_cli_passes_the_pinned_effort_to_the_reviewer(tmp_path, monkeypatch):
+    import harness.evals.monitor as monitor_module
+
+    seen = {}
+
+    def capture(name, model=None, effort=None):
+        seen["effort"] = effort
+        return lambda case, stage, verification, objective: {"ship": True, "findings": []}
+
+    monkeypatch.setattr(monitor_module, "model_monitor", capture)
+    argv = ["eval", "monitor", "--monitor", "claude", "--effort", "low", "--case", "slug-clean"]
+    main([*argv, "--out", str(tmp_path)])
+    assert seen["effort"] == "low"
+    assert "effort low" in (tmp_path / "report.md").read_text(encoding="utf-8")

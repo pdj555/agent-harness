@@ -46,20 +46,52 @@ def _symlink_or_skip(link: Path, target: Path | str) -> None:
         pytest.skip(f"symlinks are unavailable: {exc}")
 
 
-def test_model_question_does_not_edit_the_repository(tmp_path: Path):
+@pytest.mark.parametrize(
+    "objective",
+    ["what model is this?", "Which provider are you using?", "what llm?", "what model is configured?"],
+)
+def test_model_question_does_not_fabricate_check_evidence(tmp_path: Path, objective: str):
     store, config, _ = _setup(tmp_path)
     source = config.workspace_roots[0]
     before = (source / "tracker.py").read_text(encoding="utf-8")
     repo = store.list_repos(config.workspace_roots)[0]
     user = store.get_user_by_username("ada")
-    run = store.create_run(user.id, repo.id, "what model is this?")
+    run = store.create_run(user.id, repo.id, objective)
     execute_run(run.id, store=store, config=config, provider=DeterministicProvider())
     finished = store.get_run(run.id)
     assert finished.status == "completed"
     assert "deterministic" in (finished.result or "").lower()
     assert "live model" in (finished.result or "").lower() or "scripted" in (finished.result or "").lower()
     assert not finished.files_changed
+    assert finished.verification is None
+    assert finished.review is None
+    assert finished.checks == []
+    assert finished.stage_path is None
     assert (source / "tracker.py").read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize(
+    "objective",
+    [
+        "Fix the reliability bug and tell me what model is this?",
+        "Find what model behavior causes the priority bug, fix it, and prove it.",
+    ],
+)
+def test_coding_objective_with_model_question_still_runs_checks(tmp_path: Path, objective: str):
+    store, config, _ = _setup(tmp_path)
+    repo = store.list_repos(config.workspace_roots)[0]
+    user = store.get_user_by_username("ada")
+    run = store.create_run(user.id, repo.id, objective)
+
+    execute_run(run.id, store=store, config=config, provider=DeterministicProvider())
+
+    finished = store.get_run(run.id)
+    assert finished.status == "completed"
+    assert finished.stage_path is not None
+    assert finished.verification["passed"] is True
+    assert finished.verification["stage_digest"]
+    assert finished.review["passed"] is True
+    assert "tracker.py" in finished.files_changed
 
 
 def test_model_claiming_done_without_a_fix_does_not_complete(tmp_path: Path):
@@ -402,6 +434,63 @@ def test_cross_vendor_reviewer_blocks_then_approves_after_repair(tmp_path: Path,
     assert "Independent model approved" in run.review["summary"]
     assert run.result == "Handled the edge case."
     assert any("codex reviews the diff" in event["detail"] for event in run.events)
+
+
+@pytest.mark.parametrize("stage_final_edit", [False, True])
+def test_review_sees_staged_edits_additions_deletions_and_unstaged_edits(
+    tmp_path: Path, monkeypatch, stage_final_edit: bool
+):
+    store, config, run_id = _setup(tmp_path)
+    config.max_repairs = 0
+    source = config.workspace_roots[0]
+    before = (source / "tracker.py").read_bytes()
+    reviewer = _Reviewer([{"ship": False, "findings": ["needs another change"]}])
+    monkeypatch.setattr("harness.runtime.make_reviewer", lambda _name: reviewer)
+    calls = [
+        ToolCall("run_shell", {
+            "command": (
+                'python -c "from pathlib import Path; '
+                "Path('added.py').write_text('def review_marker():\\n    return 42\\n')\""
+            ),
+        }),
+        ToolCall("run_shell", {"command": "git rm README.md"}),
+        ToolCall("run_shell", {"command": "git add -A"}),
+        ToolCall("edit_file", {
+            "path": "tracker.py",
+            "old": "# Bug: high and low labels are reversed. Tests pin the documented spec.",
+            "new": "# Classify the documented priority bands.",
+        }),
+    ]
+    if stage_final_edit:
+        calls.append(ToolCall("run_shell", {"command": "git add -A"}))
+    provider = ScriptedProvider([
+        *_fix_calls()[:-1],
+        Completion(tool_calls=calls),
+        Completion(text="Fixed."),
+    ])
+    provider.name = "openrouter"
+
+    execute_run(run_id, store=store, config=config, provider=provider)
+
+    run = store.get_run(run_id)
+    assert run.verification["passed"] is True
+    assert len(reviewer.prompts) == 1
+    for content in (
+        '-        return "low"\n+        return "high"',
+        "new file added.py",
+        "def review_marker():",
+        "deleted file mode",
+        "a/README.md",
+        "+    # Classify the documented priority bands.",
+    ):
+        assert content in run.diff
+        assert content in reviewer.prompts[0]
+    assert run.status == "failed"
+    assert run.review["findings"] == ["needs another change"]
+    assert run.published_at is None
+    assert (source / "tracker.py").read_bytes() == before
+    assert (source / "README.md").is_file()
+    assert not (source / "added.py").exists()
 
 
 def test_reviewer_that_never_approves_fails_the_run(tmp_path: Path, monkeypatch):
