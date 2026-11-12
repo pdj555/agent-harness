@@ -223,7 +223,8 @@ def model_monitor(name: str, model: str | None = None, *, effort: str | None = N
 ERROR_MARKERS = ("reviewer failed:", "reviewer returned no readable verdict")
 
 
-ERROR_CAUSES = ("refusal", "step_limit", "budget", "other")
+# inferred_step_limit: set only when rebuilding an old log, where the step-limit error had no message.
+ERROR_CAUSES = ("refusal", "step_limit", "inferred_step_limit", "budget", "other")
 
 
 def error_cause(findings: list[str]) -> str:
@@ -301,6 +302,9 @@ class _ErrorGuard:
     """Stops a run once the reviewer has failed ``limit`` times in a row with no judgment.
 
     A bad key or a dead endpoint fails every call; there is no point paying for the rest.
+    A refusal is the model's answer to one case, not an outage, so it neither counts toward
+    the streak nor breaks it. Without that, a model that refuses one family of cases stops
+    the whole run once that family's reviews happen to land in a row.
     """
 
     def __init__(self, limit: int) -> None:
@@ -309,8 +313,10 @@ class _ErrorGuard:
         self.tripped = False
         self._lock = threading.Lock()
 
-    def record(self, error: bool) -> None:
+    def record(self, error: bool, *, refusal: bool = False) -> None:
         with self._lock:
+            if refusal:
+                return
             self.streak = self.streak + 1 if error else 0
             if self.limit and self.streak >= self.limit:
                 self.tripped = True
@@ -352,10 +358,10 @@ def _run_case(
                 result.usage[key] = result.usage.get(key, 0) + int(value)
             result.findings.append([str(item) for item in verdict.get("findings") or []][:5])
             error = is_error(verdict)
-            guard.record(error)
+            cause = error_cause(result.findings[-1]) if error else ""
+            guard.record(error, refusal=cause == "refusal")
             if error:
                 result.errors += 1
-                cause = error_cause(result.findings[-1])
                 result.error_causes[cause] = result.error_causes.get(cause, 0) + 1
                 shown = "error: " + (result.findings[-1][0] if result.findings[-1] else "unknown")[:120]
             else:

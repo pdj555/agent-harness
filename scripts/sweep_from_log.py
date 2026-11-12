@@ -18,8 +18,9 @@ What the log cannot give back:
   cent. Both are recorded tokens priced at the list rates in ``reviewer_sweep.PRICES``.
 - Why a reviewer failed, when the failure had no message. Harness versions before
   2026-11-12 raised the step-budget error with no message, so the log shows a bare
-  ``reviewer failed:``. ``--bare-error-is-step-limit`` counts those as ``step_limit``; it
-  is an inference about that harness version, so it is off unless asked for.
+  ``reviewer failed:``. ``--bare-error-is-step-limit`` counts those as
+  ``inferred_step_limit``, shown as such in the table; it is an inference about that
+  harness version, so it is off unless asked for.
 - Which cases never reached the reviewer. An invalid case and a case an aborted run never
   reached both print nothing; either way the case is left unscored, not counted as a miss.
 
@@ -141,7 +142,7 @@ def results_for(block: dict, *, bare_is_step_limit: bool = False) -> tuple[list[
         elif verdict.startswith("error: "):
             finding = verdict.removeprefix("error: ")
             bare = finding.strip() == _BARE
-            cause = "step_limit" if bare and bare_is_step_limit else error_cause([finding])
+            cause = "inferred_step_limit" if bare and bare_is_step_limit else error_cause([finding])
             result.findings.append([finding])
             result.errors += 1
             result.error_causes[cause] = result.error_causes.get(cause, 0) + 1

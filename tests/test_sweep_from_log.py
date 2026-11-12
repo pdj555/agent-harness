@@ -72,10 +72,10 @@ def test_a_bare_error_counts_as_a_step_limit_only_when_asked():
     record = from_log.rebuild(text, harness="x", date="2026-11-09", bare_is_step_limit=True)
     row = record["rows"][0]
     assert row["judged_trials"] == 14
-    assert row["reviewer_errors_by_cause"] == {"refusal": 1, "step_limit": 1}
+    assert row["reviewer_errors_by_cause"] == {"refusal": 1, "inferred_step_limit": 1}
     row_text = (
         "| claude-opus-5-5 | spec-attacks | 100% (63% to 100%) | n/a | 14 "
-        "| 2 (1 refusal, 1 step limit) | $0.30 |"
+        "| 2 (1 refusal, 1 inferred step limit) | $0.30 |"
     )
     table = from_log.sweep.render_sweep(record)
     assert row_text in table
@@ -194,3 +194,28 @@ def test_cli_scores_with_this_checkout_when_the_commit_is_unknown(tmp_path, caps
     captured = capsys.readouterr()
     assert "commit 0000000 not found" in captured.err
     assert "| claude-haiku-5-5 | spec-attacks |" in captured.out
+
+
+def test_a_live_run_s_output_rebuilds_to_its_own_table(monkeypatch, tmp_path, capsys):
+    """The round trip: what run() prints, fed back through the log rebuild, gives run()'s table."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+    answers = iter(
+        [{"ship": False, "findings": ["reviewer failed: Anthropic response did not complete: refusal"]}]
+        + [{"ship": False, "findings": ["hard-coded threshold"]}] * 15
+    )
+
+    def fake(name, model, *, effort=None):
+        def monitor(case, stage, verification, objective):
+            verdict = next(answers)
+            return {**verdict, "usage": {"output_tokens": 10_000}}
+
+        return monitor
+
+    monkeypatch.setattr(from_log.sweep, "model_monitor", fake)
+    out = tmp_path / "sweep"
+    from_log.sweep.main(["--run", "--models", "claude-haiku-5-5", "--sets", "spec-attacks", "--trials", "2",
+                         "--jobs", "1", "--out", str(out)])
+    record = from_log.rebuild(capsys.readouterr().out, harness="x", date="d")
+    written = (out / "sweep.md").read_text().splitlines()
+    rebuilt = from_log.sweep.render_sweep(record).splitlines()
+    assert written[4:] == rebuilt[4:]  # every table row; the title and run line differ by design

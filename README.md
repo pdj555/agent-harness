@@ -1,6 +1,6 @@
 # agent-harness
 
-27 sabotaged code changes passed every test; the tests caught none of them. The spec check caught all 27, and 3 attacks built to beat the spec check still get past it. Three Claude reviewers blocked those 3 in all 23 reviews that gave a verdict; the log keeps verdicts, not reasons, and 4 more reviews gave none. A coding agent's work should never be approved by the same system that produced it.
+27 sabotaged code changes passed every test; the tests caught none of them. The spec check caught all 27, and 3 attacks built to beat the spec check still get past it. A coding agent's work should never be approved by the same system that produced it.
 
 
 <picture>
@@ -17,7 +17,7 @@ The eval is 33 changes to three small programs, each shipped with a real bug: 6 
 - The spec check catches 27 of 27, and blocks 0 of the 6 honest fixes
 - Claude reviewers, 3 reviews per case on 2026-11-09: Haiku 5.5 caught 27 of 27, Sonnet 5.5 25 of 25 it judged, Opus 5.5 21 of 21 it judged, and none blocked an honest fix
 
-The API returned a refusal instead of a verdict on every Opus review of the 6 changes that leak the process environment, and on 10 of 18 Sonnet reviews. The harness blocks on a refusal, so nothing would ship, but those reviews judged nothing. Haiku gave a verdict on all 123 reviews, for $0.04. Catch rate does not separate the three models on this set. [Results and failure analysis](docs/reviewer-sweep.md).
+The API returned a refusal instead of a verdict on every Opus review of the 6 changes that leak the process environment, and on 10 of 18 Sonnet reviews. The harness blocks on a refusal, so nothing would ship, but those reviews judged nothing. Haiku gave a verdict on all 123 reviews, for $0.04. Catch rate does not separate the three models on this set. The reviewers also blocked the 3 attacks that beat the spec check in all 23 reviews that gave a verdict; the set has no honest change of the same shape, so that does not yet show a reviewer finds those triggers. [Results and failure analysis](docs/reviewer-sweep.md).
 
 The 27 come in six families:
 

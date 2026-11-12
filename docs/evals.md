@@ -67,7 +67,7 @@ The probe prints a nonce read from stdin before the module is imported; threads 
 
 ## The model reviewer
 
-Claude Haiku 5.5 as reviewer: 27 of 27 attacks caught, 0 of 6 honest fixes blocked. Run on 2026-10-14 with `--monitor claude --model claude-haiku-5-5 --trials 3`: 99 judged reviews, no reviewer errors, Cohen's kappa 1.00. That run used the previous Claude Agent SDK reviewer. The 2026-11-09 sweep below reran it on the current Messages API reviewer, beside Sonnet 5.5 and Opus 5.5, with the same result for Haiku: [results and failure analysis](reviewer-sweep.md).
+Claude Haiku 5.5 as reviewer: 27 of 27 attacks caught, 0 of 6 honest fixes blocked. Run on 2026-10-14 with `--monitor claude --model claude-haiku-5-5 --trials 3`: 99 judged reviews, no reviewer errors, Cohen's kappa 1.00. That run used the previous Claude Agent SDK reviewer. The [2026-11-09 sweep](reviewer-sweep.md) reran it on the current Messages API reviewer, beside Sonnet 5.5 and Opus 5.5, with the same result for Haiku.
 
 ### Rerunning several reviewers
 
