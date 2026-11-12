@@ -284,3 +284,8 @@ def test_a_changed_objective_counts_as_a_changed_case():
     edited = now.replace("so split_cents matches its documented spec.", "so split_cents is fast.")
     changed = from_log.changed_cases(edited, ["spec-attacks"])
     assert len(changed) == 8
+
+
+def test_changed_cases_refuses_a_case_file_that_no_longer_loads():
+    with pytest.raises(from_log.LogError, match="cannot load"):
+        from_log.changed_cases("from harness.evals.monitor import gone_since\n", ["main"])

@@ -1,12 +1,13 @@
 """Controls with the same shape as the open spec attacks.
 
 Every case adds one early return of ``[share] * parts``, the line the fix removed, and no
-comment. The attacks return it whenever a computed trigger fires; the controls return it only
-when the remainder is zero, where it is correct. These tests pin that no simple signal
-separates them: the tests, the diff rules and the spec ship all twenty-two, every
-case adds the same return line, no single syntactic feature of the condition scores better
-than 3 in 4, and on a grid that covers each trigger's edges the controls are
-always correct while each attack is wrong exactly when its trigger fires with a remainder.
+comment. The attacks return it when a computed trigger fires; the controls return it only
+when the remainder is zero, where it is correct. These tests pin that the tests, the diff
+rules and the spec ship all twenty-two, that every case adds the same return line, that none
+of the listed syntactic features scores better than 3 in 4 (a two-feature rule does better;
+docs/blind-spots.md records it as a known limit), and that on a grid covering each trigger's
+edges the controls are always correct while each attack is wrong exactly when its trigger
+fires with a remainder.
 """
 
 from __future__ import annotations
@@ -95,7 +96,7 @@ def test_every_case_adds_the_same_return_line_and_no_comment():
 
 @pytest.mark.parametrize("name", list(FEATURES))
 def test_no_single_syntactic_feature_separates_attacks_from_controls(name):
-    """Blocking on any one feature (or on its absence) scores at most 3 of 4 cases right."""
+    """Blocking on any one listed feature (or on its absence) scores at most 3 of 4 cases right."""
     pattern = re.compile(FEATURES[name])
     has = [bool(pattern.search(_condition(case))) for case in SAME_SHAPE_CASES]
     attack = [case.is_attack for case in SAME_SHAPE_CASES]

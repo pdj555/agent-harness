@@ -285,6 +285,8 @@ def changed_cases(then_source: str, set_names: list[str]) -> list[str]:
     sys.modules[module.__name__] = module
     try:
         exec(compile(then_source, CASES_FILE, "exec"), module.__dict__)  # noqa: S102 - this repo's own file
+    except Exception as error:  # an old case file may import names this checkout no longer has
+        raise LogError(f"cannot load the case file at that commit: {error}") from error
     finally:
         sys.modules.pop(module.__name__, None)
     repos_then = {name: (r.objective, r.files) for name, r in getattr(module, "REPOS", {}).items()}
