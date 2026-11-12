@@ -13,91 +13,141 @@ _spec = importlib.util.spec_from_file_location(
 from_log = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(from_log)
 
-SPEC_ATTACKS = [case.id for case in from_log.sweep.SETS["spec-attacks"]]
+SETS = from_log.sweep.SETS
+SPEC_ATTACKS = [case.id for case in SETS["spec-attacks"]]
+REFUSAL = "error: reviewer failed: Anthropic response did not complete: refusal"
 
 
-def _github(line: str) -> str:
-    """A line as `gh run view --log` prints it."""
-    return f"sweep\tUNKNOWN STEP\t2026-11-09T07:12:00.0000000Z {line}"
+def _github(line: str, first: bool = False) -> str:
+    """A line as `gh run view --log` prints it; the first line carries a byte order mark."""
+    return f"sweep\tUNKNOWN STEP\t{'﻿' if first else ''}2026-11-09T07:12:00.0000000Z {line}"
 
 
-def _log(verdicts: dict[str, list[str]], spend: list[tuple[str, float]], *, github: bool = True) -> str:
-    lines = ["noise before the run", "{", '  "total_usd": 0.1', "}"]
-    for (model, spent), (_, by_case) in zip(spend, verdicts.items(), strict=True):
+def _log(blocks: list[tuple[str, str, dict[str, list[str]], float]], *, github: bool = True,
+         command: str = "uv run python scripts/reviewer_sweep.py --run --trials 2 --max-usd 40") -> str:
+    lines = ["Current runner version: '2.338.2'", command]
+    for model, name, by_case, spent in blocks:
         for case, answers in by_case.items():
             for trial, answer in enumerate(answers, start=1):
                 lines.append(f"{case} [{trial}/{len(answers)}] {answer}")
-        lines.append(f"{model} spec-attacks: spent ${spent:.2f} of $40.00")
+        lines.append(f"{model} {name}: spent ${spent:.2f} of $40.00")
     lines.append("report: /tmp/sweep/sweep.md")
-    return "\n".join(_github(line) if github else line for line in lines) + "\n"
+    if not github:
+        return "\n".join(lines) + "\n"
+    return "\n".join(_github(line, first=i == 0) for i, line in enumerate(lines)) + "\n"
 
 
-def _all(answer: str, trials: int = 2) -> dict[str, list[str]]:
-    return {case: [answer] * trials for case in SPEC_ATTACKS}
+def _all(name: str, answer: str = "block", trials: int = 2) -> dict[str, list[str]]:
+    return {case.id: [answer if case.label != "clean" else "ship"] * trials for case in SETS[name]}
 
 
 @pytest.mark.parametrize("github", [True, False])
-def test_rebuild_scores_every_verdict_and_reads_spend_as_differences(github):
-    second = _all("block")
-    second[SPEC_ATTACKS[0]] = ["error: reviewer failed: ", "block"]  # old harness: step limit, no message
-    refusal = "error: reviewer failed: Anthropic response did not complete: refusal"
-    second[SPEC_ATTACKS[1]] = [refusal, "block"]
+def test_rebuild_scores_both_sets_and_reads_spend_as_differences(github):
+    main_set = _all("main")
+    main_set["tracker-telemetry"] = [REFUSAL, REFUSAL]  # never judged
+    main_set["ledger-clean"] = ["ship", REFUSAL]
+    spec = _all("spec-attacks")
+    spec[SPEC_ATTACKS[0]] = ["error: reviewer failed: ", "block"]
     text = _log(
-        {"a": _all("block"), "b": second},
-        [("claude-haiku-5-5", 0.04), ("claude-opus-5-5", 0.30)],
+        [("claude-opus-5-5", "main", main_set, 0.20), ("claude-opus-5-5", "spec-attacks", spec, 0.30)],
         github=github,
     )
     record = from_log.rebuild(text, harness="abc1234", date="2026-11-09")
-    haiku, opus = record["rows"]
+    main_row, spec_row = record["rows"]
     assert record["trials"] == 2 and record["max_usd"] == 40.0 and record["spent_usd"] == 0.30
-    assert haiku["judged_trials"] == 16 and haiku["reviewer_errors"] == 0
-    assert haiku["catch_rate"]["rate"] == 1
-    assert opus["judged_trials"] == 14 and opus["reviewer_errors"] == 2
-    assert opus["reviewer_errors_by_cause"] == {"refusal": 1, "step_limit": 1}
-    assert haiku["usd"] == pytest.approx(0.04) and opus["usd"] == pytest.approx(0.26)
-    assert not haiku["stopped_early"] and not opus["stopped_early"]
-    table = from_log.sweep.render_sweep(record)
-    assert "Spent $0.30 of a $40.00 cap." in table
-    row = (
+    assert main_row["judged_trials"] == 66 - 3
+    assert main_row["reviewer_errors_by_cause"] == {"refusal": 3}
+    assert main_row["catch_rate"]["cases"] == 26  # the never-judged attack is left out
+    assert main_row["false_block_rate"]["rate"] == 0
+    assert spec_row["reviewer_errors_by_cause"] == {"other": 1}  # a bare error is not guessed at
+    assert main_row["usd"] == pytest.approx(0.20) and spec_row["usd"] == pytest.approx(0.10)
+    assert not main_row["stopped_early"] and not spec_row["stopped_early"]
+
+
+def test_a_bare_error_counts_as_a_step_limit_only_when_asked():
+    spec = _all("spec-attacks")
+    spec[SPEC_ATTACKS[0]] = ["error: reviewer failed: ", "block"]
+    spec[SPEC_ATTACKS[1]] = [REFUSAL, "block"]
+    text = _log([("claude-opus-5-5", "spec-attacks", spec, 0.30)])
+    record = from_log.rebuild(text, harness="x", date="2026-11-09", bare_is_step_limit=True)
+    row = record["rows"][0]
+    assert row["judged_trials"] == 14
+    assert row["reviewer_errors_by_cause"] == {"refusal": 1, "step_limit": 1}
+    row_text = (
         "| claude-opus-5-5 | spec-attacks | 100% (63% to 100%) | n/a | 14 "
-        "| 2 (1 refusal, 1 step limit) | $0.26 |"
+        "| 2 (1 refusal, 1 step limit) | $0.30 |"
     )
-    assert row in table
+    table = from_log.sweep.render_sweep(record)
+    assert row_text in table
+    assert "Spent $0.30 of a $40.00 cap." in table
 
 
 def test_a_miss_is_scored_as_a_miss():
-    verdicts = _all("block")
-    verdicts[SPEC_ATTACKS[-1]] = ["ship", "ship"]
-    record = from_log.rebuild(_log({"a": verdicts}, [("claude-haiku-5-5", 0.01)]), harness="x", date="d")
+    spec = _all("spec-attacks")
+    spec[SPEC_ATTACKS[-1]] = ["ship", "ship"]
+    record = from_log.rebuild(_log([("claude-haiku-5-5", "spec-attacks", spec, 0.01)]), harness="x", date="d")
     assert record["rows"][0]["catch_rate"]["rate"] == pytest.approx(7 / 8)
 
 
-def test_a_case_missing_reviews_marks_the_row_stopped():
-    verdicts = _all("block")
-    verdicts[SPEC_ATTACKS[2]] = ["block", "block"]
-    del verdicts[SPEC_ATTACKS[3]]
-    record = from_log.rebuild(_log({"a": verdicts}, [("claude-haiku-5-5", 0.01)]), harness="x", date="d")
+def test_a_partly_reviewed_case_marks_the_row_stopped():
+    spec = _all("spec-attacks")
+    spec[SPEC_ATTACKS[2]] = ["block"]  # 1 of 2 trials, as an aborted run leaves it
+    text = _log([("claude-haiku-5-5", "spec-attacks", spec, 0.01)]).replace(
+        f"{SPEC_ATTACKS[2]} [1/1] block", f"{SPEC_ATTACKS[2]} [1/2] block"
+    )
+    record = from_log.rebuild(text, harness="x", date="d")
     assert record["rows"][0]["stopped_early"]
 
 
+def test_a_case_with_no_reviews_is_left_unscored_and_named():
+    spec = _all("spec-attacks")
+    del spec[SPEC_ATTACKS[3]]
+    record = from_log.rebuild(_log([("claude-haiku-5-5", "spec-attacks", spec, 0.01)]), harness="x", date="d")
+    row = record["rows"][0]
+    assert row["catch_rate"]["cases"] == 7
+    assert not row["stopped_early"]
+    assert record["unreviewed_cases"] == {"claude-haiku-5-5 spec-attacks": [SPEC_ATTACKS[3]]}
+
+
 def test_a_case_outside_the_set_is_refused():
-    verdicts = _all("block")
-    verdicts["tracker-clean"] = ["ship", "ship"]
+    spec = _all("spec-attacks")
+    spec["tracker-clean"] = ["ship", "ship"]
     with pytest.raises(from_log.LogError, match="tracker-clean is not in the set"):
-        from_log.rebuild(_log({"a": verdicts}, [("claude-haiku-5-5", 0.01)]), harness="x", date="d")
+        from_log.rebuild(_log([("claude-haiku-5-5", "spec-attacks", spec, 0.01)]), harness="x", date="d")
+
+
+def test_effort_and_seed_come_from_the_logged_command():
+    text = _log(
+        [("claude-haiku-5-5", "spec-attacks", _all("spec-attacks"), 0.01)],
+        command='uv run python scripts/reviewer_sweep.py --run --effort "high" --seed 7 --trials 2',
+    )
+    record = from_log.rebuild(text, harness="x", date="d")
+    assert (record["effort"], record["seed"]) == ("high", 7)
+    plain = from_log.rebuild(_log([("claude-haiku-5-5", "spec-attacks", _all("spec-attacks"), 0.01)]),
+                             harness="x", date="d")
+    assert (plain["effort"], plain["seed"]) == ("medium", 0)
 
 
 def test_a_log_with_no_sweep_is_refused(tmp_path, capsys):
     log = tmp_path / "run.log"
-    log.write_text(_github("nothing ran") + "\n", encoding="utf-8")
-    assert from_log.main([str(log), "--harness", "x", "--date", "d"]) == 1
+    log.write_text(_github("nothing ran", first=True) + "\n", encoding="utf-8")
+    assert from_log.main([str(log), "--harness", "HEAD", "--date", "d"]) == 1
     assert "no sweep spend lines" in capsys.readouterr().err
 
 
 def test_cli_prints_the_table(tmp_path, capsys):
     log = tmp_path / "run.log"
-    log.write_text(_log({"a": _all("block", 3)}, [("claude-haiku-5-5", 0.01)]), encoding="utf-8")
-    assert from_log.main([str(log), "--harness", "abc1234", "--date", "2026-11-09"]) == 0
+    log.write_text(_log([("claude-haiku-5-5", "spec-attacks", _all("spec-attacks", trials=3), 0.01)]),
+                   encoding="utf-8")
+    assert from_log.main([str(log), "--harness", "HEAD", "--date", "2026-11-09"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("# Reviewer sweep, 2026-11-09\n")
-    assert "Harness abc1234, 3 trials per case, effort medium, seed 0." in out
+    assert "Harness HEAD, 3 trials per case, effort medium, seed 0." in out
+
+
+def test_cli_refuses_when_the_cases_changed_since_the_run(tmp_path, capsys, monkeypatch):
+    log = tmp_path / "run.log"
+    log.write_text(_log([("claude-haiku-5-5", "spec-attacks", _all("spec-attacks"), 0.01)]), encoding="utf-8")
+    monkeypatch.setattr(from_log, "cases_at", lambda commit: "# another case file\n")
+    assert from_log.main([str(log), "--harness", "abc1234", "--date", "d"]) == 1
+    assert "changed since abc1234" in capsys.readouterr().err

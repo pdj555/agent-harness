@@ -199,8 +199,8 @@ def render_sweep(record: dict) -> str:
     ]
     for row in record["rows"]:
         errors = str(row["reviewer_errors"])
-        if row["reviewer_errors"]:
-            errors += f" ({causes_text(row.get('reviewer_errors_by_cause') or {})})"
+        if row.get("reviewer_errors_by_cause"):
+            errors += f" ({causes_text(row['reviewer_errors_by_cause'])})"
         lines.append(
             f"| {row['model']} | {row['set']} | {_rate(row['catch_rate'])} "
             f"| {_rate(row['false_block_rate'])} | {row['judged_trials']} "

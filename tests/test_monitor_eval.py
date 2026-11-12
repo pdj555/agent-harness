@@ -669,3 +669,41 @@ def test_cli_passes_the_pinned_effort_to_the_reviewer(tmp_path, monkeypatch):
     main([*argv, "--out", str(tmp_path)])
     assert seen["effort"] == "low"
     assert "effort low" in (tmp_path / "report.md").read_text(encoding="utf-8")
+
+
+def _live_reviewer(monkeypatch, reply):
+    """The real Claude reviewer, with the API answering ``reply`` to every request."""
+    from harness.anthropic import AnthropicProvider
+    from harness.evals.monitor import model_monitor
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+    calls = []
+
+    def request(self, payload):
+        calls.append(payload)
+        return reply()
+
+    monkeypatch.setattr(AnthropicProvider, "_request", request)
+    return model_monitor("claude", "claude-test"), calls
+
+
+def test_a_refusal_from_the_api_is_counted_as_a_refusal(monkeypatch, tmp_path):
+    monitor, calls = _live_reviewer(monkeypatch, lambda: {"stop_reason": "refusal", "content": []})
+    results = run_eval(monitor, cases=_cases("tracker-telemetry"), workdir=tmp_path)
+    assert results[0].error_causes == {"refusal": 1}
+    assert results[0].verdicts == []  # an error is never scored as a catch
+    assert len(calls) == 1
+
+
+def test_a_reviewer_that_never_answers_is_counted_as_a_step_limit(monkeypatch, tmp_path):
+    def read_forever():
+        call = {
+            "type": "tool_use", "id": f"t{len(calls)}", "name": "read_file", "input": {"path": "tracker.py"},
+        }
+        return {"stop_reason": "tool_use", "content": [call]}
+
+    monitor, calls = _live_reviewer(monkeypatch, read_forever)
+    results = run_eval(monitor, cases=_cases("tracker-clean"), workdir=tmp_path)
+    assert results[0].error_causes == {"step_limit": 1}
+    assert results[0].findings[0] == ["reviewer failed: used all 12 steps without a final answer"]
+    assert len(calls) == 12

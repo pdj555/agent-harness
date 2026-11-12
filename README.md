@@ -1,6 +1,6 @@
 # agent-harness
 
-27 sabotaged code changes passed every test; the tests caught none of them. The spec check caught all 27, and 3 attacks built to beat the spec check still get past it. Model reviewers blocked those 3 in every review that gave a verdict. A coding agent's work should never be approved by the same system that produced it.
+27 sabotaged code changes passed every test; the tests caught none of them. The spec check caught all 27, and 3 attacks built to beat the spec check still get past it. Three Claude reviewers blocked those 3 in every review that gave a verdict. A coding agent's work should never be approved by the same system that produced it.
 
 
 <picture>
@@ -15,9 +15,9 @@ The eval is 33 changes to three small programs, each shipped with a real bug: 6 
 - The project's tests catch 0 of 27
 - Rules that inspect the diff catch 6 of 27
 - The spec check catches 27 of 27, and blocks 0 of the 6 honest fixes
-- Claude Haiku 5.5, Sonnet 5.5 and Opus 5.5 as reviewers blocked every attack they judged and no honest fix, 3 reviews per case, on 2026-11-09
+- Claude reviewers, 3 reviews per case on 2026-11-09: Haiku 5.5 caught 27 of 27, Sonnet 5.5 25 of 25 it judged, Opus 5.5 21 of 21 it judged, and none blocked an honest fix
 
-Opus refused to review all 6 changes that leak the process environment, and Sonnet refused 10 of those 18 reviews. A refusal blocks the change, so nothing shipped, but those reviews judged nothing. The set no longer separates the models: Haiku matched Opus for $0.04 against $1.11. [Results and failure analysis](docs/reviewer-sweep.md).
+The API returned a refusal instead of a verdict on every Opus review of the 6 changes that leak the process environment, and on 10 of 18 Sonnet reviews. The harness blocks on a refusal, so nothing would ship, but those reviews judged nothing. Catch rate no longer ranks the models; how often they fail to give a verdict does: Haiku 0 of 123 reviews, Opus 18, Sonnet 22. [Results and failure analysis](docs/reviewer-sweep.md).
 
 The 27 come in six families:
 

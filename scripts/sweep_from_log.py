@@ -5,16 +5,23 @@ model and set. That is every verdict the summary is computed from, so the table 
 rebuilt from the log with the same scoring code when the run's own summary was lost:
 
     gh run view 42577123643 -R pdj555/agent-harness --log > run.log
-    uv run python scripts/sweep_from_log.py run.log --harness f476a86 --date 2026-11-09
+    uv run python scripts/sweep_from_log.py run.log --harness f476a86 --date 2026-11-09 \\
+        --bare-error-is-step-limit
 
-What the log cannot give back is tokens. Each row's cost is the change in the printed
-running spend, which the sweep rounds to the cent, so a row's cost is good to about a cent.
-The total is exact to the cent.
+What the log cannot give back:
 
-One reading is inferred, not printed. Harness versions before this script raised the
-step-budget error with no message, so the log shows a bare ``reviewer failed:``. No other
-reviewer failure in those versions has an empty message (provider errors carry the API's
-reason, unreadable answers say so), so a bare one is counted as ``step_limit``.
+- Tokens. Each row's cost is the change in the printed running spend, which the sweep
+  rounds to the cent, so a row's cost is good to about a cent. The total is exact to the
+  cent. Both are recorded tokens priced at the list rates in ``reviewer_sweep.PRICES``.
+- Why a reviewer failed, when the failure had no message. Harness versions before
+  2026-11-12 raised the step-budget error with no message, so the log shows a bare
+  ``reviewer failed:``. ``--bare-error-is-step-limit`` counts those as ``step_limit``; it
+  is an inference about that harness version, so it is off unless asked for.
+- Which cases never reached the reviewer. An invalid case and a case an aborted run never
+  reached both print nothing; either way the case is left unscored, not counted as a miss.
+
+The cases are scored with the case set in this checkout. When ``--harness`` names a commit
+this repository has, the script refuses to run if that commit's case file differs.
 """
 
 from __future__ import annotations
@@ -22,26 +29,33 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 from harness.evals.monitor import CaseResult, error_cause, summarize
 
-_spec = importlib.util.spec_from_file_location(
-    "reviewer_sweep", Path(__file__).resolve().parent / "reviewer_sweep.py"
-)
+ROOT = Path(__file__).resolve().parent.parent
+_spec = importlib.util.spec_from_file_location("reviewer_sweep", ROOT / "scripts" / "reviewer_sweep.py")
 sweep = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sweep)
 
-# GitHub prefixes each log line with the job, the step, and a timestamp; a local run has none.
-_PREFIX = re.compile(r"^[^\t]*\t[^\t]*\t﻿?\d{4}-\d\d-\d\dT[\d:.]+Z ")
+# GitHub prefixes each log line with the job, the step, and a timestamp (the first line also
+# carries a byte order mark); a local run has none of it.
+_PREFIX = re.compile("^[^\t]*\t[^\t]*\t﻿?\\d{4}-\\d\\d-\\d\\dT[\\d:.]+Z ")
 _REVIEW = re.compile(r"^(?P<case>[a-z0-9-]+) \[(?P<trial>\d+)/(?P<trials>\d+)\] (?P<verdict>.*)$")
 _SPENT = re.compile(r"^(?P<model>\S+) (?P<set>\S+): spent \$(?P<spent>[\d.]+) of \$(?P<cap>[\d.]+)$")
-_LEGACY_STEP_LIMIT = "reviewer failed:"
+_COMMAND = re.compile(r"reviewer_sweep\.py --run\b(?P<args>.*)$")
+_BARE = "reviewer failed:"
+CASES_FILE = "harness/evals/cases.py"
 
 
 class LogError(ValueError):
-    """The log does not hold a complete sweep."""
+    """The log does not hold a complete sweep, or this checkout cannot score it."""
+
+
+def _strip(raw: str) -> str:
+    return _PREFIX.sub("", raw).lstrip("﻿").rstrip()
 
 
 def parse(text: str) -> list[dict]:
@@ -49,7 +63,7 @@ def parse(text: str) -> list[dict]:
     blocks: list[dict] = []
     reviews: list[tuple[str, int, int, str]] = []
     for raw in text.splitlines():
-        line = _PREFIX.sub("", raw).rstrip()
+        line = _strip(raw)
         if match := _SPENT.match(line):
             blocks.append({
                 "model": match["model"],
@@ -66,12 +80,27 @@ def parse(text: str) -> list[dict]:
     return blocks
 
 
-def results_for(block: dict) -> tuple[list[CaseResult], int]:
+def settings(text: str) -> dict:
+    """Effort and seed from the logged ``--run`` command; the script's defaults where it set none."""
+    found = {"effort": "medium", "seed": 0}
+    for raw in text.splitlines():
+        match = _COMMAND.search(_strip(raw))
+        if match:
+            args = match["args"]
+            if effort := re.search(r"--effort[ =]\"?(\w+)", args):
+                found["effort"] = effort[1]
+            if seed := re.search(r"--seed[ =]\"?(\d+)", args):
+                found["seed"] = int(seed[1])
+            break
+    return found
+
+
+def results_for(block: dict, *, bare_is_step_limit: bool = False) -> tuple[list[CaseResult], int]:
     """One CaseResult per case in the set, holding the verdicts the log printed for it."""
     cases = sweep.SETS.get(block["set"])
     if cases is None:
         raise LogError(f"unknown set {block['set']}")
-    by_id = {case.id: case for case in cases}
+    reviewed = {case_id for case_id, *_ in block["reviews"]}
     results = {
         case.id: CaseResult(
             id=case.id,
@@ -79,16 +108,17 @@ def results_for(block: dict) -> tuple[list[CaseResult], int]:
             label=case.label,
             note=case.note,
             difficulty=case.difficulty,
-            checks_passed=True,  # a case whose tests fail is never sent to the reviewer
+            # A case that printed no review is left unscored: invalid, or never reached.
+            checks_passed=case.id in reviewed,
             software_blocked=False,  # not printed; the sweep table does not use it
         )
         for case in cases
     }
     trials = {total for _, _, total, _ in block["reviews"]}
     if len(trials) != 1:
-        raise LogError(f"{block['model']} {block['set']}: mixed trial counts {sorted(trials)}")
+        raise LogError(f"{block['model']} {block['set']}: trial counts {sorted(trials)}")
     for case_id, _trial, _total, verdict in block["reviews"]:
-        if case_id not in by_id:
+        if case_id not in results:
             raise LogError(f"{block['model']} {block['set']}: {case_id} is not in the set")
         result = results[case_id]
         if verdict in ("ship", "block"):
@@ -96,7 +126,8 @@ def results_for(block: dict) -> tuple[list[CaseResult], int]:
             result.findings.append([])
         elif verdict.startswith("error: "):
             finding = verdict.removeprefix("error: ")
-            cause = "step_limit" if finding.strip() == _LEGACY_STEP_LIMIT else error_cause([finding])
+            bare = finding.strip() == _BARE
+            cause = "step_limit" if bare and bare_is_step_limit else error_cause([finding])
             result.findings.append([finding])
             result.errors += 1
             result.error_causes[cause] = result.error_causes.get(cause, 0) + 1
@@ -105,29 +136,43 @@ def results_for(block: dict) -> tuple[list[CaseResult], int]:
     return list(results.values()), trials.pop()
 
 
-def rebuild(text: str, *, harness: str, date: str, effort: str = "medium", seed: int = 0) -> dict:
+def rebuild(text: str, *, harness: str, date: str, bare_is_step_limit: bool = False) -> dict:
     """The record ``reviewer_sweep.py --run`` would have written, from its log."""
     rows, previous, trials, cap = [], 0.0, None, None
+    unreviewed: dict[str, list[str]] = {}
     for block in parse(text):
-        results, block_trials = results_for(block)
-        incomplete = [r.id for r in results if r.trials != block_trials]
+        results, block_trials = results_for(block, bare_is_step_limit=bare_is_step_limit)
+        partial = [r.id for r in results if 0 < r.trials < block_trials]
+        missing = [r.id for r in results if r.trials == 0]
+        if missing:
+            unreviewed[f"{block['model']} {block['set']}"] = missing
         summary = summarize(results)
         usd = block["spent"] - previous
         previous, trials, cap = block["spent"], block_trials, block["cap"]
-        rows.append(sweep.sweep_row(block["model"], block["set"], summary, usd, stopped=bool(incomplete)))
+        rows.append(sweep.sweep_row(block["model"], block["set"], summary, usd, stopped=bool(partial)))
     return {
         "date": date,
         "harness_commit": harness,
         "models": list(dict.fromkeys(row["model"] for row in rows)),
         "sets": list(dict.fromkeys(row["set"] for row in rows)),
         "trials": trials,
-        "effort": effort,
-        "seed": seed,
+        **settings(text),
         "prices_per_million": sweep.PRICES,
         "max_usd": cap,
         "spent_usd": previous,
+        "unreviewed_cases": unreviewed,
         "rows": rows,
     }
+
+
+def cases_at(commit: str) -> str | None:
+    """The case file at ``commit``, or None when this checkout does not have that commit."""
+    try:
+        return subprocess.run(
+            ["git", "show", f"{commit}:{CASES_FILE}"], cwd=ROOT, capture_output=True, text=True, check=True
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -135,20 +180,32 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("log", type=Path, help="the run's log, from `gh run view <id> --log`")
     parser.add_argument("--harness", required=True, help="the commit the run checked out")
     parser.add_argument("--date", required=True, help="the run's date, for the table's title")
-    parser.add_argument("--effort", default="medium")
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--bare-error-is-step-limit",
+        action="store_true",
+        help="count a message-less reviewer error as a step-limit error (harness before 2026-11-12)",
+    )
     args = parser.parse_args(argv)
+    then = cases_at(args.harness)
+    if then is None:
+        note = f"commit {args.harness} not found; scoring with this checkout's cases"
+        print(f"sweep_from_log: {note}", file=sys.stderr)
+    elif then != (ROOT / CASES_FILE).read_text(encoding="utf-8"):
+        note = f"{CASES_FILE} changed since {args.harness}; check that commit out to score its log"
+        print(f"sweep_from_log: {note}", file=sys.stderr)
+        return 1
     try:
         record = rebuild(
             args.log.read_text(encoding="utf-8"),
             harness=args.harness,
             date=args.date,
-            effort=args.effort,
-            seed=args.seed,
+            bare_is_step_limit=args.bare_error_is_step_limit,
         )
     except LogError as exc:
         print(f"sweep_from_log: {exc}", file=sys.stderr)
         return 1
+    for where, cases in record["unreviewed_cases"].items():
+        print(f"sweep_from_log: {where}: no reviews logged for {', '.join(cases)}", file=sys.stderr)
     sys.stdout.write(sweep.render_sweep(record))
     return 0
 
