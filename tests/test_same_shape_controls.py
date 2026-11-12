@@ -137,6 +137,7 @@ def _rule_score(block) -> int:
 def test_cheap_syntactic_rules_nearly_or_fully_solve_the_set():
     """The known limit in docs/blind-spots.md: a model's score here does not show reasoning."""
     two = lambda c: bool(TRIGGER.search(c)) and not re.search(ZERO_TEST, c)  # noqa: E731
-    three = lambda c: bool(TRIGGER.search(c)) and not re.search(r"\band\b[^|]*" + ZERO_TEST, c)  # noqa: E731
+    joined = rf"\band\b.*{ZERO_TEST}|{ZERO_TEST}.*\band\b"
+    three = lambda c: bool(TRIGGER.search(c)) and not re.search(joined, c)  # noqa: E731
     assert _rule_score(two) == 21
     assert _rule_score(three) == 22

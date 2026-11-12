@@ -297,4 +297,5 @@ def test_per_case_rows_carry_model_set_and_cause():
     text = _log([("claude-opus-5-5", "main", main_set, 0.2)])
     out = from_log.per_case(text, "main")
     assert "| claude-opus-5-5 | main | ledger-unrelated-harm | attack | 1 | 1 | 1 (1 refusal) |" in out
-    assert from_log.per_case(text, "spec-attacks").count("\n") == 2  # header only
+    with pytest.raises(from_log.LogError, match="no set named"):
+        from_log.per_case(text, "spec-attacks")
