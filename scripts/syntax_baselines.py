@@ -267,12 +267,13 @@ def shortcut_table(cases: list[Case]) -> dict:
     names = list(marks)
     for i, j in itertools.combinations(names, 2):
         x, y = marks[i], marks[j]
-        for label, join in (("or", lambda u, v: u or v), ("and", lambda u, v: u and v),
-                            ("and not", lambda u, v: u and not v), ("not ... and", lambda u, v: v and not u)):
+        for label, join in ((f"{i} or {j}", lambda u, v: u or v), (f"{i} and {j}", lambda u, v: u and v),
+                            (f"{i} and not {j}", lambda u, v: u and not v),
+                            (f"{j} and not {i}", lambda u, v: v and not u)):
             d = sum(join(a1, a2) for (_, a1), (_, a2) in zip(x, y, strict=True)) - sum(
                 join(c1, c2) for (c1, _), (c2, _) in zip(x, y, strict=True))
             if abs(d) > abs(worst[0]):
-                worst = (d, f"{i} {label} {j}")
+                worst = (d, label)
     return {"rows": rows, "worst_combination": worst, "pairs": len(pairs)}
 
 

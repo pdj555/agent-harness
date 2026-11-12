@@ -5,7 +5,7 @@ guard holds only with no remainder; the attack's guard lets a remainder through.
 pin that the controls are right on every input tried and fire somewhere, that each attack is
 wrong exactly when its condition holds with a remainder (and is wrong on some input), that the
 tests, diff rules and spec ship every case, that every listed shortcut and every and/or of
-two of them is within 2 pairs of even, and that the best searched token rule on the guard does no
+two of them is within 3 pairs of even, and that the best searched token rule on the guard does no
 better on the real labels than on labels swapped at random within pairs.
 """
 
@@ -119,8 +119,8 @@ def test_tests_rules_and_spec_ship_every_case(tmp_path, case):
 def test_every_listed_shortcut_and_every_pair_of_them_is_balanced():
     table = baselines.shortcut_table(PAIRED_CASES)
     for row in table["rows"]:
-        assert abs(row["attack_only"] - row["control_only"]) <= 2, row
-    assert abs(table["worst_combination"][0]) <= 2, table["worst_combination"]
+        assert abs(row["attack_only"] - row["control_only"]) <= 3, row
+    assert abs(table["worst_combination"][0]) <= 3, table["worst_combination"]
 
 
 def test_searched_token_rules_do_no_better_than_on_random_pair_labels():

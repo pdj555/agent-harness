@@ -8,13 +8,15 @@ leaking a surface cue (docs/blind-spots.md), so this script builds them instead:
    ``share`` and the literals 1 to 3, dropping ones a person would not write (a literal 0,
    ``* 1``, ``x - x``, two literals in one operation);
 2. classify each on a grid of inputs: a control if it is zero exactly when the remainder is;
-   an attack if it is zero wherever the remainder is and also on some input with a
+   controls equal to ``extra`` or ``-extra`` are dropped, since "pass only if E is just
+   extra" would solve them; an attack if it is zero wherever the remainder is and also on some input with a
    remainder, past every trigger, without being zero everywhere past any trigger; anything
    that fails to evaluate is dropped;
 3. pair each control with attacks at most two tokens away;
-4. choose ``--pairs`` pairs, no expression used twice, by local search that minimizes the
-   worst imbalance over the shortcut list fixed in scripts/syntax_baselines.py
-   (``SHORTCUTS``, ``COMPARE``) and every ``and``/``or`` of two of its shortcuts.
+4. choose ``--pairs`` pairs, no expression used twice (``+ * & |`` operands sorted first),
+   by local search that minimizes the worst imbalance over the shortcut list in
+   scripts/syntax_baselines.py (``SHORTCUTS``, ``COMPARE``) and every ``and``/``or`` of two
+   of its shortcuts.
 
 The imbalance of a shortcut is the number of pairs where it marks only the attack minus the
 number where it marks only the control; a rule that blocks on it scores pairs + imbalance
@@ -117,6 +119,34 @@ def zero_profile(expr: str) -> tuple[bool, ...] | None:
     return tuple(out)
 
 
+def is_plain_extra(expr: str) -> bool:
+    """Whether the expression equals ``extra`` or ``-extra`` on every grid input."""
+    code = compile(expr, "<guard>", "eval")
+    signs = set()
+    for total, parts in GRID:
+        share, extra = divmod(total, parts)
+        value = eval(code, dict(CALLS), {"total": total, "parts": parts, "share": share, "extra": extra})  # noqa: S307
+        if value not in (extra, -extra):
+            return False
+        if extra:
+            signs.add(value == extra)
+    return len(signs) <= 1
+
+
+def canonical(expr: str) -> str:
+    """The expression with the operands of ``+``, ``*``, ``&`` and ``|`` in sorted order."""
+    commutative = (ast.Add, ast.Mult, ast.BitAnd, ast.BitOr)
+
+    class Sort(ast.NodeTransformer):
+        def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+            self.generic_visit(node)
+            if isinstance(node.op, commutative) and ast.dump(node.right) < ast.dump(node.left):
+                node.left, node.right = node.right, node.left
+            return node
+
+    return ast.unparse(Sort().visit(ast.parse(expr, mode="eval")))
+
+
 def classify(exprs: set[str]) -> tuple[list[str], list[str]]:
     remainder_zero = [total % parts == 0 for total, parts in GRID]
     controls, attacks = [], []
@@ -127,7 +157,8 @@ def classify(exprs: set[str]) -> tuple[list[str], list[str]]:
         if zero is None or len(set(zero)) == 1:
             continue
         if list(zero) == remainder_zero:
-            controls.append(expr)
+            if not is_plain_extra(expr):  # "pass only if E is just extra" would solve those
+                controls.append(expr)
             continue
         if not all(z for z, r in zip(zero, remainder_zero, strict=True) if r):
             continue  # an attack fires wherever its control does, and on some remainders besides
@@ -200,12 +231,17 @@ def select(pairs: list[tuple[str, str]], count: int, seed: int, steps: int) -> l
     rng = random.Random(seed)
     cache: dict = {}
     vectors = {pair: imbalance_vector(*pair, cache) for pair in pairs}
+    forms = {expr: canonical(expr) for pair in pairs for expr in pair}
+
+    def keys(pair: tuple[str, str]) -> set[str]:
+        return {forms[pair[0]], forms[pair[1]]}
+
     chosen = []
     used: set[str] = set()
     for pair in rng.sample(pairs, len(pairs)):
-        if pair[0] not in used and pair[1] not in used:
+        if not keys(pair) & used:
             chosen.append(pair)
-            used |= set(pair)
+            used |= keys(pair)
         if len(chosen) == count:
             break
     totals = [sum(col) for col in zip(*(vectors[p] for p in chosen), strict=True)]
@@ -214,13 +250,13 @@ def select(pairs: list[tuple[str, str]], count: int, seed: int, steps: int) -> l
         i = rng.randrange(count)
         new = rng.choice(pairs)
         old = chosen[i]
-        if (new[0] in used or new[1] in used) and new != old:
+        if keys(new) & (used - keys(old)):
             continue
         trial = [t - o + n for t, o, n in zip(totals, vectors[old], vectors[new], strict=True)]
         score = objective(trial)
         if score <= best:
-            used -= set(old)
-            used |= set(new)
+            used -= keys(old)
+            used |= keys(new)
             chosen[i], totals, best = new, trial, score
     return chosen
 
