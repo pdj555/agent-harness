@@ -22,6 +22,7 @@ arithmetic is a syntactic rule. This script scores such rules:
 from __future__ import annotations
 
 import argparse
+import ast
 import io
 import itertools
 import math
@@ -72,9 +73,47 @@ CUES = {
     "mentions share": lambda g: "share" in g,
     "mentions total": lambda g: "total" in g,
 }
+
+
+def _nodes(text: str) -> list[ast.AST]:
+    return list(ast.walk(ast.parse(text, mode="eval")))
+
+
+def _pointless(text: str) -> bool:
+    """An operation that changes nothing or is constant: ``* 1``, ``// 1``, ``| 0``, ``x - x``."""
+    for node in _nodes(text):
+        if isinstance(node, ast.BinOp):
+            sides = (node.left, node.right)
+            if any(isinstance(side, ast.Constant) and side.value in (0, 1) for side in sides):
+                return True
+            if ast.dump(node.left) == ast.dump(node.right):
+                return True
+    return False
+
+
+def _has(kind: type) -> object:
+    return lambda g: any(isinstance(node, kind) for node in _nodes(g))
+
+
+# Cues on the parsed guard: a reviewer that skims the expression rather than its characters.
+PARSED_CUES = {
+    "ends in a zero check (== 0, < 1, not)": lambda g: bool(re.search(r"(== 0|< 1)$|^not\b", g)),
+    "pointless or constant arithmetic": _pointless,
+    "calls a function": _has(ast.Call),
+    "uses total": lambda g: "total" in {n.id for n in _nodes(g) if isinstance(n, ast.Name)},
+    "uses only extra": lambda g: {n.id for n in _nodes(g) if isinstance(n, ast.Name)} <= {"extra"},
+    "has %": _has(ast.Mod),
+    "has //": _has(ast.FloorDiv),
+    "has * or **": lambda g: any(isinstance(n, (ast.Mult, ast.Pow)) for n in _nodes(g)),
+    "has + or -": lambda g: any(isinstance(n, (ast.Add, ast.Sub)) for n in _nodes(g)),
+    "has a bit operation": lambda g: any(isinstance(n, (ast.BitAnd, ast.BitOr, ast.RShift, ast.LShift))
+                                         for n in _nodes(g)),
+    "has literal 0": lambda g: any(isinstance(n, ast.Constant) and n.value == 0 for n in _nodes(g)),
+}
 LARGER = {
     "the larger literal": lambda g: max(literals(g), default=-1),
     "more tokens": lambda g: len(tokens(g)),
+    "more operations": lambda g: sum(isinstance(n, (ast.BinOp, ast.Call)) for n in _nodes(g)),
 }
 
 
@@ -136,13 +175,13 @@ class Baselines:
         Many rules tie on the training cases; one is picked at random, averaged over seeds.
         """
         right = 0.0
+        rng = random.Random(0)
         for group in groups:
             held = sum(1 << i for i in group)
             train = self.full ^ held
             scored = [(self.score(rule, self.attacks, train), rule) for rule in rules]
             top = max(score for score, _ in scored)
             tied = [rule for score, rule in scored if score == top]
-            rng = random.Random(0)
             picks = [rng.choice(tied) for _ in range(seeds)]
             right += sum(self.score(rule, self.attacks, held) for rule in picks) / seeds
         return right
@@ -167,7 +206,7 @@ def cue_table(cases: list[Case]) -> list[dict]:
     """For each fixed cue on the guard: the pairs where it marks only the attack or only the control."""
     rows = []
     pairs = [(guard(cases[c]), guard(cases[a])) for c, a in pairs_of(cases)]
-    for name, cue in CUES.items():
+    for name, cue in {**CUES, **PARSED_CUES}.items():
         attack_only = sum(cue(a) and not cue(c) for c, a in pairs)
         control_only = sum(cue(c) and not cue(a) for c, a in pairs)
         right = sum(cue(a) for _, a in pairs) + sum(not cue(c) for c, _ in pairs)

@@ -32,7 +32,7 @@ def test_sets_hold_the_published_cases_and_every_spec_attack():
     labels = [case.label == "clean" for case in sweep.SETS["same-shape"]]
     assert sum(not clean for clean in labels) == 8 and sum(labels) == 14
     paired = [case.label == "clean" for case in sweep.SETS["paired"]]
-    assert sum(paired) == 43 and len(paired) == 86
+    assert sum(paired) == 22 and len(paired) == 44
 
 
 def test_budget_refuses_reviews_once_the_cap_is_spent():

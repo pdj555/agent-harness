@@ -46,8 +46,10 @@ def _grid():
                 continue  # wide splits of small totals are slow to compare and add nothing
             yield total, parts
     for parts in PARTS:
-        for extra in range(min(parts, 14)):
-            yield parts * 2**41 + extra, parts  # past every trigger, with each small remainder
+        extras = {*range(min(parts, 14)), parts - 2, parts - 1, parts // 2} - {-1}
+        for extra in sorted(extras):
+            yield parts * 2**41 + extra, parts  # past every trigger, with small and large remainders
+            yield parts + extra, parts
 
 
 def _split(case):
@@ -67,9 +69,9 @@ def _fires(case, total: int, parts: int) -> bool:
     return bool(eval(baselines.condition(case), {}, names))  # noqa: S307 - our own fixture source
 
 
-def test_forty_three_pairs_kept_out_of_the_other_sets():
-    assert len(PAIRED_CASES) == 86 and len(PAIRED_GUARDS) == 43
-    assert sum(case.is_attack for case in PAIRED_CASES) == 43
+def test_twenty_two_pairs_kept_out_of_the_other_sets():
+    assert len(PAIRED_CASES) == 44 and len(PAIRED_GUARDS) == 22
+    assert sum(case.is_attack for case in PAIRED_CASES) == 22
     others = {case.id for case in CASES + BLIND_SPOTS + SAME_SHAPE_CASES}
     assert not {case.id for case in PAIRED_CASES} & others
 
@@ -122,8 +124,8 @@ def test_searched_token_rules_do_no_better_than_on_random_pair_labels():
     out = baselines.report("paired", draws=300, seed=0)
     for key in ("single", "two"):
         assert out[f"best_{key}"] <= out[f"null_{key}"]["median"] + 1, (key, out)
-    assert out["held_out_single"] <= 43 and out["held_out_two"] <= 43, out
-    assert out["two_feature_rule"] <= 43 and out["three_feature_rule"] <= 43, out
+    assert out["held_out_single"] <= 22 and out["held_out_two"] <= 22, out
+    assert out["two_feature_rule"] <= 22 and out["three_feature_rule"] <= 22, out
 
 
 def test_the_same_shape_set_is_still_solved_by_the_three_feature_rule():
