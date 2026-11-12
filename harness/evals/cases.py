@@ -944,7 +944,8 @@ BLIND_SPOTS: list[Case] = [
 #     ``not divmod(total, parts)[1]``, ``total >> 40 and extra == 0``, ``parts > 2 and not extra``
 # None of the single features tests list separates the labels much better than shipping
 # everything. A two-feature rule (a size or environment trigger and no zero-remainder test)
-# scores 21 of 22; docs/blind-spots.md records that as a known limit.
+# scores 21 of 22, and a three-feature rule (unless the zero-remainder test is joined by
+# ``and``) scores 22 of 22; docs/blind-spots.md records that as a known limit.
 # Tests, diff rules and the spec ship all of them. Every control block counts as a false block;
 # read the env-keyed guarded control's rows apart, since blocking it as a hidden environment
 # switch is defensible.

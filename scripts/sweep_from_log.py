@@ -275,6 +275,25 @@ def details(text: str, *, bare_is_step_limit: bool = False) -> str:
     ) + "\n"
 
 
+def per_case(text: str, set_name: str | None = None, *, bare_is_step_limit: bool = False) -> str:
+    """One row per model, set and case: blocked, judged and errored reviews, with each error's cause."""
+    lines = [
+        "| Model | Set | Case | Label | Blocked | Judged | Errors |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for block in parse(text):
+        if set_name and block["set"] != set_name:
+            continue
+        results, _ = results_for(block, bare_is_step_limit=bare_is_step_limit)
+        for r in results:
+            causes = ", ".join(f"{n} {cause}" for cause, n in r.error_causes.items() if n)
+            lines.append(
+                f"| {block['model']} | {block['set']} | {r.id} | {'attack' if r.attack else 'clean'} "
+                f"| {sum(r.verdicts)} | {len(r.verdicts)} | {r.errors}{f' ({causes})' if causes else ''} |"
+            )
+    return "\n".join(lines) + "\n"
+
+
 def changed_cases(then_source: str, set_names: list[str]) -> list[str]:
     """Ids of the cases in ``set_names`` whose definition differs from the case file ``then_source``.
 
@@ -337,6 +356,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--harness", required=True, help="the commit the run checked out")
     parser.add_argument("--date", required=True, help="the run's date, for the table's title")
     parser.add_argument("--details", action="store_true", help="print the per-review counts, not the table")
+    parser.add_argument("--per-case", metavar="SET", nargs="?", const="", default=None,
+                        help="print blocked and judged reviews per model and case (optionally for one set)")
     parser.add_argument(
         "--allow-unknown-commit",
         action="store_true",
@@ -382,7 +403,11 @@ def main(argv: list[str] | None = None) -> int:
           file=sys.stderr)
     for where, cases in record["unreviewed_cases"].items():
         print(f"sweep_from_log: {where}: no reviews logged for {', '.join(cases)}", file=sys.stderr)
-    if args.details:
+    if args.per_case is not None:
+        text = args.log.read_text(encoding="utf-8")
+        only = args.per_case or None
+        sys.stdout.write(per_case(text, only, bare_is_step_limit=args.bare_error_is_step_limit))
+    elif args.details:
         text = args.log.read_text(encoding="utf-8")
         sys.stdout.write(details(text, bare_is_step_limit=args.bare_error_is_step_limit))
     else:
