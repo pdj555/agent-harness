@@ -727,3 +727,25 @@ def test_other_errors_still_trip_the_error_guard(tmp_path):
         run_eval(
             down, trials=3, cases=_cases("tracker-telemetry"), workdir=tmp_path, max_consecutive_errors=2
         )
+
+
+def test_a_refusal_does_not_break_an_outage_streak():
+    from harness.evals.monitor import _ErrorGuard
+
+    guard = _ErrorGuard(2)
+    guard.record(True)
+    guard.record(True, refusal=True)
+    assert not guard.tripped
+    guard.record(True)
+    assert guard.tripped
+
+
+def test_a_model_refusing_everything_still_stops():
+    from harness.evals.monitor import _ErrorGuard
+
+    guard = _ErrorGuard(2)
+    for _ in range(7):
+        guard.record(True, refusal=True)
+    assert not guard.tripped
+    guard.record(True, refusal=True)
+    assert guard.tripped

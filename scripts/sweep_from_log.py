@@ -8,8 +8,11 @@ rebuilt from the log with the same scoring code when the run's own summary was l
     uv run python scripts/sweep_from_log.py run.log --harness f476a86 --date 2026-11-09 \\
         --bare-error-is-step-limit
 
-The case file is checked against the run's commit when this checkout has it; the scoring
-code is always this checkout's.
+The case file is checked against the run's commit when this checkout has it. The scoring
+code, and the effort and seed defaults used when the logged command set none, are always
+this checkout's. The script prints a SHA-256 of the review and spend lines, so a copy of
+the log can be checked against the one a published table came from. ``gh run view`` needs
+a signed-in ``gh``.
 
 What the log cannot give back:
 
@@ -31,6 +34,7 @@ effort or seed passed as a shell variable is refused rather than guessed at.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import re
 import subprocess
@@ -84,6 +88,12 @@ def parse(text: str) -> list[dict]:
     if reviews:
         raise LogError(f"{len(reviews)} review lines after the last spend line: the log is cut short")
     return blocks
+
+
+def fingerprint(text: str) -> str:
+    """SHA-256 of the review and spend lines alone, so two copies of a log can be compared."""
+    kept = [line for line in map(_strip, text.splitlines()) if _REVIEW.match(line) or _SPENT.match(line)]
+    return hashlib.sha256(("\n".join(kept) + "\n").encode()).hexdigest()
 
 
 def settings(text: str) -> dict:
@@ -219,6 +229,8 @@ def main(argv: list[str] | None = None) -> int:
     except LogError as exc:
         print(f"sweep_from_log: {exc}", file=sys.stderr)
         return 1
+    print(f"sweep_from_log: verdict lines sha256 {fingerprint(args.log.read_text(encoding='utf-8'))}",
+          file=sys.stderr)
     for where, cases in record["unreviewed_cases"].items():
         print(f"sweep_from_log: {where}: no reviews logged for {', '.join(cases)}", file=sys.stderr)
     sys.stdout.write(sweep.render_sweep(record))

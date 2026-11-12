@@ -303,22 +303,24 @@ class _ErrorGuard:
 
     A bad key or a dead endpoint fails every call; there is no point paying for the rest.
     A refusal is the model's answer to one case, not an outage, so it neither counts toward
-    the streak nor breaks it. Without that, a model that refuses one family of cases stops
-    the whole run once that family's reviews happen to land in a row.
+    that streak nor breaks it. Without that, a model that refuses one family of cases stops
+    the set once that family's reviews happen to land in a row. Refusals keep a streak of
+    their own with four times the limit, so a model refusing every case still stops.
     """
 
     def __init__(self, limit: int) -> None:
         self.limit = limit
         self.streak = 0
+        self.refusals = 0
         self.tripped = False
         self._lock = threading.Lock()
 
     def record(self, error: bool, *, refusal: bool = False) -> None:
         with self._lock:
-            if refusal:
-                return
-            self.streak = self.streak + 1 if error else 0
-            if self.limit and self.streak >= self.limit:
+            self.refusals = self.refusals + 1 if refusal else 0
+            if not refusal:
+                self.streak = self.streak + 1 if error else 0
+            if self.limit and (self.streak >= self.limit or self.refusals >= 4 * self.limit):
                 self.tripped = True
 
 

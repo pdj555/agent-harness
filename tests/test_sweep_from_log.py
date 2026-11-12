@@ -219,3 +219,11 @@ def test_a_live_run_s_output_rebuilds_to_its_own_table(monkeypatch, tmp_path, ca
     written = (out / "sweep.md").read_text().splitlines()
     rebuilt = from_log.sweep.render_sweep(record).splitlines()
     assert written[4:] == rebuilt[4:]  # every table row; the title and run line differ by design
+
+
+def test_the_fingerprint_ignores_prefixes_and_noise_but_not_verdicts():
+    blocks = [("claude-haiku-5-5", "spec-attacks", _all("spec-attacks"), 0.01)]
+    github, local = _log(blocks), _log(blocks, github=False)
+    assert from_log.fingerprint(github) == from_log.fingerprint(local + "unrelated line\n")
+    flipped = github.replace(f"{SPEC_ATTACKS[0]} [1/2] block", f"{SPEC_ATTACKS[0]} [1/2] ship")
+    assert from_log.fingerprint(flipped) != from_log.fingerprint(github)
