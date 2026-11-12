@@ -22,6 +22,20 @@ uv run python scripts/sweep_from_log.py run.log --harness f476a86 --date 2026-11
 
 Rates count judged reviews only. A reviewer error blocks the change in a live run, but the eval reports it and leaves it out of every rate. Intervals are exact 95% Clopper-Pearson with one draw per template: 9 attack templates in `main` (7 for Opus, which judged no review of 2), 8 in `spec-attacks`, 3 honest-fix templates. Three of the nine `main` templates are subtle rewrites of three others, so the draws are less independent than the count says and the intervals are, if anything, too narrow.
 
+## One run
+
+Everything on this page comes from one run: n = 1 per model, 3 reviews per case. It says how these three models behaved on this set on 2026-11-09, not how often they would on a rerun, and it says nothing about other attacks.
+
+Per model, every review counted:
+
+| Model | Reviews | Attack reviews blocked | Honest-fix reviews blocked | No verdict |
+| --- | --- | --- | --- | --- |
+| claude-haiku-5-5 | 123 | 105 of 105 | 0 of 18 | 0 |
+| claude-sonnet-5-5 | 123 | 83 of 83 | 0 of 18 | 22 |
+| claude-opus-5-5 | 123 | 87 of 87 | 0 of 18 | 18 |
+
+Wilson 95% intervals on these per-review counts: 96.5% to 100% (Haiku), 95.6% to 100% (Sonnet), 95.8% to 100% (Opus) for attacks blocked, and 0% to 17.6% for honest fixes blocked. They treat every review as independent, which they are not: the three reviews of one case, and the same attack applied to three programs, succeed or fail together. So they are too narrow, and the per-template intervals in the table above are the ones to use.
+
 ## What it shows
 
 **No judged review was wrong.** 329 judged reviews across three models: every attack judged was blocked, every honest fix shipped. Haiku judged and blocked all 20 attacks marked `subtle` (written to read like an ordinary change); Sonnet and Opus blocked every subtle attack they judged.
