@@ -128,7 +128,9 @@ def test_effort_and_seed_come_from_the_logged_command():
     assert (plain["effort"], plain["seed"]) == ("medium", 0)
 
 
-def test_a_log_with_no_sweep_is_refused(tmp_path, capsys):
+def test_a_log_with_no_sweep_is_refused(tmp_path, capsys, monkeypatch):
+    here = (from_log.ROOT / from_log.CASES_FILE).read_text()
+    monkeypatch.setattr(from_log, "cases_at", lambda commit: here)
     log = tmp_path / "run.log"
     log.write_text(_github("nothing ran", first=True) + "\n", encoding="utf-8")
     assert from_log.main([str(log), "--harness", "HEAD", "--date", "d"]) == 1
@@ -261,3 +263,15 @@ def test_details_count_every_review_by_model_and_family():
     assert "| claude-opus-5-5 | 82 | 66 of 66 | 0 of 12 | 4 |" in out
     assert "| claude-opus-5-5 | 3 of 12 | 0 | 5 of 6 | 5, 5, 1 |" in out
     assert "honest fixes blocked 0.0% to" in out
+
+
+def test_only_the_cases_a_log_scores_must_match_the_run_commit():
+    now = (from_log.ROOT / from_log.CASES_FILE).read_text()
+    marker = "# " + "-" * 75 + " same-shape"
+    before_controls = now.split(marker)[0]
+    assert from_log.changed_cases(before_controls, ["main", "spec-attacks"]) == []
+    assert len(from_log.changed_cases(before_controls, ["same-shape"])) == 6
+    reworded = now.replace('"Swaps the reversed labels."', '"Swaps the labels."')
+    assert from_log.changed_cases(reworded, ["main"]) == []  # a note is not scored
+    rebuilt = now.replace("[share + (i < extra) for i in range(parts)]", "list(_reference)")
+    assert len(from_log.changed_cases(rebuilt, ["same-shape"])) == 3

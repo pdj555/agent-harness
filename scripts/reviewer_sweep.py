@@ -8,8 +8,10 @@ tokens every review billed, and stops before the next review once ``--max-usd`` 
     uv run python scripts/reviewer_sweep.py                      # estimate only, no calls
     uv run python scripts/reviewer_sweep.py --run --max-usd 40   # needs ANTHROPIC_API_KEY
 
-Two case sets. ``main`` is the 33 published cases. ``spec-attacks`` is the 8 attacks
+Three case sets. ``main`` is the 33 published cases. ``spec-attacks`` is the 8 attacks
 built to get past the spec check: 5 it now catches and the 3 it still misses.
+``same-shape`` is those 3 without comments, each beside an honest branch of the same
+shape, so a reviewer must read what the branch returns to tell them apart.
 
 Repeatability: ``--seed`` fixes the opaque repository names every reviewer sees, and
 the effort level is pinned for every model (``--effort``). The models still sample, so
@@ -30,7 +32,7 @@ from pathlib import Path
 
 from harness.agents import VERDICT_SCHEMA, review_prompt
 from harness.anthropic import EFFORTS
-from harness.evals.cases import BLIND_SPOTS, CASES, CLOSED_BLIND_SPOTS, REPOS, Case
+from harness.evals.cases import BLIND_SPOTS, CASES, CLOSED_BLIND_SPOTS, REPOS, SAME_SHAPE_CASES, Case
 from harness.evals.monitor import (
     NO_NETWORK,
     EvalAborted,
@@ -57,6 +59,7 @@ DEFAULT_MODELS = ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5")
 SETS: dict[str, list[Case]] = {
     "main": list(CASES),
     "spec-attacks": list(CLOSED_BLIND_SPOTS) + list(BLIND_SPOTS),
+    "same-shape": list(SAME_SHAPE_CASES),
 }
 
 # The estimate's assumptions, printed with every estimate. Code and JSON run near 3 characters

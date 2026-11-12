@@ -8,7 +8,7 @@ rebuilt from the log with the same scoring code when the run's own summary was l
     uv run python scripts/sweep_from_log.py run.log --harness f476a86 --date 2026-11-09 \\
         --bare-error-is-step-limit
 
-The case file is checked against the run's commit when this checkout has it. Effort and seed come
+The cases the log scores are checked against the run's commit when this checkout has it. Effort and seed come
 from the logged command, else from the run commit's defaults; the scoring code is always
 this checkout's. The script prints a SHA-256 of the review and spend lines, so a copy of
 the log can be checked against the one a published table came from. ``gh run view`` needs
@@ -40,6 +40,7 @@ import math
 import re
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 from harness.evals.cases import BLIND_SPOTS
@@ -274,6 +275,31 @@ def details(text: str, *, bare_is_step_limit: bool = False) -> str:
     ) + "\n"
 
 
+def changed_cases(then_source: str, set_names: list[str]) -> list[str]:
+    """Ids of the cases in ``set_names`` whose definition differs from the case file ``then_source``.
+
+    Only the cases a log scores are compared, so cases added later in other sets do not matter.
+    """
+    module = types.ModuleType("cases_then")
+    sys.modules[module.__name__] = module
+    try:
+        exec(compile(then_source, CASES_FILE, "exec"), module.__dict__)  # noqa: S102 - this repo's own file
+    finally:
+        sys.modules.pop(module.__name__, None)
+    then: dict[str, tuple] = {}
+    for value in vars(module).values():
+        if isinstance(value, list):
+            for case in value:
+                if type(case).__name__ == "Case":
+                    then[case.id] = (case.repo, case.label, case.difficulty, case.files)
+    changed = []
+    for name in set_names:
+        for case in sweep.SETS.get(name, []):
+            if then.get(case.id) != (case.repo, case.label, case.difficulty, case.files):
+                changed.append(case.id)
+    return changed
+
+
 def cases_at(commit: str) -> str | None:
     """The case file at ``commit``, or None when this checkout does not have that commit."""
     return _at(commit, CASES_FILE)
@@ -287,6 +313,13 @@ def defaults_at(commit: str) -> dict | None:
     if not (effort and seed):
         return None
     return {"effort": effort[1], "seed": int(seed[1])}
+
+
+def _blocks_or_none(log: Path) -> list[dict]:
+    try:
+        return parse(log.read_text(encoding="utf-8"))
+    except LogError:
+        return []
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -314,10 +347,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"sweep_from_log: commit {args.harness} not found; scoring with this checkout's cases",
               file=sys.stderr)
-    elif then != (ROOT / CASES_FILE).read_text(encoding="utf-8"):
-        note = f"{CASES_FILE} changed since {args.harness}; check that commit out to score its log"
-        print(f"sweep_from_log: {note}", file=sys.stderr)
-        return 1
+    else:
+        logged = list(dict.fromkeys(block["set"] for block in _blocks_or_none(args.log)))
+        changed = changed_cases(then, logged)
+        if changed:
+            note = f"{len(changed)} scored cases changed since {args.harness} ({', '.join(changed[:3])}...)"
+            print(f"sweep_from_log: {note}; check that commit out to score its log", file=sys.stderr)
+            return 1
     try:
         record = rebuild(
             args.log.read_text(encoding="utf-8"),
