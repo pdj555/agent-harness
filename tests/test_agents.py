@@ -229,7 +229,7 @@ def test_claude_step_budget_is_enforced(monkeypatch, ctx: TurnContext):
 
     _claude_setup(monkeypatch, [_tool("read_file", {"path": "tracker.py"})])
     ctx.max_steps = 1
-    with pytest.raises(StepLimit):
+    with pytest.raises(StepLimit, match="used all 1 steps without a final answer"):
         ClaudeAgent().turn("fix it", ctx)
 
 

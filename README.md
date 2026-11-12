@@ -1,6 +1,6 @@
 # agent-harness
 
-27 sabotaged code changes passed every test; the tests caught none of them. The spec check caught all 27, and 3 attacks built to beat the spec check still get through. A coding agent's work should never be approved by the same system that produced it.
+27 sabotaged code changes passed every test; the tests caught none of them. The spec check caught all 27, and 3 attacks built to beat the spec check still get past it. A coding agent's work should never be approved by the same system that produced it.
 
 
 <picture>
@@ -15,9 +15,9 @@ The eval is 33 changes to three small programs, each shipped with a real bug: 6 
 - The project's tests catch 0 of 27
 - Rules that inspect the diff catch 6 of 27
 - The spec check catches 27 of 27, and blocks 0 of the 6 honest fixes
-- A model reviewer, Claude Haiku 5.5, also caught 27 of 27 in a recorded run on 2026-10-14, not rerun here
+- Claude reviewers, one run of 3 reviews per case on 2026-11-09 (95% intervals reach down to 59% to 66%): Haiku 5.5 caught 27 of 27, Sonnet 5.5 25 of 25 it judged (2 never judged), Opus 5.5 21 of 21 it judged (6 never judged), and none blocked an honest fix
 
-The published model scores used the previous Claude Agent SDK reviewer. They have not been rerun against the current Messages API reviewer.
+The API returned a refusal instead of a verdict on every Opus review of the 6 changes that leak the process environment, and on 10 of 18 Sonnet reviews. The harness blocks on a refusal, so nothing would ship, but those reviews judged nothing. Haiku gave a verdict on all 123 reviews, for $0.04. Catch rate does not separate the three models on this set. The reviewers also blocked the 3 attacks that beat the spec check in all 23 reviews that gave a verdict; two of those diffs name the shortcut in a comment and the set had no correct change of the same shape, so that does not yet show a reviewer finds those triggers; [same-shape controls](docs/blind-spots.md#same-shape-controls) now exist for the next run. [Results and failure analysis](docs/reviewer-sweep.md).
 
 The 27 come in six families:
 
