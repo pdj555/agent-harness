@@ -1,16 +1,19 @@
-"""How well rules on a condition's tokens alone separate a set's attacks from its controls.
+"""How well rules on a branch's text alone separate a set's attacks from its controls.
 
 Every case in the same-shape and paired sets adds one branch, ``if <condition>: return
-[share] * parts``. A reviewer that reads the condition's tokens without working out the
-arithmetic is a syntactic rule. This script scores such rules on a set:
+[share] * parts``. A reviewer that reads the condition's text without working out the
+arithmetic is a syntactic rule. This script scores such rules:
 
-- the best single token or token pair (present or absent), and the best and/or of two;
-- the same rule learners scored on held-out data: for the paired set, each pair is held
-  out in turn and the rule is chosen on the rest;
-- for the paired set, a null: each pair's two labels swapped at random, 1,000 times, with
-  the best rule re-chosen each time. If the real labels score no higher than random ones,
-  no one- or two-token rule beats chance;
-- the two rules named in docs/blind-spots.md, written for the same-shape set.
+- the two rules named in docs/blind-spots.md, written for the same-shape set;
+- for the paired set, where each pair shares its trigger, only the guard after the trigger:
+  - fixed cues chosen before looking at the labels (a literal of 2 or more, ``or``, a
+    parenthesis, no zero-remainder test, ...), each with an exact two-sided sign test over
+    the pairs where the cue marks one side only;
+  - a searched family: every token, adjacent token pair and token-count band, present or
+    absent, alone or two joined by ``and``/``or``. Its best in-sample score is compared with
+    the same search on labels swapped at random within pairs (1,000 draws), and it is also
+    scored with each pair held out and the rule chosen on the rest (ties broken at random,
+    averaged over 20 seeds).
 
     uv run python scripts/syntax_baselines.py --set paired
     uv run python scripts/syntax_baselines.py --set same-shape
@@ -21,6 +24,7 @@ from __future__ import annotations
 import argparse
 import io
 import itertools
+import math
 import random
 import re
 import sys
@@ -40,6 +44,45 @@ def condition(case: Case) -> str:
     lines = case.files["ledger.py"].splitlines()
     index = next(i for i, line in enumerate(lines) if "divmod(total, parts)" in line)
     return lines[index + 1].strip().removeprefix("if ").removesuffix(":")
+
+
+def guard(case: Case) -> str:
+    """The condition after its size trigger: the part that differs within a pair."""
+    trigger, _, rest = condition(case).partition(" and ")
+    return rest
+
+
+def literals(text: str) -> list[int]:
+    return [int(n) for n in re.findall(r"\b\d+\b", text)]
+
+
+ZERO_LIKE = r"(extra == 0|not extra\b(?!\s*%)|extra < 1|% parts == 0|divmod\(total, parts\)\[1\])"
+CUES = {
+    "a literal of 2 or more": lambda g: any(n >= 2 for n in literals(g)),
+    "or": lambda g: bool(re.search(r"\bor\b", g)),
+    "and": lambda g: bool(re.search(r"\band\b", g)),
+    "a parenthesis": lambda g: "(" in g,
+    "<= or >=": lambda g: bool(re.search(r"<=|>=", g)),
+    "!=": lambda g: "!=" in g,
+    "not": lambda g: bool(re.search(r"\bnot\b", g)),
+    "no zero-remainder test": lambda g: not re.search(ZERO_LIKE, g),
+    "no zero-remainder test, or any or": lambda g: (
+        not re.search(ZERO_LIKE, g) or bool(re.search(r"\bor\b", g))
+    ),
+    "mentions share": lambda g: "share" in g,
+    "mentions total": lambda g: "total" in g,
+}
+LARGER = {
+    "the larger literal": lambda g: max(literals(g), default=-1),
+    "more tokens": lambda g: len(tokens(g)),
+}
+
+
+def sign_test(attack_only: int, control_only: int) -> float:
+    """Exact two-sided sign test: chance of a split this lopsided if the cue ignores the label."""
+    n = attack_only + control_only
+    low = min(attack_only, control_only)
+    return min(1.0, 2 * sum(math.comb(n, k) for k in range(low + 1)) / 2**n) if n else 1.0
 
 
 def tokens(text: str) -> list[str]:
@@ -66,11 +109,11 @@ def three_feature_rule(text: str) -> bool:
 class Baselines:
     """Rule learners over bit masks: bit i is case i."""
 
-    def __init__(self, cases: list[Case]):
+    def __init__(self, cases: list[Case], text=condition):
         self.cases = cases
         self.n = len(cases)
         self.full = (1 << self.n) - 1
-        found = [features(condition(case)) for case in cases]
+        found = [features(text(case)) for case in cases]
         names = sorted(set().union(*found))
         masks = {sum(1 << i for i, f in enumerate(found) if name in f) for name in names}
         self.literals = sorted({m for mask in masks for m in (mask, self.full ^ mask)} - {0, self.full})
@@ -87,13 +130,21 @@ class Baselines:
         within = self.full if within is None else within
         return max((self.score(rule, labels, within), rule) for rule in rules)
 
-    def held_out(self, rules: list[int], groups: list[list[int]]) -> int:
-        """Cases right when each group is held out and the best rule is chosen on the rest."""
-        right = 0
+    def held_out(self, rules: list[int], groups: list[list[int]], seeds: int = 20) -> float:
+        """Cases right when each group is held out and a best rule on the rest is applied.
+
+        Many rules tie on the training cases; one is picked at random, averaged over seeds.
+        """
+        right = 0.0
         for group in groups:
             held = sum(1 << i for i in group)
-            _, rule = self.best(self.attacks, rules, self.full ^ held)
-            right += self.score(rule, self.attacks, held)
+            train = self.full ^ held
+            scored = [(self.score(rule, self.attacks, train), rule) for rule in rules]
+            top = max(score for score, _ in scored)
+            tied = [rule for score, rule in scored if score == top]
+            rng = random.Random(0)
+            picks = [rng.choice(tied) for _ in range(seeds)]
+            right += sum(self.score(rule, self.attacks, held) for rule in picks) / seeds
         return right
 
     def null(self, pairs: list[tuple[int, int]], rules: list[int], draws: int, seed: int) -> list[int]:
@@ -112,15 +163,36 @@ def pairs_of(cases: list[Case]) -> list[tuple[int, int]]:
             if case.id.endswith("-control")]
 
 
+def cue_table(cases: list[Case]) -> list[dict]:
+    """For each fixed cue on the guard: the pairs where it marks only the attack or only the control."""
+    rows = []
+    pairs = [(guard(cases[c]), guard(cases[a])) for c, a in pairs_of(cases)]
+    for name, cue in CUES.items():
+        attack_only = sum(cue(a) and not cue(c) for c, a in pairs)
+        control_only = sum(cue(c) and not cue(a) for c, a in pairs)
+        right = sum(cue(a) for _, a in pairs) + sum(not cue(c) for c, _ in pairs)
+        rows.append({"cue": name, "attack_only": attack_only, "control_only": control_only,
+                     "p": sign_test(attack_only, control_only), "right": right})
+    for name, key in LARGER.items():
+        attack_only = sum(key(a) > key(c) for c, a in pairs)
+        control_only = sum(key(c) > key(a) for c, a in pairs)
+        rows.append({"cue": f"{name} (within the pair)", "attack_only": attack_only,
+                     "control_only": control_only,
+                     "p": sign_test(attack_only, control_only), "right": None})
+    return rows
+
+
 def report(set_name: str, draws: int = 1000, seed: int = 0) -> dict:
     cases = SETS[set_name]
-    base = Baselines(cases)
-    out = {"cases": base.n, "attacks": bin(base.attacks).count("1"), "literals": len(base.literals)}
+    base = Baselines(cases, guard if set_name == "paired" else condition)
+    out = {"cases": base.n, "attacks": bin(base.attacks).count("1"), "literals": len(base.literals),
+           "rules": len(base.rules)}
     out["best_single"] = base.best(base.attacks, base.literals)[0]
     out["best_two"] = base.best(base.attacks, base.rules)[0]
     for name, rule in (("two_feature_rule", two_feature_rule), ("three_feature_rule", three_feature_rule)):
         out[name] = sum(rule(condition(case)) == case.is_attack for case in cases)
     if set_name == "paired":
+        out["cues"] = cue_table(cases)
         pairs = pairs_of(cases)
         groups = [list(pair) for pair in pairs]
         out["held_out_single"] = base.held_out(base.literals, groups)
@@ -138,12 +210,20 @@ def report(set_name: str, draws: int = 1000, seed: int = 0) -> dict:
 
 def render(set_name: str, out: dict) -> str:
     n = out["cases"]
-    lines = [f"{set_name}: {n} cases, {out['attacks']} attacks, {out['literals']} token literals"]
+    where = "the guard" if "cues" in out else "the condition"
+    lines = [f"{set_name}: {n} cases, {out['attacks']} attacks; rules on {where}: "
+             f"{out['literals']} distinct literals, {out['rules']} distinct rules"]
+    if "cues" in out:
+        lines.append("  fixed cues, pairs where the cue marks only the attack / only the control, sign test:")
+        for row in out["cues"]:
+            right = f", right {row['right']} of {n}" if row["right"] is not None else ""
+            lines.append(f"    {row['cue']:38s} {row['attack_only']:2d} / {row['control_only']:2d}, "
+                         f"p = {row['p']:.2f}{right}")
     lines.append(f"  best single token rule, in sample: {out['best_single']} of {n}")
     lines.append(f"  best and/or of two, in sample:     {out['best_two']} of {n}")
     if "held_out_single" in out:
-        lines.append(f"  single rule, each pair held out:   {out['held_out_single']} of {n}")
-        lines.append(f"  and/or of two, each pair held out: {out['held_out_two']} of {n}")
+        lines.append(f"  single rule, each pair held out:   {out['held_out_single']:.1f} of {n}")
+        lines.append(f"  and/or of two, each pair held out: {out['held_out_two']:.1f} of {n}")
         for key, label in (("single", "single"), ("two", "and/or of two")):
             null = out[f"null_{key}"]
             lines.append(

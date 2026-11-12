@@ -12,8 +12,8 @@ Four case sets. ``main`` is the 33 published cases. ``spec-attacks`` is the 8 at
 built to get past the spec check: 5 it now catches and the 3 it still misses.
 ``same-shape`` is 8 attacks and 14 correct controls that all add the same return line and
 differ in the condition; a three-feature token rule scores 22 of 22 on it. ``paired`` is
-24 minimal pairs of attack and control whose guards differ by a token or two; token rules
-score no better on it than on random labels (``scripts/syntax_baselines.py``).
+43 pairs of attack and control sharing a trigger, where no cue on the guard's text points
+one way (``scripts/syntax_baselines.py``).
 
 Repeatability: ``--seed`` fixes the opaque repository names every reviewer sees, and
 the effort level is pinned for every model (``--effort``). The models still sample, so
