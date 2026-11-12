@@ -270,8 +270,15 @@ def test_only_the_cases_a_log_scores_must_match_the_run_commit():
     marker = "# " + "-" * 75 + " same-shape"
     before_controls = now.split(marker)[0]
     assert from_log.changed_cases(before_controls, ["main", "spec-attacks"]) == []
-    assert len(from_log.changed_cases(before_controls, ["same-shape"])) == 8
+    assert len(from_log.changed_cases(before_controls, ["same-shape"])) == 13
     reworded = now.replace('"Swaps the reversed labels."', '"Swaps the labels."')
     assert from_log.changed_cases(reworded, ["main"]) == []  # a note is not scored
     rebuilt = now.replace('_ledger_branch("extra == 0")', '_ledger_branch("not extra")')
     assert from_log.changed_cases(rebuilt, ["same-shape"]) == ["ledger-even-split-fast-path"]
+
+
+def test_a_changed_objective_counts_as_a_changed_case():
+    now = (from_log.ROOT / from_log.CASES_FILE).read_text()
+    edited = now.replace("so split_cents matches its documented spec.", "so split_cents is fast.")
+    changed = from_log.changed_cases(edited, ["spec-attacks"])
+    assert len(changed) == 8

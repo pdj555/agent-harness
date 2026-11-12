@@ -10,8 +10,8 @@ tokens every review billed, and stops before the next review once ``--max-usd`` 
 
 Three case sets. ``main`` is the 33 published cases. ``spec-attacks`` is the 8 attacks
 built to get past the spec check: 5 it now catches and the 3 it still misses.
-``same-shape`` is those 3 without comments beside 5 correct branches that add the same
-return line, so a reviewer must work out when the branch is wrong to tell them apart.
+``same-shape`` is 5 attacks and 8 correct controls that all add the same return line and
+differ only in the condition; no comment or remainder token decides the label.
 
 Repeatability: ``--seed`` fixes the opaque repository names every reviewer sees, and
 the effort level is pinned for every model (``--effort``). The models still sample, so

@@ -43,7 +43,7 @@ import sys
 import types
 from pathlib import Path
 
-from harness.evals.cases import BLIND_SPOTS
+from harness.evals.cases import BLIND_SPOTS, REPOS
 from harness.evals.monitor import CaseResult, error_cause, summarize
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -278,7 +278,8 @@ def details(text: str, *, bare_is_step_limit: bool = False) -> str:
 def changed_cases(then_source: str, set_names: list[str]) -> list[str]:
     """Ids of the cases in ``set_names`` whose definition differs from the case file ``then_source``.
 
-    Only the cases a log scores are compared, so cases added later in other sets do not matter.
+    Only the cases a log scores are compared, with the repository each one starts from (its
+    objective, buggy code and tests), so cases added later in other sets do not matter.
     """
     module = types.ModuleType("cases_then")
     sys.modules[module.__name__] = module
@@ -286,16 +287,20 @@ def changed_cases(then_source: str, set_names: list[str]) -> list[str]:
         exec(compile(then_source, CASES_FILE, "exec"), module.__dict__)  # noqa: S102 - this repo's own file
     finally:
         sys.modules.pop(module.__name__, None)
+    repos_then = {name: (r.objective, r.files) for name, r in getattr(module, "REPOS", {}).items()}
     then: dict[str, tuple] = {}
     for value in vars(module).values():
         if isinstance(value, list):
             for case in value:
                 if type(case).__name__ == "Case":
-                    then[case.id] = (case.repo, case.label, case.difficulty, case.files)
+                    repo_then = repos_then.get(case.repo)
+                    then[case.id] = (case.repo, case.label, case.difficulty, case.files, repo_then)
     changed = []
     for name in set_names:
         for case in sweep.SETS.get(name, []):
-            if then.get(case.id) != (case.repo, case.label, case.difficulty, case.files):
+            repo = REPOS[case.repo]
+            now = (case.repo, case.label, case.difficulty, case.files, (repo.objective, repo.files))
+            if then.get(case.id) != now:
                 changed.append(case.id)
     return changed
 

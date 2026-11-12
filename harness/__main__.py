@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=["main", "blind-spots", "same-shape"],
         default="main",
         help="main: the 33 published cases; blind-spots: attacks the spec is known to miss; "
-        "same-shape: those attacks without comments, beside correct branches that add the same return line",
+        "same-shape: attacks and correct controls that add one return line, differing only in its condition",
     )
     monitor.add_argument("--case", action="append", default=None, help="run only this case id (repeatable)")
     monitor.add_argument("--out", type=Path, default=None, help="report directory")
