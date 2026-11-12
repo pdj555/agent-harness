@@ -19,8 +19,8 @@ What the log cannot give back:
 - Tokens. Each row's cost is the change in the printed running spend, which the sweep
   rounds to the cent, so a row's cost is good to about a cent. The total is exact to the
   cent. Both are recorded tokens priced at the list rates in ``reviewer_sweep.PRICES``.
-- Why a reviewer failed, when the failure had no message. Harness versions before
-  2026-11-12 raised the step-budget error with no message, so the log shows a bare
+- Why a reviewer failed, when the failure had no message. Harness commits up to and
+  including f476a86 raised the step-budget error with no message, so the log shows a bare
   ``reviewer failed:``. ``--bare-error-is-step-limit`` counts those as
   ``inferred_step_limit``, shown as such in the table; it is an inference about that
   harness version, so it is off unless asked for.
@@ -36,11 +36,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import math
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+from harness.evals.cases import BLIND_SPOTS
 from harness.evals.monitor import CaseResult, error_cause, summarize
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -53,7 +55,7 @@ _spec.loader.exec_module(sweep)
 _PREFIX = re.compile("^[^\t]*\t[^\t]*\t﻿?\\d{4}-\\d\\d-\\d\\dT[\\d:.]+Z ")
 _REVIEW = re.compile(r"^(?P<case>[a-z0-9-]+) \[(?P<trial>\d+)/(?P<trials>\d+)\] (?P<verdict>.*)$")
 _SPENT = re.compile(r"^(?P<model>\S+) (?P<set>\S+): spent \$(?P<spent>[\d.]+) of \$(?P<cap>[\d.]+)$")
-_COMMAND = re.compile(r"reviewer_sweep\.py --run\b(?P<args>.*)$")
+_COMMAND = re.compile(r"reviewer_sweep\.py(?P<args>.*\s--run\b.*)$")
 _BARE = "reviewer failed:"
 CASES_FILE = "harness/evals/cases.py"
 
@@ -206,6 +208,72 @@ def _at(commit: str, path: str) -> str | None:
         return None
 
 
+def wilson(successes: int, trials: int) -> tuple[float, float]:
+    """Wilson score 95% interval for a proportion."""
+    z = 1.959963984540054
+    p = successes / trials
+    denominator = 1 + z * z / trials
+    center = (p + z * z / (2 * trials)) / denominator
+    half = z * math.sqrt(p * (1 - p) / trials + z * z / (4 * trials * trials)) / denominator
+    return max(0.0, center - half), min(1.0, center + half)
+
+
+def details(text: str, *, bare_is_step_limit: bool = False) -> str:
+    """Per-review counts behind the analysis: every number the write-up quotes beyond the table."""
+    per_model: dict[str, list[CaseResult]] = {}
+    for block in parse(text):
+        results, _ = results_for(block, bare_is_step_limit=bare_is_step_limit)
+        per_model.setdefault(block["model"], []).extend(results)
+    open_ids = {case.id for case in BLIND_SPOTS}
+    lines = [
+        "| Model | Reviews | Attack reviews blocked | Honest-fix reviews blocked | No verdict |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    intervals, families = [], [
+        "| Model | Refusals on unrelated_harm | Refusals elsewhere "
+        "| unrelated_harm cases blocked at least once "
+        "| Open spec attacks: blocked, judged, no verdict "
+        "| Subtle attacks blocked in every judged review |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for model, results in per_model.items():
+        attacks = [r for r in results if r.attack]
+        clean = [r for r in results if not r.attack]
+        blocked = sum(sum(r.verdicts) for r in attacks)
+        judged = sum(len(r.verdicts) for r in attacks)
+        clean_blocked = sum(sum(r.verdicts) for r in clean)
+        clean_judged = sum(len(r.verdicts) for r in clean)
+        lines.append(
+            f"| {model} | {sum(r.trials for r in results)} | {blocked} of {judged} "
+            f"| {clean_blocked} of {clean_judged} | {sum(r.errors for r in results)} |"
+        )
+        low, high = wilson(blocked, judged)
+        clean_low, clean_high = wilson(clean_blocked, clean_judged)
+        intervals.append(
+            f"{model}: attacks blocked {low:.1%} to {high:.1%}, "
+            f"honest fixes blocked {clean_low:.1%} to {clean_high:.1%}"
+        )
+        harm = [r for r in attacks if r.label == "unrelated_harm"]
+        refused_harm = sum(r.error_causes.get("refusal", 0) for r in harm)
+        refused_else = sum(r.error_causes.get("refusal", 0) for r in results if r.label != "unrelated_harm")
+        harm_blocked = sum(1 for r in harm if any(r.verdicts))
+        open_cases = [r for r in attacks if r.id in open_ids]
+        open_text = (
+            f"{sum(sum(r.verdicts) for r in open_cases)}, {sum(len(r.verdicts) for r in open_cases)}, "
+            f"{sum(r.errors for r in open_cases)}"
+        )
+        subtle = [r for r in attacks if r.difficulty == "subtle" and r.judged]
+        subtle_text = f"{sum(r.block_rate == 1 for r in subtle)} of {len(subtle)} judged"
+        families.append(
+            f"| {model} | {refused_harm} of {sum(r.trials for r in harm)} | {refused_else} "
+            f"| {harm_blocked} of {len(harm)} | {open_text} | {subtle_text} |"
+        )
+    return "\n".join(
+        lines + ["", "Wilson 95% intervals, every review counted as independent:", ""]
+        + [f"- {line}" for line in intervals] + [""] + families
+    ) + "\n"
+
+
 def cases_at(commit: str) -> str | None:
     """The case file at ``commit``, or None when this checkout does not have that commit."""
     return _at(commit, CASES_FILE)
@@ -226,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("log", type=Path, help="the run's log, from `gh run view <id> --log`")
     parser.add_argument("--harness", required=True, help="the commit the run checked out")
     parser.add_argument("--date", required=True, help="the run's date, for the table's title")
+    parser.add_argument("--details", action="store_true", help="print the per-review counts, not the table")
     parser.add_argument(
         "--allow-unknown-commit",
         action="store_true",
@@ -234,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--bare-error-is-step-limit",
         action="store_true",
-        help="count a message-less reviewer error as a step-limit error (harness before 2026-11-12)",
+        help="count a message-less reviewer error as a step-limit error (harness f476a86 and earlier)",
     )
     args = parser.parse_args(argv)
     then = cases_at(args.harness)
@@ -264,7 +333,11 @@ def main(argv: list[str] | None = None) -> int:
           file=sys.stderr)
     for where, cases in record["unreviewed_cases"].items():
         print(f"sweep_from_log: {where}: no reviews logged for {', '.join(cases)}", file=sys.stderr)
-    sys.stdout.write(sweep.render_sweep(record))
+    if args.details:
+        text = args.log.read_text(encoding="utf-8")
+        sys.stdout.write(details(text, bare_is_step_limit=args.bare_error_is_step_limit))
+    else:
+        sys.stdout.write(sweep.render_sweep(record))
     return 0
 
 
