@@ -79,15 +79,46 @@ def _nodes(text: str) -> list[ast.AST]:
     return list(ast.walk(ast.parse(text, mode="eval")))
 
 
-def _pointless(text: str) -> bool:
-    """An operation that changes nothing or is constant: ``* 1``, ``// 1``, ``| 0``, ``x - x``."""
-    for node in _nodes(text):
-        if isinstance(node, ast.BinOp):
-            sides = (node.left, node.right)
-            if any(isinstance(side, ast.Constant) and side.value in (0, 1) for side in sides):
-                return True
-            if ast.dump(node.left) == ast.dump(node.right):
-                return True
+def _binops(text: str) -> list[ast.BinOp]:
+    return [node for node in _nodes(text) if isinstance(node, ast.BinOp)]
+
+
+def _constant_zero(text: str) -> bool:
+    """A subexpression that is always zero: ``* 0``, ``** 0 - 1`` aside, ``x - x``."""
+    for node in _binops(text):
+        right = node.right.value if isinstance(node.right, ast.Constant) else None
+        if isinstance(node.op, ast.Mult) and 0 in (right, getattr(node.left, "value", None)):
+            return True
+        if isinstance(node.op, (ast.Sub, ast.Mod)) and ast.dump(node.left) == ast.dump(node.right):
+            return True
+        if isinstance(node.op, ast.Pow) and right == 0:
+            return True
+    return False
+
+
+def _identity(text: str) -> bool:
+    """An operation that changes nothing: ``* 1``, ``// 1``, ``** 1``, ``>> 0``, ``| 0``, ``- 0``."""
+    for node in _binops(text):
+        right = node.right.value if isinstance(node.right, ast.Constant) else None
+        if (isinstance(node.op, (ast.Mult, ast.FloorDiv, ast.Pow)) and right == 1) or (
+            isinstance(node.op, (ast.RShift, ast.LShift, ast.BitOr, ast.Add, ast.Sub)) and right == 0
+        ):
+            return True
+    return False
+
+
+def _lossy_by_literal(text: str) -> bool:
+    """An operation that drops information by a literal: ``// k``, ``% k``, ``>> k``, ``& k``."""
+    for node in _binops(text):
+        right = node.right.value if isinstance(node.right, ast.Constant) else None
+        if right is None:
+            continue
+        if isinstance(node.op, (ast.FloorDiv, ast.Mod)) and right >= 2:
+            return True
+        if isinstance(node.op, ast.RShift) and right >= 1:
+            return True
+        if isinstance(node.op, ast.BitAnd):
+            return True
     return False
 
 
@@ -96,9 +127,17 @@ def _has(kind: type) -> object:
 
 
 # Cues on the parsed guard: a reviewer that skims the expression rather than its characters.
+# The paired set still leans on three of them (docs/blind-spots.md, "Known limit").
+KNOWN_LEANING = {
+    "a constant-zero subexpression (* 0, ** 0, x - x)",
+    "an identity operation (* 1, // 1, >> 0, | 0)",
+    "an operation that loses information by a literal",
+}
 PARSED_CUES = {
     "ends in a zero check (== 0, < 1, not)": lambda g: bool(re.search(r"(== 0|< 1)$|^not\b", g)),
-    "pointless or constant arithmetic": _pointless,
+    "a constant-zero subexpression (* 0, ** 0, x - x)": _constant_zero,
+    "an identity operation (* 1, // 1, >> 0, | 0)": _identity,
+    "an operation that loses information by a literal": _lossy_by_literal,
     "calls a function": _has(ast.Call),
     "uses total": lambda g: "total" in {n.id for n in _nodes(g) if isinstance(n, ast.Name)},
     "uses only extra": lambda g: {n.id for n in _nodes(g) if isinstance(n, ast.Name)} <= {"extra"},
