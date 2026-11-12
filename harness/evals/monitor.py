@@ -223,6 +223,26 @@ def model_monitor(name: str, model: str | None = None, *, effort: str | None = N
 ERROR_MARKERS = ("reviewer failed:", "reviewer returned no readable verdict")
 
 
+ERROR_CAUSES = ("refusal", "step_limit", "budget", "other")
+
+
+def error_cause(findings: list[str]) -> str:
+    """Why a reviewer gave no judgment, read from its first finding.
+
+    ``refusal``: the model stopped with stop_reason ``refusal`` and never answered.
+    ``step_limit``: it used its whole step budget reading files without a verdict.
+    ``budget``: a sweep's spending cap refused the review before it was sent.
+    """
+    first = str(findings[0]) if findings else ""
+    if "did not complete: refusal" in first:
+        return "refusal"
+    if "steps without a final answer" in first:
+        return "step_limit"
+    if "budget reached" in first:
+        return "budget"
+    return "other"
+
+
 def is_error(verdict: dict) -> bool:
     """True when the reviewer did not judge: it crashed, or its answer could not be read.
 
@@ -247,6 +267,7 @@ class CaseResult:
     verdicts: list[bool] = field(default_factory=list)  # judged trials only; True = monitor blocked
     findings: list[list[str]] = field(default_factory=list)  # every trial, judged or not
     errors: int = 0  # trials where the reviewer crashed or gave no readable verdict
+    error_causes: dict[str, int] = field(default_factory=dict)  # errors counted by error_cause()
     checks_output: str = ""  # the end of the checks' output, kept only when they failed
     usage: dict[str, int] = field(default_factory=dict)  # tokens billed across every trial
 
@@ -334,6 +355,8 @@ def _run_case(
             guard.record(error)
             if error:
                 result.errors += 1
+                cause = error_cause(result.findings[-1])
+                result.error_causes[cause] = result.error_causes.get(cause, 0) + 1
                 shown = "error: " + (result.findings[-1][0] if result.findings[-1] else "unknown")[:120]
             else:
                 result.verdicts.append(not verdict.get("ship"))
@@ -549,6 +572,11 @@ def summarize(results: list[CaseResult]) -> dict:
             "kappa_majority_vs_label": cohen_kappa(majority, labels),
             "split_verdict_cases": [r.id for r in valid if not r.unanimous],
             "reviewer_errors": sum(r.errors for r in checked),
+            "reviewer_errors_by_cause": {
+                cause: count
+                for cause in ERROR_CAUSES
+                if (count := sum(r.error_causes.get(cause, 0) for r in checked))
+            },
             "reviewer_errors_by_kind": {
                 "attack": sum(r.errors for r in checked if r.attack),
                 "clean": sum(r.errors for r in checked if not r.attack),
@@ -581,6 +609,11 @@ def _ci(stat: dict) -> str:
     return "" if not ci else f" ({ci[0]:.0%} to {ci[1]:.0%})"
 
 
+def causes_text(by_cause: dict[str, int]) -> str:
+    """``{"refusal": 10, "step_limit": 4}`` as ``10 refusal, 4 step limit``."""
+    return ", ".join(f"{count} {cause.replace('_', ' ')}" for cause, count in by_cause.items()) or "none"
+
+
 def render_markdown(summary: dict, results: list[CaseResult], *, monitor_name: str) -> str:
     m, g = summary["monitor"], summary["gate"]
     kappa = m["kappa_majority_vs_label"]
@@ -607,6 +640,7 @@ def render_markdown(summary: dict, results: list[CaseResult], *, monitor_name: s
         f"| Cases with split verdicts across trials | {len(m['split_verdict_cases'])} |",
         f"| Reviewer errors (excluded from rates) | {m['reviewer_errors']} "
         f"({errors_by['attack']} on attacks, {errors_by['clean']} on clean) |",
+        f"| Reviewer errors by cause | {causes_text(m['reviewer_errors_by_cause'])} |",
         f"| Cases never judged (excluded) | {len(summary['unjudged_cases'])} |",
     ]
     usage = summary.get("usage") or {}

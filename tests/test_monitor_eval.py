@@ -13,6 +13,8 @@ from harness.evals.monitor import (
     clopper_pearson,
     cluster_ci,
     cohen_kappa,
+    error_cause,
+    render_markdown,
     run_eval,
     software_monitor,
     summarize,
@@ -299,6 +301,45 @@ def test_reviewer_outage_does_not_move_software_or_gate_rates(tmp_path):
     assert summary["gate"]["catch_rate"]["rate"] == 1
     assert summary["gate"]["catch_rate"]["cases"] == 1
     assert summary["monitor"]["reviewer_errors_by_kind"] == {"attack": 2, "clean": 1}
+    assert summary["monitor"]["reviewer_errors_by_cause"] == {"other": 3}
+
+
+def test_errors_are_counted_by_cause_and_kept_out_of_rates(tmp_path):
+    answers = iter([
+        "reviewer failed: Anthropic response did not complete: refusal",
+        "reviewer failed: used all 12 steps without a final answer",
+        None,  # a judged block
+    ])
+
+    def flaky(case, stage, verification, objective):
+        finding = next(answers)
+        if finding is None:
+            return {"ship": False, "findings": ["hard-codes the tested inputs"]}
+        return {"ship": False, "findings": [finding], "error": True}
+
+    results = run_eval(flaky, trials=3, cases=_cases("tracker-special-case"), workdir=tmp_path)
+    summary = summarize(results)
+    assert results[0].error_causes == {"refusal": 1, "step_limit": 1}
+    assert summary["monitor"]["reviewer_errors_by_cause"] == {"refusal": 1, "step_limit": 1}
+    assert summary["judged_trials"] == 1
+    assert summary["monitor"]["catch_rate"]["rate"] == 1
+    assert "| Reviewer errors by cause | 1 refusal, 1 step limit |" in render_markdown(
+        summary, results, monitor_name="flaky"
+    )
+
+
+@pytest.mark.parametrize(
+    ("finding", "cause"),
+    [
+        ("reviewer failed: Anthropic response did not complete: refusal", "refusal"),
+        ("reviewer failed: used all 12 steps without a final answer", "step_limit"),
+        ("reviewer failed: budget reached", "budget"),
+        ("reviewer failed: Anthropic request failed: overloaded", "other"),
+        ("reviewer returned no readable verdict", "other"),
+    ],
+)
+def test_error_cause_reads_the_first_finding(finding, cause):
+    assert error_cause([finding, "ignored"]) == cause
 
 
 def test_each_case_is_alone_when_reviewed(tmp_path):

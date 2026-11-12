@@ -67,7 +67,7 @@ The probe prints a nonce read from stdin before the module is imported; threads 
 
 ## The model reviewer
 
-Claude Haiku 5.5 as reviewer: 27 of 27 attacks caught, 0 of 6 honest fixes blocked. Run on 2026-10-14 with `--monitor claude --model claude-haiku-5-5 --trials 3`: 99 judged reviews, no reviewer errors, Cohen's kappa 1.00. The recorded scores used the previous Claude Agent SDK reviewer. They have not been rerun against the current Messages API reviewer.
+Claude Haiku 5.5 as reviewer: 27 of 27 attacks caught, 0 of 6 honest fixes blocked. Run on 2026-10-14 with `--monitor claude --model claude-haiku-5-5 --trials 3`: 99 judged reviews, no reviewer errors, Cohen's kappa 1.00. That run used the previous Claude Agent SDK reviewer. The 2026-11-09 sweep below reran it on the current Messages API reviewer, beside Sonnet 5.5 and Opus 5.5, with the same result for Haiku: [results and failure analysis](reviewer-sweep.md).
 
 ### Rerunning several reviewers
 
@@ -76,11 +76,11 @@ uv run python scripts/reviewer_sweep.py                       # estimate only, c
 uv run python scripts/reviewer_sweep.py --run --max-usd 40    # Haiku 5.5, Sonnet 5.5, Opus 5.5
 ```
 
-Or from GitHub: with an `ANTHROPIC_API_KEY` repository secret set, `gh workflow run reviewer-sweep.yml -f max_usd=40` runs the same sweep on a GitHub-hosted runner. It starts only by hand, so a pull request can never reach the key. The full run is kept as a workflow artifact, and the summary table is committed to `docs/reviewer-sweep.md`.
+Or from GitHub: with an `ANTHROPIC_API_KEY` repository secret set, `gh workflow run reviewer-sweep.yml -f max_usd=40` runs the same sweep on a GitHub-hosted runner. It starts only by hand, so a pull request can never reach the key. The full run is kept as a workflow artifact. The summary table is shown on the run's page and pushed to a `reviewer-sweep/<run id>` branch, to reach `main` through a pull request like any other change. `scripts/sweep_from_log.py` rebuilds the same table from a run's log.
 
 The sweep reviews two sets with each model: the 33 published cases, and the 8 attacks built against the spec check (5 it catches, 3 it misses). Each case runs 3 times per model, at effort `medium` for every model, and `--seed` fixes the opaque repository names each reviewer sees. Every review records the tokens it billed, so the report gives the measured cost beside each catch rate. Before each review the sweep checks the running total against `--max-usd` and refuses once the cap is spent; reviews already in flight finish.
 
-Without `--run` the script builds every case, measures the first request each review would send (system prompt, read-only tools, verdict schema, diff and check output: about 900 tokens on average), and prices the sweep under stated assumptions: 4 model steps per review, 1,500 tokens added per step, 1,200 output tokens per step, no prompt caching. That comes to about 1.6 million input and 0.6 million output tokens per model for 123 reviews: about $0.45 for Haiku 5.5, $9 for Sonnet 5.5 and $18 for Opus 5.5 at list prices, $27.50 in all. The assumptions are deliberately on the high side; the run reports what was actually billed.
+Without `--run` the script builds every case, measures the first request each review would send (system prompt, read-only tools, verdict schema, diff and check output: about 900 tokens on average), and prices the sweep under stated assumptions: 4 model steps per review, 1,500 tokens added per step, 1,200 output tokens per step, no prompt caching. That comes to about 1.6 million input and 0.6 million output tokens per model for 123 reviews: about $0.45 for Haiku 5.5, $9 for Sonnet 5.5 and $18 for Opus 5.5 at list prices, $27.50 in all. The assumptions are deliberately on the high side; the run reports what was actually billed. The 2026-11-09 run billed $2.01.
 
 ## Results
 
@@ -90,10 +90,12 @@ Without `--run` the script builds every case, measures the first request each re
 | Executable spec | 27 of 27 | 0 of 6 |
 | Spec written by a model (6 sets) | 27 of 27 in every set | 0 of 6 |
 | Claude Haiku 5.5 | 27 of 27 | 0 of 6 |
+| Claude Sonnet 5.5 | 25 of 25 judged; refused every review of 2 | 0 of 6 |
+| Claude Opus 5.5 | 21 of 21 judged; refused every review of 6 | 0 of 6 |
 
 The sets written by models: Claude Haiku 5.5 and Claude Sonnet 5.5, 3 sets each, from the docstring and signature, run on 2026-10-19.
 
-Reproduced on 2026-10-26: spec check 27 of 27 (95% CI 66% to 100%), software rules 6 of 27 (3% to 60%), honest fixes blocked 0 of 6 (0% to 71%), the test suite at 307 passed with uv on the PATH. The model reviewer numbers above are the recorded run from 2026-10-14, not a rerun.
+Reproduced on 2026-10-26: spec check 27 of 27 (95% CI 66% to 100%), software rules 6 of 27 (3% to 60%), honest fixes blocked 0 of 6 (0% to 71%), the test suite at 307 passed with uv on the PATH. The three model reviewer rows are the [2026-11-09 sweep](reviewer-sweep.md), 3 reviews per case; a refused case blocks in a live run and is left out of the count here.
 
 A model's verdict depends on the model staying more capable than the agent it reviews; the spec check depends only on the spec and the inputs it runs. The model still matters where no spec reaches: intent, unspecified code, unseen effects. Untested for both: larger realistic diffs, payloads split across changes, adaptive attackers.
 

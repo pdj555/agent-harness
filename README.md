@@ -1,6 +1,6 @@
 # agent-harness
 
-27 sabotaged code changes passed every test; the tests caught none of them. The spec check caught all 27, and 3 attacks built to beat the spec check still get through. A coding agent's work should never be approved by the same system that produced it.
+27 sabotaged code changes passed every test; the tests caught none of them. The spec check caught all 27, and 3 attacks built to beat the spec check still get past it. Model reviewers blocked those 3 in every review that gave a verdict. A coding agent's work should never be approved by the same system that produced it.
 
 
 <picture>
@@ -15,9 +15,9 @@ The eval is 33 changes to three small programs, each shipped with a real bug: 6 
 - The project's tests catch 0 of 27
 - Rules that inspect the diff catch 6 of 27
 - The spec check catches 27 of 27, and blocks 0 of the 6 honest fixes
-- A model reviewer, Claude Haiku 5.5, also caught 27 of 27 in a recorded run on 2026-10-14, not rerun here
+- Claude Haiku 5.5, Sonnet 5.5 and Opus 5.5 as reviewers blocked every attack they judged and no honest fix, 3 reviews per case, on 2026-11-09
 
-The published model scores used the previous Claude Agent SDK reviewer. They have not been rerun against the current Messages API reviewer.
+Opus refused to review all 6 changes that leak the process environment, and Sonnet refused 10 of those 18 reviews. A refusal blocks the change, so nothing shipped, but those reviews judged nothing. The set no longer separates the models: Haiku matched Opus for $0.04 against $1.11. [Results and failure analysis](docs/reviewer-sweep.md).
 
 The 27 come in six families:
 

@@ -36,6 +36,7 @@ from harness.evals.monitor import (
     EvalAborted,
     Monitor,
     build_case,
+    causes_text,
     model_monitor,
     run_eval,
     write_report,
@@ -168,6 +169,46 @@ def _rate(stat: dict) -> str:
     return f"{stat['rate']:.0%}{interval}"
 
 
+def sweep_row(model: str, name: str, summary: dict, usd: float, stopped: bool) -> dict:
+    """One model on one case set, from ``summarize()`` output."""
+    m = summary["monitor"]
+    return {
+        "model": model,
+        "set": name,
+        "catch_rate": m["catch_rate"],
+        "false_block_rate": m["false_block_rate"],
+        "judged_trials": summary["judged_trials"],
+        "reviewer_errors": m["reviewer_errors"],
+        "reviewer_errors_by_cause": m["reviewer_errors_by_cause"],
+        "usage": summary["usage"],
+        "usd": round(usd, 4),
+        "stopped_early": stopped,
+    }
+
+
+def render_sweep(record: dict) -> str:
+    """The summary table a sweep writes to sweep.md and the workflow commits."""
+    lines = [
+        f"# Reviewer sweep, {record['date']}",
+        "",
+        f"Harness {record['harness_commit']}, {record['trials']} trials per case, effort {record['effort']}, "
+        f"seed {record['seed']}. Spent ${record['spent_usd']:.2f} of a ${record['max_usd']:.2f} cap.",
+        "",
+        "| Model | Set | Attacks caught | Honest fixes blocked | Judged | Errors | Cost |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in record["rows"]:
+        errors = str(row["reviewer_errors"])
+        if row["reviewer_errors"]:
+            errors += f" ({causes_text(row.get('reviewer_errors_by_cause') or {})})"
+        lines.append(
+            f"| {row['model']} | {row['set']} | {_rate(row['catch_rate'])} "
+            f"| {_rate(row['false_block_rate'])} | {row['judged_trials']} "
+            f"| {errors} | ${row['usd']:.2f} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def run(args: argparse.Namespace) -> int:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("--run needs ANTHROPIC_API_KEY")
@@ -194,18 +235,7 @@ def run(args: argparse.Namespace) -> int:
             except EvalAborted as exc:
                 results, stopped = exc.results, True
             summary = write_report(results, out / f"{model}-{name}", monitor_name=label)
-            usage = summary["usage"]
-            rows.append({
-                "model": model,
-                "set": name,
-                "catch_rate": summary["monitor"]["catch_rate"],
-                "false_block_rate": summary["monitor"]["false_block_rate"],
-                "judged_trials": summary["judged_trials"],
-                "reviewer_errors": summary["monitor"]["reviewer_errors"],
-                "usage": usage,
-                "usd": round(cost(usage, model), 4),
-                "stopped_early": stopped,
-            })
+            rows.append(sweep_row(model, name, summary, cost(summary["usage"], model), stopped))
             print(f"{model} {name}: spent ${budget.spent:.2f} of ${budget.max_usd:.2f}")
     record = {
         "date": stamp,
@@ -221,22 +251,7 @@ def run(args: argparse.Namespace) -> int:
         "rows": rows,
     }
     (out / "sweep.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-    lines = [
-        f"# Reviewer sweep, {stamp}",
-        "",
-        f"Harness {record['harness_commit']}, {args.trials} trials per case, effort {args.effort}, "
-        f"seed {args.seed}. Spent ${budget.spent:.2f} of a ${args.max_usd:.2f} cap.",
-        "",
-        "| Model | Set | Attacks caught | Honest fixes blocked | Judged | Errors | Cost |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
-    ]
-    for row in rows:
-        lines.append(
-            f"| {row['model']} | {row['set']} | {_rate(row['catch_rate'])} "
-            f"| {_rate(row['false_block_rate'])} | {row['judged_trials']} "
-            f"| {row['reviewer_errors']} | ${row['usd']:.2f} |"
-        )
-    (out / "sweep.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (out / "sweep.md").write_text(render_sweep(record), encoding="utf-8")
     print(f"report: {out / 'sweep.md'}")
     return 1 if any(row["stopped_early"] or row["reviewer_errors"] for row in rows) else 0
 

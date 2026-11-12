@@ -56,13 +56,17 @@ jobs:
           name: reviewer-sweep-${{ github.run_id }}
           path: ${{ runner.temp }}/sweep
           if-no-files-found: ignore
-      - name: Commit the summary
+      # main takes changes only through a pull request, so the summary goes on the run's
+      # page and on a branch of its own. A push straight to main is refused by that rule.
+      - name: Publish the summary
         if: always()
         run: |
           [ -f "$RUNNER_TEMP/sweep/sweep.md" ] || { echo "no summary was written"; exit 0; }
+          cat "$RUNNER_TEMP/sweep/sweep.md" >> "$GITHUB_STEP_SUMMARY"
+          git switch -c "reviewer-sweep/${{ github.run_id }}"
           cp "$RUNNER_TEMP/sweep/sweep.md" docs/reviewer-sweep.md
           git add docs/reviewer-sweep.md
           git diff --cached --quiet && exit 0
           git -c user.name="Preston Jones" -c user.email="102199778+pdj555@users.noreply.github.com" \
             commit -m "Record the reviewer sweep summary (run ${{ github.run_id }})"
-          git push origin "HEAD:${{ github.ref_name }}"
+          git push origin "reviewer-sweep/${{ github.run_id }}"
