@@ -151,3 +151,46 @@ def test_cli_refuses_when_the_cases_changed_since_the_run(tmp_path, capsys, monk
     monkeypatch.setattr(from_log, "cases_at", lambda commit: "# another case file\n")
     assert from_log.main([str(log), "--harness", "abc1234", "--date", "d"]) == 1
     assert "changed since abc1234" in capsys.readouterr().err
+
+
+def test_a_log_cut_short_is_refused():
+    text = _log([("claude-haiku-5-5", "spec-attacks", _all("spec-attacks"), 0.01)])
+    text += _github(f"{SPEC_ATTACKS[0]} [1/2] block") + "\n"
+    with pytest.raises(from_log.LogError, match="after the last spend line"):
+        from_log.rebuild(text, harness="x", date="d")
+
+
+def test_a_trial_logged_twice_is_refused():
+    text = _log([("claude-haiku-5-5", "spec-attacks", _all("spec-attacks"), 0.01)])
+    line = f"{SPEC_ATTACKS[0]} [2/2] block"
+    text = text.replace(line, f"{line}\n{line}", 1)
+    with pytest.raises(from_log.LogError, match="logged twice"):
+        from_log.rebuild(text, harness="x", date="d")
+
+
+def test_an_effort_passed_as_a_variable_is_refused():
+    text = _log(
+        [("claude-haiku-5-5", "spec-attacks", _all("spec-attacks"), 0.01)],
+        command='uv run python scripts/reviewer_sweep.py --run --effort "$EFFORT" --trials 2',
+    )
+    with pytest.raises(from_log.LogError, match="--effort .* not a literal"):
+        from_log.rebuild(text, harness="x", date="d")
+
+
+def test_unreviewed_cases_are_printed_under_the_table():
+    spec = _all("spec-attacks")
+    del spec[SPEC_ATTACKS[3]]
+    record = from_log.rebuild(_log([("claude-haiku-5-5", "spec-attacks", spec, 0.01)]), harness="x", date="d")
+    assert f"No reviews logged for claude-haiku-5-5 spec-attacks: {SPEC_ATTACKS[3]}." in (
+        from_log.sweep.render_sweep(record)
+    )
+
+
+def test_cli_scores_with_this_checkout_when_the_commit_is_unknown(tmp_path, capsys, monkeypatch):
+    log = tmp_path / "run.log"
+    log.write_text(_log([("claude-haiku-5-5", "spec-attacks", _all("spec-attacks"), 0.01)]), encoding="utf-8")
+    monkeypatch.setattr(from_log, "cases_at", lambda commit: None)
+    assert from_log.main([str(log), "--harness", "0000000", "--date", "d"]) == 0
+    captured = capsys.readouterr()
+    assert "commit 0000000 not found" in captured.err
+    assert "| claude-haiku-5-5 | spec-attacks |" in captured.out

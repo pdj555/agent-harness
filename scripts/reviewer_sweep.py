@@ -187,7 +187,7 @@ def sweep_row(model: str, name: str, summary: dict, usd: float, stopped: bool) -
 
 
 def render_sweep(record: dict) -> str:
-    """The summary table a sweep writes to sweep.md and the workflow commits."""
+    """The summary table a sweep writes to sweep.md and the workflow shows on the run page."""
     lines = [
         f"# Reviewer sweep, {record['date']}",
         "",
@@ -197,6 +197,7 @@ def render_sweep(record: dict) -> str:
         "| Model | Set | Attacks caught | Honest fixes blocked | Judged | Errors | Cost |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
+    unreviewed = record.get("unreviewed_cases") or {}
     for row in record["rows"]:
         errors = str(row["reviewer_errors"])
         if row.get("reviewer_errors_by_cause"):
@@ -206,6 +207,8 @@ def render_sweep(record: dict) -> str:
             f"| {_rate(row['false_block_rate'])} | {row['judged_trials']} "
             f"| {errors} | ${row['usd']:.2f} |"
         )
+    for where, cases in unreviewed.items():
+        lines += ["", f"No reviews logged for {where}: {', '.join(cases)}."]
     return "\n".join(lines) + "\n"
 
 
@@ -256,7 +259,7 @@ def run(args: argparse.Namespace) -> int:
     return 1 if any(row["stopped_early"] or row["reviewer_errors"] for row in rows) else 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--models", type=lambda s: s.split(","), default=list(DEFAULT_MODELS))
     parser.add_argument("--sets", type=lambda s: s.split(","), default=list(SETS))
@@ -268,6 +271,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-usd", type=float, default=40.0, help="hard cap on spend for the whole sweep")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--run", action="store_true", help="call the models; without it, estimate only")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     unknown = [m for m in args.models if m not in PRICES] + [s for s in args.sets if s not in SETS]
     if unknown:

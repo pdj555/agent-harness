@@ -8,6 +8,9 @@ rebuilt from the log with the same scoring code when the run's own summary was l
     uv run python scripts/sweep_from_log.py run.log --harness f476a86 --date 2026-11-09 \\
         --bare-error-is-step-limit
 
+The case file is checked against the run's commit when this checkout has it; the scoring
+code is always this checkout's.
+
 What the log cannot give back:
 
 - Tokens. Each row's cost is the change in the printed running spend, which the sweep
@@ -20,8 +23,8 @@ What the log cannot give back:
 - Which cases never reached the reviewer. An invalid case and a case an aborted run never
   reached both print nothing; either way the case is left unscored, not counted as a miss.
 
-The cases are scored with the case set in this checkout. When ``--harness`` names a commit
-this repository has, the script refuses to run if that commit's case file differs.
+A log cut short (review lines after the last spend line), a trial logged twice, or an
+effort or seed passed as a shell variable is refused rather than guessed at.
 """
 
 from __future__ import annotations
@@ -77,21 +80,27 @@ def parse(text: str) -> list[dict]:
             reviews.append((match["case"], int(match["trial"]), int(match["trials"]), match["verdict"]))
     if not blocks:
         raise LogError("no sweep spend lines in the log")
+    if reviews:
+        raise LogError(f"{len(reviews)} review lines after the last spend line: the log is cut short")
     return blocks
 
 
 def settings(text: str) -> dict:
-    """Effort and seed from the logged ``--run`` command; the script's defaults where it set none."""
-    found = {"effort": "medium", "seed": 0}
+    """Effort and seed from the logged ``--run`` command; reviewer_sweep.py's defaults where it set none."""
+    defaults = sweep.build_parser().parse_args([])
+    found = {"effort": defaults.effort, "seed": defaults.seed}
     for raw in text.splitlines():
         match = _COMMAND.search(_strip(raw))
-        if match:
-            args = match["args"]
-            if effort := re.search(r"--effort[ =]\"?(\w+)", args):
-                found["effort"] = effort[1]
-            if seed := re.search(r"--seed[ =]\"?(\d+)", args):
-                found["seed"] = int(seed[1])
-            break
+        if not match:
+            continue
+        for name, pattern, cast in (("effort", r"[a-z]+", str), ("seed", r"\d+", int)):
+            if f"--{name}" not in match["args"]:
+                continue
+            value = re.search(rf"--{name}[ =]\"?({pattern})\"?(?:\s|$)", match["args"])
+            if value is None:
+                raise LogError(f"--{name} in the logged command is not a literal value")
+            found[name] = cast(value[1])
+        break
     return found
 
 
@@ -117,9 +126,14 @@ def results_for(block: dict, *, bare_is_step_limit: bool = False) -> tuple[list[
     trials = {total for _, _, total, _ in block["reviews"]}
     if len(trials) != 1:
         raise LogError(f"{block['model']} {block['set']}: trial counts {sorted(trials)}")
-    for case_id, _trial, _total, verdict in block["reviews"]:
+    seen: set[tuple[str, int]] = set()
+    for case_id, trial, total, verdict in block["reviews"]:
         if case_id not in results:
             raise LogError(f"{block['model']} {block['set']}: {case_id} is not in the set")
+        if (case_id, trial) in seen or not 1 <= trial <= total:
+            where = f"{block['model']} {block['set']}: {case_id} trial {trial}"
+            raise LogError(f"{where} is logged twice or out of range")
+        seen.add((case_id, trial))
         result = results[case_id]
         if verdict in ("ship", "block"):
             result.verdicts.append(verdict == "block")

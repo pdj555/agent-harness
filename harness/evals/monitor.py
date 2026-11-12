@@ -238,7 +238,7 @@ def error_cause(findings: list[str]) -> str:
         return "refusal"
     if "steps without a final answer" in first:
         return "step_limit"
-    if "budget reached" in first:
+    if first.startswith("reviewer failed: budget reached"):
         return "budget"
     return "other"
 
