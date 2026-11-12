@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         default="main",
         help="main: the 33 published cases; blind-spots: attacks the spec is known to miss; "
         "same-shape: attacks and correct controls that add one return line, differing only in its condition; "
-        "paired: 22 attack and control pairs that only arithmetic tells apart",
+        "paired: 24 generated attack and control pairs that only arithmetic tells apart",
     )
     monitor.add_argument("--case", action="append", default=None, help="run only this case id (repeatable)")
     monitor.add_argument("--out", type=Path, default=None, help="report directory")
