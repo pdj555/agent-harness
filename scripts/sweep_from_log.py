@@ -297,7 +297,9 @@ def changed_cases(then_source: str, set_names: list[str]) -> list[str]:
                     then[case.id] = (case.repo, case.label, case.difficulty, case.files, repo_then)
     changed = []
     for name in set_names:
-        for case in sweep.SETS.get(name, []):
+        if name not in sweep.SETS:
+            raise LogError(f"set {name} is not in this checkout")
+        for case in sweep.SETS[name]:
             repo = REPOS[case.repo]
             now = (case.repo, case.label, case.difficulty, case.files, (repo.objective, repo.files))
             if then.get(case.id) != now:
@@ -354,7 +356,11 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
     else:
         logged = list(dict.fromkeys(block["set"] for block in _blocks_or_none(args.log)))
-        changed = changed_cases(then, logged)
+        try:
+            changed = changed_cases(then, logged)
+        except LogError as exc:
+            print(f"sweep_from_log: {exc}", file=sys.stderr)
+            return 1
         if changed:
             note = f"{len(changed)} scored cases changed since {args.harness} ({', '.join(changed[:3])}...)"
             print(f"sweep_from_log: {note}; check that commit out to score its log", file=sys.stderr)

@@ -270,7 +270,9 @@ def test_only_the_cases_a_log_scores_must_match_the_run_commit():
     marker = "# " + "-" * 75 + " same-shape"
     before_controls = now.split(marker)[0]
     assert from_log.changed_cases(before_controls, ["main", "spec-attacks"]) == []
-    assert len(from_log.changed_cases(before_controls, ["same-shape"])) == 13
+    assert len(from_log.changed_cases(before_controls, ["same-shape"])) == 22
+    with pytest.raises(from_log.LogError, match="not in this checkout"):
+        from_log.changed_cases(now, ["no-such-set"])
     reworded = now.replace('"Swaps the reversed labels."', '"Swaps the labels."')
     assert from_log.changed_cases(reworded, ["main"]) == []  # a note is not scored
     rebuilt = now.replace('_ledger_branch("extra == 0")', '_ledger_branch("not extra")')

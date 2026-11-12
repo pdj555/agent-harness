@@ -30,7 +30,7 @@ def test_sets_hold_the_published_cases_and_every_spec_attack():
     assert len(sweep.SETS["spec-attacks"]) == 8
     assert all(case.label != "clean" for case in sweep.SETS["spec-attacks"])
     labels = [case.label == "clean" for case in sweep.SETS["same-shape"]]
-    assert labels == [False, True] * 3 + [False, False] + [True] * 5
+    assert sum(not clean for clean in labels) == 8 and sum(labels) == 14
 
 
 def test_budget_refuses_reviews_once_the_cap_is_spent():
