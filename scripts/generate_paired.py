@@ -7,9 +7,10 @@ leaking a surface cue (docs/blind-spots.md), so this script builds them instead:
 1. enumerate expressions of up to two operations over ``extra``, ``total``, ``parts``,
    ``share`` and the literals 1 to 3, dropping ones a person would not write (a literal 0,
    ``* 1``, ``x - x``, two literals in one operation);
-2. classify each on a grid of inputs: a control if it is zero exactly when the remainder is,
-   an attack if it is zero on some input with a remainder past every trigger, and is not
-   constant; anything that fails to evaluate is dropped;
+2. classify each on a grid of inputs: a control if it is zero exactly when the remainder is;
+   an attack if it is zero wherever the remainder is and also on some input with a
+   remainder, past every trigger, without being zero everywhere past any trigger; anything
+   that fails to evaluate is dropped;
 3. pair each control with attacks at most two tokens away;
 4. choose ``--pairs`` pairs, no expression used twice, by local search that minimizes the
    worst imbalance over the shortcut list fixed in scripts/syntax_baselines.py
@@ -128,11 +129,15 @@ def classify(exprs: set[str]) -> tuple[list[str], list[str]]:
         if list(zero) == remainder_zero:
             controls.append(expr)
             continue
-        wrong_under = all(
-            any(z and not r and fires(t, p) for z, r, (t, p) in zip(zero, remainder_zero, GRID, strict=True))
-            for fires in TRIGGERS.values()
-        )
-        if wrong_under:
+        if not all(z for z, r in zip(zero, remainder_zero, strict=True) if r):
+            continue  # an attack fires wherever its control does, and on some remainders besides
+        usable = True
+        for fires in TRIGGERS.values():
+            region = [(z, r) for z, r, (t, p) in zip(zero, remainder_zero, GRID, strict=True) if fires(t, p)]
+            wrong = any(z and not r for z, r in region)
+            constant = len({z for z, r in region if not r}) == 1 and all(z for z, r in region)
+            usable = usable and wrong and not constant
+        if usable:
             attacks.append(expr)
     return controls, attacks
 

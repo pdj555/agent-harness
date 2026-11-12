@@ -154,8 +154,9 @@ LARGER = {
 
 
 # --------------------------------------------------------------------------- shortcut list
-# Fixed on 2026-11-12 before scripts/generate_paired.py chose the current pairs. Each rule
-# reads only E, the expression in the guard ``(E) == 0``, and says "block" when true.
+# Written on 2026-11-12 before scripts/generate_paired.py first chose pairs (it was committed
+# with them, so that order cannot be audited from history). Each rule reads only E, the
+# expression in the guard ``(E) == 0``, and says "block" when true.
 
 
 def expression(case_or_guard) -> str:
@@ -176,6 +177,23 @@ def _depth(e: str) -> int:
         return 1 + max((walk(child) for child in ast.iter_child_nodes(node)), default=0)
 
     return walk(ast.parse(e, mode="eval").body)
+
+
+def _last(e: str) -> object:
+    body = ast.parse(e, mode="eval").body
+    if isinstance(body, ast.Call):
+        return "call"
+    return type(body.op) if isinstance(body, ast.BinOp) else None
+
+
+def _lossy_multiplied(e: str) -> bool:
+    lossy = (ast.FloorDiv, ast.Mod, ast.RShift, ast.BitAnd)
+    for node in binops(e):
+        if isinstance(node.op, ast.Mult):
+            for side in (node.left, node.right):
+                if isinstance(side, ast.BinOp) and isinstance(side.op, lossy):
+                    return True
+    return False
 
 
 SHORTCUTS = {
@@ -212,6 +230,14 @@ SHORTCUTS = {
     "nested three deep": lambda e: _depth(e) >= 3,
     "subtracts": lambda e: "-" in e,
     "mod by parts": lambda e: "% parts" in e,
+    # Added after the 2026-11-12 review of the first generated set, which found that attacks
+    # leaned toward a product or mask as the last operation. Balanced by construction since.
+    "last operation is *": lambda e: _last(e) is ast.Mult,
+    "last operation is &": lambda e: _last(e) is ast.BitAnd,
+    "last operation is * or &": lambda e: _last(e) in (ast.Mult, ast.BitAnd),
+    "last operation is + or -": lambda e: _last(e) in (ast.Add, ast.Sub),
+    "last operation is a call": lambda e: _last(e) == "call",
+    "a lossy result is multiplied": _lossy_multiplied,
 }
 COMPARE = {
     "more tokens": lambda e: len(tokens(e)),
@@ -365,6 +391,7 @@ def report(set_name: str, draws: int = 1000, seed: int = 0) -> dict:
         out[name] = sum(rule(condition(case)) == case.is_attack for case in cases)
     if set_name == "paired":
         out["cues"] = cue_table(cases)
+        out["shortcuts"] = shortcut_table(cases)
         pairs = pairs_of(cases)
         groups = [list(pair) for pair in pairs]
         out["held_out_single"] = base.held_out(base.literals, groups)
@@ -385,6 +412,16 @@ def render(set_name: str, out: dict) -> str:
     where = "the guard" if "cues" in out else "the condition"
     lines = [f"{set_name}: {n} cases, {out['attacks']} attacks; rules on {where}: "
              f"{out['literals']} distinct literals, {out['rules']} distinct rules"]
+    if "shortcuts" in out:
+        table = out["shortcuts"]
+        lines.append("  listed shortcuts on E, pairs marking only the attack / only the control, sign test:")
+        for row in table["rows"]:
+            right = f", right {row['right']} of {n}" if row["right"] is not None else ""
+            lines.append(f"    {row['rule']:38s} {row['attack_only']:2d} / {row['control_only']:2d}, "
+                         f"p = {row['p']:.2f}{right}")
+        d, name = table["worst_combination"]
+        lines.append(f"  worst and/or of two listed shortcuts: {name}, imbalance {d:+d}, "
+                     f"right {n // 2 + d} of {n}")
     if "cues" in out:
         lines.append("  fixed cues, pairs where the cue marks only the attack / only the control, sign test:")
         for row in out["cues"]:

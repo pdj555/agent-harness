@@ -1,11 +1,11 @@
-"""Paired controls: pairs that only arithmetic tells apart.
+"""Paired controls: pairs that no listed shortcut tells apart.
 
 Each pair shares a size trigger and the early return of ``[share] * parts``. The control's
 guard holds only with no remainder; the attack's guard lets a remainder through. These tests
 pin that the controls are right on every input tried and fire somewhere, that each attack is
 wrong exactly when its condition holds with a remainder (and is wrong on some input), that the
-tests, diff rules and spec ship every case, that no cue from a fixed list marks attacks more
-often than controls (sign test), and that the best searched token rule on the guard does no
+tests, diff rules and spec ship every case, that every listed shortcut and every and/or of
+two of them is within 2 pairs of even, and that the best searched token rule on the guard does no
 better on the real labels than on labels swapped at random within pairs.
 """
 
