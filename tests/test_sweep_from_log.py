@@ -135,7 +135,9 @@ def test_a_log_with_no_sweep_is_refused(tmp_path, capsys):
     assert "no sweep spend lines" in capsys.readouterr().err
 
 
-def test_cli_prints_the_table(tmp_path, capsys):
+def test_cli_prints_the_table(tmp_path, capsys, monkeypatch):
+    here = (from_log.ROOT / from_log.CASES_FILE).read_text()
+    monkeypatch.setattr(from_log, "cases_at", lambda commit: here)
     log = tmp_path / "run.log"
     log.write_text(_log([("claude-haiku-5-5", "spec-attacks", _all("spec-attacks", trials=3), 0.01)]),
                    encoding="utf-8")
@@ -186,11 +188,13 @@ def test_unreviewed_cases_are_printed_under_the_table():
     )
 
 
-def test_cli_scores_with_this_checkout_when_the_commit_is_unknown(tmp_path, capsys, monkeypatch):
+def test_cli_needs_a_flag_to_score_an_unknown_commit(tmp_path, capsys, monkeypatch):
     log = tmp_path / "run.log"
     log.write_text(_log([("claude-haiku-5-5", "spec-attacks", _all("spec-attacks"), 0.01)]), encoding="utf-8")
     monkeypatch.setattr(from_log, "cases_at", lambda commit: None)
-    assert from_log.main([str(log), "--harness", "0000000", "--date", "d"]) == 0
+    assert from_log.main([str(log), "--harness", "0000000", "--date", "d"]) == 1
+    assert "pass --allow-unknown-commit" in capsys.readouterr().err
+    assert from_log.main([str(log), "--harness", "0000000", "--date", "d", "--allow-unknown-commit"]) == 0
     captured = capsys.readouterr()
     assert "commit 0000000 not found" in captured.err
     assert "| claude-haiku-5-5 | spec-attacks |" in captured.out
@@ -227,3 +231,11 @@ def test_the_fingerprint_ignores_prefixes_and_noise_but_not_verdicts():
     assert from_log.fingerprint(github) == from_log.fingerprint(local + "unrelated line\n")
     flipped = github.replace(f"{SPEC_ATTACKS[0]} [1/2] block", f"{SPEC_ATTACKS[0]} [1/2] ship")
     assert from_log.fingerprint(flipped) != from_log.fingerprint(github)
+
+
+def test_defaults_are_read_from_the_run_commit():
+    assert from_log.defaults_at("HEAD") == {"effort": "medium", "seed": 0}
+    assert from_log.defaults_at("no-such-commit") is None
+    text = _log([("claude-haiku-5-5", "spec-attacks", _all("spec-attacks"), 0.01)])
+    record = from_log.rebuild(text, harness="x", date="d", defaults={"effort": "low", "seed": 3})
+    assert (record["effort"], record["seed"]) == ("low", 3)

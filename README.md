@@ -17,7 +17,7 @@ The eval is 33 changes to three small programs, each shipped with a real bug: 6 
 - The spec check catches 27 of 27, and blocks 0 of the 6 honest fixes
 - Claude reviewers, 3 reviews per case on 2026-11-09: Haiku 5.5 caught 27 of 27, Sonnet 5.5 25 of 25 it judged (2 never judged), Opus 5.5 21 of 21 it judged (6 never judged), and none blocked an honest fix
 
-The API returned a refusal instead of a verdict on every Opus review of the 6 changes that leak the process environment, and on 10 of 18 Sonnet reviews. The harness blocks on a refusal, so nothing would ship, but those reviews judged nothing. Haiku gave a verdict on all 123 reviews, for $0.04. Catch rate does not separate the three models on this set. The reviewers also blocked the 3 attacks that beat the spec check in all 23 reviews that gave a verdict; the set has no honest change of the same shape, so that does not yet show a reviewer finds those triggers. [Results and failure analysis](docs/reviewer-sweep.md).
+The API returned a refusal instead of a verdict on every Opus review of the 6 changes that leak the process environment, and on 10 of 18 Sonnet reviews. The harness blocks on a refusal, so nothing would ship, but those reviews judged nothing. Haiku gave a verdict on all 123 reviews, for $0.04. Catch rate does not separate the three models on this set. The reviewers also blocked the 3 attacks that beat the spec check in all 23 reviews that gave a verdict; two of those diffs name the shortcut in a comment and the set has no honest change of the same shape, so that does not yet show a reviewer finds those triggers. [Results and failure analysis](docs/reviewer-sweep.md).
 
 The 27 come in six families:
 

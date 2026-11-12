@@ -8,8 +8,8 @@ rebuilt from the log with the same scoring code when the run's own summary was l
     uv run python scripts/sweep_from_log.py run.log --harness f476a86 --date 2026-11-09 \\
         --bare-error-is-step-limit
 
-The case file is checked against the run's commit when this checkout has it. The scoring
-code, and the effort and seed defaults used when the logged command set none, are always
+The case file is checked against the run's commit when this checkout has it. Effort and seed come
+from the logged command, else from the run commit's defaults; the scoring code is always
 this checkout's. The script prints a SHA-256 of the review and spend lines, so a copy of
 the log can be checked against the one a published table came from. ``gh run view`` needs
 a signed-in ``gh``.
@@ -96,10 +96,15 @@ def fingerprint(text: str) -> str:
     return hashlib.sha256(("\n".join(kept) + "\n").encode()).hexdigest()
 
 
-def settings(text: str) -> dict:
-    """Effort and seed from the logged ``--run`` command; reviewer_sweep.py's defaults where it set none."""
-    defaults = sweep.build_parser().parse_args([])
-    found = {"effort": defaults.effort, "seed": defaults.seed}
+def settings(text: str, defaults: dict | None = None) -> dict:
+    """Effort and seed from the logged ``--run`` command; the sweep's defaults where it set none.
+
+    ``defaults`` are the run commit's; without them, this checkout's.
+    """
+    if defaults is None:
+        parsed = sweep.build_parser().parse_args([])
+        defaults = {"effort": parsed.effort, "seed": parsed.seed}
+    found = dict(defaults)
     for raw in text.splitlines():
         match = _COMMAND.search(_strip(raw))
         if not match:
@@ -161,7 +166,9 @@ def results_for(block: dict, *, bare_is_step_limit: bool = False) -> tuple[list[
     return list(results.values()), trials.pop()
 
 
-def rebuild(text: str, *, harness: str, date: str, bare_is_step_limit: bool = False) -> dict:
+def rebuild(
+    text: str, *, harness: str, date: str, bare_is_step_limit: bool = False, defaults: dict | None = None
+) -> dict:
     """The record ``reviewer_sweep.py --run`` would have written, from its log."""
     rows, previous, trials, cap = [], 0.0, None, None
     unreviewed: dict[str, list[str]] = {}
@@ -181,7 +188,7 @@ def rebuild(text: str, *, harness: str, date: str, bare_is_step_limit: bool = Fa
         "models": list(dict.fromkeys(row["model"] for row in rows)),
         "sets": list(dict.fromkeys(row["set"] for row in rows)),
         "trials": trials,
-        **settings(text),
+        **settings(text, defaults),
         "prices_per_million": sweep.PRICES,
         "max_usd": cap,
         "spent_usd": previous,
@@ -190,14 +197,28 @@ def rebuild(text: str, *, harness: str, date: str, bare_is_step_limit: bool = Fa
     }
 
 
-def cases_at(commit: str) -> str | None:
-    """The case file at ``commit``, or None when this checkout does not have that commit."""
+def _at(commit: str, path: str) -> str | None:
     try:
         return subprocess.run(
-            ["git", "show", f"{commit}:{CASES_FILE}"], cwd=ROOT, capture_output=True, text=True, check=True
+            ["git", "show", f"{commit}:{path}"], cwd=ROOT, capture_output=True, text=True, check=True
         ).stdout
     except (OSError, subprocess.CalledProcessError):
         return None
+
+
+def cases_at(commit: str) -> str | None:
+    """The case file at ``commit``, or None when this checkout does not have that commit."""
+    return _at(commit, CASES_FILE)
+
+
+def defaults_at(commit: str) -> dict | None:
+    """The sweep's effort and seed defaults at ``commit``, read from its source; None if unreadable."""
+    source = _at(commit, "scripts/reviewer_sweep.py")
+    effort = source and re.search(r'"--effort",[^)]*default="(\w+)"', source)
+    seed = source and re.search(r'"--seed",[^)]*default=(\d+)', source)
+    if not (effort and seed):
+        return None
+    return {"effort": effort[1], "seed": int(seed[1])}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -206,6 +227,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--harness", required=True, help="the commit the run checked out")
     parser.add_argument("--date", required=True, help="the run's date, for the table's title")
     parser.add_argument(
+        "--allow-unknown-commit",
+        action="store_true",
+        help="score with this checkout's cases when the run's commit is not in it",
+    )
+    parser.add_argument(
         "--bare-error-is-step-limit",
         action="store_true",
         help="count a message-less reviewer error as a step-limit error (harness before 2026-11-12)",
@@ -213,8 +239,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     then = cases_at(args.harness)
     if then is None:
-        note = f"commit {args.harness} not found; scoring with this checkout's cases"
-        print(f"sweep_from_log: {note}", file=sys.stderr)
+        if not args.allow_unknown_commit:
+            note = f"commit {args.harness} not found; fetch it, or pass --allow-unknown-commit"
+            print(f"sweep_from_log: {note}", file=sys.stderr)
+            return 1
+        print(f"sweep_from_log: commit {args.harness} not found; scoring with this checkout's cases",
+              file=sys.stderr)
     elif then != (ROOT / CASES_FILE).read_text(encoding="utf-8"):
         note = f"{CASES_FILE} changed since {args.harness}; check that commit out to score its log"
         print(f"sweep_from_log: {note}", file=sys.stderr)
@@ -225,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
             harness=args.harness,
             date=args.date,
             bare_is_step_limit=args.bare_error_is_step_limit,
+            defaults=defaults_at(args.harness),
         )
     except LogError as exc:
         print(f"sweep_from_log: {exc}", file=sys.stderr)

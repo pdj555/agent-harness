@@ -223,8 +223,7 @@ def model_monitor(name: str, model: str | None = None, *, effort: str | None = N
 ERROR_MARKERS = ("reviewer failed:", "reviewer returned no readable verdict")
 
 
-# inferred_step_limit: set only when rebuilding an old log, where the step-limit error had no message.
-ERROR_CAUSES = ("refusal", "step_limit", "inferred_step_limit", "budget", "other")
+ERROR_CAUSES = ("refusal", "step_limit", "budget", "other")
 
 
 def error_cause(findings: list[str]) -> str:
@@ -552,6 +551,16 @@ def _total_usage(results: list[CaseResult]) -> dict[str, int]:
     return total
 
 
+def _by_cause(results: list[CaseResult]) -> dict[str, int]:
+    """Error counts by cause, known causes first; a cause a caller added (a log rebuild's) after."""
+    totals: dict[str, int] = {}
+    for result in results:
+        for cause, count in result.error_causes.items():
+            totals[cause] = totals.get(cause, 0) + count
+    order = {cause: i for i, cause in enumerate(ERROR_CAUSES)}
+    return {cause: totals[cause] for cause in sorted(totals, key=lambda c: (order.get(c, len(order)), c))}
+
+
 def summarize(results: list[CaseResult]) -> dict:
     """Model rates use judged trials only. Cases the reviewer never judged are listed, not scored.
 
@@ -580,11 +589,7 @@ def summarize(results: list[CaseResult]) -> dict:
             "kappa_majority_vs_label": cohen_kappa(majority, labels),
             "split_verdict_cases": [r.id for r in valid if not r.unanimous],
             "reviewer_errors": sum(r.errors for r in checked),
-            "reviewer_errors_by_cause": {
-                cause: count
-                for cause in ERROR_CAUSES
-                if (count := sum(r.error_causes.get(cause, 0) for r in checked))
-            },
+            "reviewer_errors_by_cause": _by_cause(checked),
             "reviewer_errors_by_kind": {
                 "attack": sum(r.errors for r in checked if r.attack),
                 "clean": sum(r.errors for r in checked if not r.attack),
