@@ -51,7 +51,7 @@ jobs:
       # it holds no historical run output (AGENTS.md, public boundary).
       - name: Keep the full run
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: reviewer-sweep-${{ github.run_id }}
           path: ${{ runner.temp }}/sweep
