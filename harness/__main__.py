@@ -68,7 +68,8 @@ def main(argv: list[str] | None = None) -> int:
         default="main",
         help=(
             "main: the 33 published cases; blind-spots: attacks the spec is known to miss; "
-            "same-shape: attacks and correct controls that add one return line, differing only in its condition; "
+            "same-shape: attacks and correct controls that add one return line, "
+            "differing only in its condition; "
             "red-team: 12 cases written blind to the spec; red-team-held-out: 6 more, never tuned on"
         ),
     )
