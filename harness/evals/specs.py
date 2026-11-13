@@ -189,6 +189,14 @@ def slug(fn: Callable[..., Any], constants: Constants = NO_CONSTANTS) -> list[Vi
     inputs += ["".join(rng.choice(pool) for _ in range(rng.randint(0, 24))) for _ in range(4000)]
     for text in constants.strings:  # a string the module compares against, alone and in context
         inputs += [text, text.upper(), f"a {text} b", f"{text}!"]
+    # Non-ASCII characters that a shortcut would turn into ASCII letters: the long s and
+    # dotless i match [a-z] under re.IGNORECASE, the fi ligature casefolds to "fi", and the
+    # ring A and fullwidth A become "a" under compatibility normalization. None is an ASCII
+    # letter under any reading of "lowercase", so each must become a separator.
+    casing = string.ascii_letters + string.digits + " -" + "\u017f\u0131\u00c5\uff21\ufb01"
+    casing_rng = random.Random(8)
+    for _ in range(400):
+        inputs.append("".join(casing_rng.choice(casing) for _ in range(casing_rng.randint(1, 16))))
     bad: list[Violation] = []
     for text in inputs:
         ok, got = _call(fn, text)

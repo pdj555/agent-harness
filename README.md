@@ -78,6 +78,6 @@ The command prints the diff, check output, review, and a run ID. Your source sta
 - Each eval task is a single small function with a clear docstring. Real code rarely ships one, and the spec check covers only functions that have one.
 - 6 honest fixes is a thin base for the false block rate. Zero blocked out of 6 says less than zero out of 600 would.
 - This is not a sandbox at the operating system level. Code the agent runs in the stage can touch the host as your user. docs/security.md has the full notes.
-- Test suite: 455 passed on 2026-11-09 with uv installed. One test, tests/test_packaging.py::test_direct_wheel_includes_only_allowlisted_demo_files, runs uv to build a wheel and fails with FileNotFoundError on a machine where uv is not on the PATH.
+- Test suite: 536 passed on 2026-11-13 with uv installed. One test, tests/test_packaging.py::test_direct_wheel_includes_only_allowlisted_demo_files, runs uv to build a wheel and fails with FileNotFoundError on a machine where uv is not on the PATH.
 
 Apache 2.0
