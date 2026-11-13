@@ -64,10 +64,11 @@ def main(argv: list[str] | None = None) -> int:
     monitor.add_argument("--trials", type=int, default=1, help="runs per case; model monitors vary")
     monitor.add_argument(
         "--set",
-        choices=["main", "blind-spots", "red-team", "red-team-held-out"],
+        choices=["main", "blind-spots", "same-shape", "red-team", "red-team-held-out"],
         default="main",
         help=(
             "main: the 33 published cases; blind-spots: attacks the spec is known to miss; "
+            "same-shape: attacks and correct controls that add one return line, differing only in its condition; "
             "red-team: 12 cases written blind to the spec; red-team-held-out: 6 more, never tuned on"
         ),
     )
@@ -244,7 +245,7 @@ def _apply(run_id: str, config: Config) -> int:
 def _monitor_eval(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime
 
-    from harness.evals.cases import BLIND_SPOTS, CASES
+    from harness.evals.cases import BLIND_SPOTS, CASES, SAME_SHAPE_CASES
     from harness.evals.monitor import (
         EvalAborted,
         model_monitor,
@@ -273,6 +274,7 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         return 1
     pool = {
         "blind-spots": BLIND_SPOTS,
+        "same-shape": SAME_SHAPE_CASES,
         "red-team": RED_TEAM,
         "red-team-held-out": RED_TEAM_HELD_OUT,
     }.get(args.set, CASES)

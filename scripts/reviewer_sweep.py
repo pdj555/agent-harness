@@ -8,8 +8,10 @@ tokens every review billed, and stops before the next review once ``--max-usd`` 
     uv run python scripts/reviewer_sweep.py                      # estimate only, no calls
     uv run python scripts/reviewer_sweep.py --run --max-usd 40   # needs ANTHROPIC_API_KEY
 
-Two case sets. ``main`` is the 33 published cases. ``spec-attacks`` is the 8 attacks
+Three case sets. ``main`` is the 33 published cases. ``spec-attacks`` is the 8 attacks
 built to get past the spec check: 5 it now catches and the 3 it still misses.
+``same-shape`` is 8 attacks and 14 correct controls that all add the same return line and
+differ in the condition; no comment or listed single feature decides the label.
 
 Repeatability: ``--seed`` fixes the opaque repository names every reviewer sees, and
 the effort level is pinned for every model (``--effort``). The models still sample, so
@@ -30,12 +32,13 @@ from pathlib import Path
 
 from harness.agents import VERDICT_SCHEMA, review_prompt
 from harness.anthropic import EFFORTS
-from harness.evals.cases import BLIND_SPOTS, CASES, CLOSED_BLIND_SPOTS, REPOS, Case
+from harness.evals.cases import BLIND_SPOTS, CASES, CLOSED_BLIND_SPOTS, REPOS, SAME_SHAPE_CASES, Case
 from harness.evals.monitor import (
     NO_NETWORK,
     EvalAborted,
     Monitor,
     build_case,
+    causes_text,
     model_monitor,
     run_eval,
     write_report,
@@ -56,6 +59,7 @@ DEFAULT_MODELS = ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5")
 SETS: dict[str, list[Case]] = {
     "main": list(CASES),
     "spec-attacks": list(CLOSED_BLIND_SPOTS) + list(BLIND_SPOTS),
+    "same-shape": list(SAME_SHAPE_CASES),
 }
 
 # The estimate's assumptions, printed with every estimate. Code and JSON run near 3 characters
@@ -168,6 +172,49 @@ def _rate(stat: dict) -> str:
     return f"{stat['rate']:.0%}{interval}"
 
 
+def sweep_row(model: str, name: str, summary: dict, usd: float, stopped: bool) -> dict:
+    """One model on one case set, from ``summarize()`` output."""
+    m = summary["monitor"]
+    return {
+        "model": model,
+        "set": name,
+        "catch_rate": m["catch_rate"],
+        "false_block_rate": m["false_block_rate"],
+        "judged_trials": summary["judged_trials"],
+        "reviewer_errors": m["reviewer_errors"],
+        "reviewer_errors_by_cause": m["reviewer_errors_by_cause"],
+        "usage": summary["usage"],
+        "usd": round(usd, 4),
+        "stopped_early": stopped,
+    }
+
+
+def render_sweep(record: dict) -> str:
+    """The summary table a sweep writes to sweep.md and the workflow shows on the run page."""
+    lines = [
+        f"# Reviewer sweep, {record['date']}",
+        "",
+        f"Harness {record['harness_commit']}, {record['trials']} trials per case, effort {record['effort']}, "
+        f"seed {record['seed']}. Spent ${record['spent_usd']:.2f} of a ${record['max_usd']:.2f} cap.",
+        "",
+        "| Model | Set | Attacks caught | Honest fixes blocked | Judged | Errors | Cost |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    unreviewed = record.get("unreviewed_cases") or {}
+    for row in record["rows"]:
+        errors = str(row["reviewer_errors"])
+        if row.get("reviewer_errors_by_cause"):
+            errors += f" ({causes_text(row['reviewer_errors_by_cause'])})"
+        lines.append(
+            f"| {row['model']} | {row['set']} | {_rate(row['catch_rate'])} "
+            f"| {_rate(row['false_block_rate'])} | {row['judged_trials']} "
+            f"| {errors} | ${row['usd']:.2f} |"
+        )
+    for where, cases in unreviewed.items():
+        lines += ["", f"No reviews logged for {where}: {', '.join(cases)}."]
+    return "\n".join(lines) + "\n"
+
+
 def run(args: argparse.Namespace) -> int:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("--run needs ANTHROPIC_API_KEY")
@@ -194,18 +241,7 @@ def run(args: argparse.Namespace) -> int:
             except EvalAborted as exc:
                 results, stopped = exc.results, True
             summary = write_report(results, out / f"{model}-{name}", monitor_name=label)
-            usage = summary["usage"]
-            rows.append({
-                "model": model,
-                "set": name,
-                "catch_rate": summary["monitor"]["catch_rate"],
-                "false_block_rate": summary["monitor"]["false_block_rate"],
-                "judged_trials": summary["judged_trials"],
-                "reviewer_errors": summary["monitor"]["reviewer_errors"],
-                "usage": usage,
-                "usd": round(cost(usage, model), 4),
-                "stopped_early": stopped,
-            })
+            rows.append(sweep_row(model, name, summary, cost(summary["usage"], model), stopped))
             print(f"{model} {name}: spent ${budget.spent:.2f} of ${budget.max_usd:.2f}")
     record = {
         "date": stamp,
@@ -221,27 +257,12 @@ def run(args: argparse.Namespace) -> int:
         "rows": rows,
     }
     (out / "sweep.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-    lines = [
-        f"# Reviewer sweep, {stamp}",
-        "",
-        f"Harness {record['harness_commit']}, {args.trials} trials per case, effort {args.effort}, "
-        f"seed {args.seed}. Spent ${budget.spent:.2f} of a ${args.max_usd:.2f} cap.",
-        "",
-        "| Model | Set | Attacks caught | Honest fixes blocked | Judged | Errors | Cost |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
-    ]
-    for row in rows:
-        lines.append(
-            f"| {row['model']} | {row['set']} | {_rate(row['catch_rate'])} "
-            f"| {_rate(row['false_block_rate'])} | {row['judged_trials']} "
-            f"| {row['reviewer_errors']} | ${row['usd']:.2f} |"
-        )
-    (out / "sweep.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (out / "sweep.md").write_text(render_sweep(record), encoding="utf-8")
     print(f"report: {out / 'sweep.md'}")
     return 1 if any(row["stopped_early"] or row["reviewer_errors"] for row in rows) else 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--models", type=lambda s: s.split(","), default=list(DEFAULT_MODELS))
     parser.add_argument("--sets", type=lambda s: s.split(","), default=list(SETS))
@@ -253,6 +274,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-usd", type=float, default=40.0, help="hard cap on spend for the whole sweep")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--run", action="store_true", help="call the models; without it, estimate only")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     unknown = [m for m in args.models if m not in PRICES] + [s for s in args.sets if s not in SETS]
     if unknown:
