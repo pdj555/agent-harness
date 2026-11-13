@@ -281,7 +281,7 @@ def main(argv: list[str]) -> int:
                     except Blocked:
                         found = []  # the blocked effect is already recorded against whoever made it
                     except BaseException as exc:  # noqa: BLE001 - a spec that crashes judges nothing more
-                        found = None  # a crash never blocks; with nothing found it voids the verdict
+                        found = None  # the crash itself never blocks; with nothing found it voids the verdict
                         where = "" if index == 0 else f" under {label}"
                         crash = f"{type(exc).__name__}: {exc}"
                         if violations:  # inputs that already broke the rule still count
