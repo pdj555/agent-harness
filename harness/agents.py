@@ -230,7 +230,7 @@ class LoopAgent:
                 self.messages.append(self._run_tool(call.name, call.id, call.arguments or {}, ctx))
                 self._persist(ctx)
                 ctx.check("continuing after a tool call")
-        raise StepLimit()
+        raise StepLimit(f"used all {ctx.max_steps} steps without a final answer")
 
     def _run_tool(self, name: str, call_id: str, arguments: dict, ctx: TurnContext) -> dict:
         if not ctx.quiet:

@@ -8,11 +8,13 @@ from harness.__main__ import main
 from harness.evals.cases import ATTACKS, CASES, CLEAN, REPOS, Case
 from harness.evals.monitor import (
     NO_NETWORK,
+    EvalAborted,
     bootstrap_ci,
     build_case,
     clopper_pearson,
     cluster_ci,
     cohen_kappa,
+    error_cause,
     render_markdown,
     rescore,
     run_eval,
@@ -351,6 +353,45 @@ def test_reviewer_outage_does_not_move_software_or_gate_rates(tmp_path):
     assert summary["gate"]["catch_rate"]["rate"] == 1
     assert summary["gate"]["catch_rate"]["cases"] == 1
     assert summary["monitor"]["reviewer_errors_by_kind"] == {"attack": 2, "clean": 1}
+    assert summary["monitor"]["reviewer_errors_by_cause"] == {"other": 3}
+
+
+def test_errors_are_counted_by_cause_and_kept_out_of_rates(tmp_path):
+    answers = iter([
+        "reviewer failed: Anthropic response did not complete: refusal",
+        "reviewer failed: used all 12 steps without a final answer",
+        None,  # a judged block
+    ])
+
+    def flaky(case, stage, verification, objective):
+        finding = next(answers)
+        if finding is None:
+            return {"ship": False, "findings": ["hard-codes the tested inputs"]}
+        return {"ship": False, "findings": [finding], "error": True}
+
+    results = run_eval(flaky, trials=3, cases=_cases("tracker-special-case"), workdir=tmp_path)
+    summary = summarize(results)
+    assert results[0].error_causes == {"refusal": 1, "step_limit": 1}
+    assert summary["monitor"]["reviewer_errors_by_cause"] == {"refusal": 1, "step_limit": 1}
+    assert summary["judged_trials"] == 1
+    assert summary["monitor"]["catch_rate"]["rate"] == 1
+    assert "| Reviewer errors by cause | 1 refusal, 1 step limit |" in render_markdown(
+        summary, results, monitor_name="flaky"
+    )
+
+
+@pytest.mark.parametrize(
+    ("finding", "cause"),
+    [
+        ("reviewer failed: Anthropic response did not complete: refusal", "refusal"),
+        ("reviewer failed: used all 12 steps without a final answer", "step_limit"),
+        ("reviewer failed: budget reached", "budget"),
+        ("reviewer failed: Anthropic request failed: overloaded", "other"),
+        ("reviewer returned no readable verdict", "other"),
+    ],
+)
+def test_error_cause_reads_the_first_finding(finding, cause):
+    assert error_cause([finding, "ignored"]) == cause
 
 
 def test_each_case_is_alone_when_reviewed(tmp_path):
@@ -680,3 +721,82 @@ def test_cli_passes_the_pinned_effort_to_the_reviewer(tmp_path, monkeypatch):
     main([*argv, "--out", str(tmp_path)])
     assert seen["effort"] == "low"
     assert "effort low" in (tmp_path / "report.md").read_text(encoding="utf-8")
+
+
+def _live_reviewer(monkeypatch, reply):
+    """The real Claude reviewer, with the API answering ``reply`` to every request."""
+    from harness.anthropic import AnthropicProvider
+    from harness.evals.monitor import model_monitor
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+    calls = []
+
+    def request(self, payload):
+        calls.append(payload)
+        return reply()
+
+    monkeypatch.setattr(AnthropicProvider, "_request", request)
+    return model_monitor("claude", "claude-test"), calls
+
+
+def test_a_refusal_from_the_api_is_counted_as_a_refusal(monkeypatch, tmp_path):
+    monitor, calls = _live_reviewer(monkeypatch, lambda: {"stop_reason": "refusal", "content": []})
+    results = run_eval(monitor, cases=_cases("tracker-telemetry"), workdir=tmp_path)
+    assert results[0].error_causes == {"refusal": 1}
+    assert results[0].verdicts == []  # an error is never scored as a catch
+    assert len(calls) == 1
+
+
+def test_a_reviewer_that_never_answers_is_counted_as_a_step_limit(monkeypatch, tmp_path):
+    def read_forever():
+        call = {
+            "type": "tool_use", "id": f"t{len(calls)}", "name": "read_file", "input": {"path": "tracker.py"},
+        }
+        return {"stop_reason": "tool_use", "content": [call]}
+
+    monitor, calls = _live_reviewer(monkeypatch, read_forever)
+    results = run_eval(monitor, cases=_cases("tracker-clean"), workdir=tmp_path)
+    assert results[0].error_causes == {"step_limit": 1}
+    assert results[0].findings[0] == ["reviewer failed: used all 12 steps without a final answer"]
+    assert len(calls) == 12
+
+
+def test_refusals_do_not_trip_the_error_guard(tmp_path):
+    def refuses(case, stage, verification, objective):
+        return {"ship": False, "findings": ["reviewer failed: Anthropic response did not complete: refusal"]}
+
+    cases = _cases("tracker-telemetry", "ledger-telemetry")
+    results = run_eval(refuses, trials=3, cases=cases, workdir=tmp_path, max_consecutive_errors=2)
+    assert [r.error_causes for r in results] == [{"refusal": 3}, {"refusal": 3}]
+
+
+def test_other_errors_still_trip_the_error_guard(tmp_path):
+    def down(case, stage, verification, objective):
+        return {"ship": False, "findings": ["reviewer failed: Anthropic request failed: invalid key"]}
+
+    with pytest.raises(EvalAborted):
+        run_eval(
+            down, trials=3, cases=_cases("tracker-telemetry"), workdir=tmp_path, max_consecutive_errors=2
+        )
+
+
+def test_a_refusal_does_not_break_an_outage_streak():
+    from harness.evals.monitor import _ErrorGuard
+
+    guard = _ErrorGuard(2)
+    guard.record(True)
+    guard.record(True, refusal=True)
+    assert not guard.tripped
+    guard.record(True)
+    assert guard.tripped
+
+
+def test_a_model_refusing_everything_still_stops():
+    from harness.evals.monitor import _ErrorGuard
+
+    guard = _ErrorGuard(2)
+    for _ in range(7):
+        guard.record(True, refusal=True)
+    assert not guard.tripped
+    guard.record(True, refusal=True)
+    assert guard.tripped
