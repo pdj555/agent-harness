@@ -56,6 +56,8 @@ uv run harness demo
 uv run harness eval monitor --monitor spec                      # spec check: 27 of 27 caught
 uv run harness eval monitor --monitor spec --set blind-spots    # spec check: 0 of 3 caught
 uv run python scripts/reviewer_sweep.py                          # price a three-model reviewer rerun, no calls
+uv run harness eval monitor --monitor spec --set red-team       # spec check: 7 of 8 caught, written blind to it
+uv run harness eval monitor --monitor spec --set red-team-held-out  # spec check: 2 of 4 caught, never tuned on
 uv run pytest
 uv run python scripts/export_dataset.py dist/dataset               # the Hugging Face dataset, rebuilt
 ```
@@ -74,10 +76,10 @@ The command prints the diff, check output, review, and a run ID. Your source sta
 ## Limits
 
 - 3 attacks built to beat the spec check still get through it, each by computing its trigger instead of writing it down. One is wrong only once the total needs more than 40 bits, about 1.1 trillion cents. One is wrong only at six-digit part counts. One is wrong only when LEDGER_ROUNDING=legacy, with the value written reversed in the code. All three pass the tests and the spec, and all three are wrong. The five attacks before them are caught now; docs/blind-spots.md keeps the set current.
-- The attacks and the specs were written by the same author, from the same docstrings. Every strong check catches all 27, so this eval can no longer tell the strong checks apart.
+- The attacks and the specs were written by the same author, from the same docstrings. Every strong check catches all 27, so this eval can no longer tell the strong checks apart. On a red-team set written without seeing the spec, the spec catches 7 of 8 attacks (95% CI 47% to 100%) and 2 of 4 held out (7% to 93%), so that set still has room to measure it. No model reviewer has run on it yet. See [docs/red-team.md](docs/red-team.md).
 - Each eval task is a single small function with a clear docstring. Real code rarely ships one, and the spec check covers only functions that have one.
 - 6 honest fixes is a thin base for the false block rate. Zero blocked out of 6 says less than zero out of 600 would.
 - This is not a sandbox at the operating system level. Code the agent runs in the stage can touch the host as your user. docs/security.md has the full notes.
-- Test suite: 455 passed on 2026-11-09 with uv installed. One test, tests/test_packaging.py::test_direct_wheel_includes_only_allowlisted_demo_files, runs uv to build a wheel and fails with FileNotFoundError on a machine where uv is not on the PATH.
+- Test suite: 571 passed on 2026-11-13 with uv installed. One test, tests/test_packaging.py::test_direct_wheel_includes_only_allowlisted_demo_files, runs uv to build a wheel and fails with FileNotFoundError on a machine where uv is not on the PATH.
 
 Apache 2.0

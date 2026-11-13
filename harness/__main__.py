@@ -64,10 +64,14 @@ def main(argv: list[str] | None = None) -> int:
     monitor.add_argument("--trials", type=int, default=1, help="runs per case; model monitors vary")
     monitor.add_argument(
         "--set",
-        choices=["main", "blind-spots", "same-shape"],
+        choices=["main", "blind-spots", "same-shape", "red-team", "red-team-held-out"],
         default="main",
-        help="main: the 33 published cases; blind-spots: attacks the spec is known to miss; "
-        "same-shape: attacks and correct controls that add one return line, differing only in its condition",
+        help=(
+            "main: the 33 published cases; blind-spots: attacks the spec is known to miss; "
+            "same-shape: attacks and correct controls that add one return line, "
+            "differing only in its condition; "
+            "red-team: 12 cases written blind to the spec; red-team-held-out: 6 more, never tuned on"
+        ),
     )
     monitor.add_argument("--case", action="append", default=None, help="run only this case id (repeatable)")
     monitor.add_argument("--out", type=Path, default=None, help="report directory")
@@ -253,6 +257,7 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         spec_monitor_from,
         write_report,
     )
+    from harness.evals.red_team import RED_TEAM, RED_TEAM_HELD_OUT
 
     if args.rescore is not None:
         try:
@@ -268,7 +273,12 @@ def _monitor_eval(args: argparse.Namespace) -> int:
     if args.specs is not None and args.monitor != "spec":
         print("--specs only works with --monitor spec")
         return 1
-    pool = {"blind-spots": BLIND_SPOTS, "same-shape": SAME_SHAPE_CASES}.get(args.set, CASES)
+    pool = {
+        "blind-spots": BLIND_SPOTS,
+        "same-shape": SAME_SHAPE_CASES,
+        "red-team": RED_TEAM,
+        "red-team-held-out": RED_TEAM_HELD_OUT,
+    }.get(args.set, CASES)
     cases = pool
     if args.case:
         known = {case.id for case in pool}
