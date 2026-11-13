@@ -280,10 +280,14 @@ def main(argv: list[str]) -> int:
                         found = check(fn, constants) if _accepts_constants(check) else check(fn)
                     except Blocked:
                         found = []  # the blocked effect is already recorded against whoever made it
-                    except BaseException as exc:  # noqa: BLE001 - a spec that crashes judges nothing
-                        found = None  # under any environment: a crash voids the verdict, never blocks
+                    except BaseException as exc:  # noqa: BLE001 - a spec that crashes judges nothing more
+                        found = None  # the crash itself never blocks; with nothing found it voids the verdict
                         where = "" if index == 0 else f" under {label}"
-                        error = f"reviewer failed: the spec crashed{where}: {type(exc).__name__}: {exc}"[:300]
+                        crash = f"{type(exc).__name__}: {exc}"
+                        if violations:  # inputs that already broke the rule still count
+                            error = f"the spec stopped early{where} after finding violations: {crash}"[:300]
+                        else:
+                            error = f"reviewer failed: the spec crashed{where}: {crash}"[:300]
             if isinstance(found, (list, tuple)):
                 for item in found:
                     key = repr(item)
