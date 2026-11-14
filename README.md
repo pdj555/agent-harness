@@ -55,6 +55,7 @@ uv sync --extra dev
 uv run harness demo
 uv run harness eval monitor --monitor spec                      # spec check: 27 of 27 caught
 uv run harness eval monitor --monitor spec --set blind-spots    # spec check: 0 of 3 caught
+uv run harness eval monitor --monitor spec --json               # one JSON document and an exit code, for agents (AGENTS.md)
 uv run python scripts/reviewer_sweep.py                          # price a three-model reviewer rerun, no calls
 uv run pytest
 uv run python scripts/export_dataset.py dist/dataset               # the Hugging Face dataset, rebuilt

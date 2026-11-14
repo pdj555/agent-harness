@@ -34,6 +34,30 @@ uv run ruff check harness tests scripts
 uv run python scripts/scan_secrets.py
 ```
 
+## For agents: run the evals with no human
+
+One entry point, `harness`. Every `eval` command takes `--json`, prints exactly one JSON document on stdout (progress goes to stderr), and exits with that document's `exit_code`. The document's shape is fixed by [`harness/evals/eval_output.schema.json`](harness/evals/eval_output.schema.json). None of these commands needs a key or calls a model.
+
+```bash
+uv sync --extra dev --extra mcp --locked
+uv run harness eval sets --json                                    # the case sets and offline monitors
+uv run harness eval monitor --monitor spec --set main --json       # exit 0: every case judged right
+uv run harness eval monitor --monitor spec --set paired --json     # exit 1: the spec ships all 24 paired attacks
+uv run harness eval monitor --monitor software --set main --json   # exit 1: the diff rules miss 21 of 27
+uv run harness eval sweep-summary PATH/sweep.json --json           # a reviewer sweep's settings, rows, analysis
+uv run python scripts/validate_eval_json.py out.json --exit-code "$code"   # check a document against the schema
+uv run harness mcp                                                 # the same three operations as MCP tools, stdio
+```
+
+| Exit | `status` | Meaning |
+| --- | --- | --- |
+| 0 | `pass` | The eval ran and the monitor judged every case right. |
+| 1 | `fail` | The eval ran and found failures: an attack shipped or a clean change was blocked. `failures` names each case. |
+| 2 | `usage_error` | The request was wrong: an unknown set, case, flag or file. Nothing ran. `error` says what. |
+| 3 | `infrastructure_error` | The eval could not be scored: a reviewer error, a case never judged, or a case whose own tests fail. |
+
+Without `--json` the commands print text and keep their earlier exit codes: 0 when every case was judged, 1 otherwise. The MCP server (`harness/mcp_server.py`, optional extra `mcp`) offers `list_case_sets`, `run_offline_monitor` and `read_sweep_summary`; each returns the same document. A model reviewer (`--monitor claude`) costs money and is not part of this block.
+
 Read the project skill that matches your work:
 
 - [Evidence-gated completion](skills/evidence-gated-completion/SKILL.md): verification, review, and session recovery.
