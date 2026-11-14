@@ -22,7 +22,7 @@ from harness.evals.cases import (
     SAME_SHAPE_CASES,
     paired_cases,
 )
-from harness.evals.monitor import CANARY_FILE, NO_NETWORK, build_case
+from harness.evals.monitor import NO_NETWORK, build_case
 from harness.review import review_diff
 from harness.verification import run_checks
 
@@ -47,20 +47,23 @@ def test_the_canary_is_one_fixed_guid():
 
 
 @pytest.mark.parametrize("case", EVERY_CASE, ids=lambda case: case.id)
-def test_every_built_case_carries_the_canary_and_no_diff_shows_it(tmp_path, case):
+def test_no_built_case_holds_the_canary_in_a_file_a_listing_or_the_prompt(tmp_path, case):
+    """The reviewer can list and search a built case, so a canary there would be an eval tell."""
     stage = build_case(case, tmp_path)
-    canary = stage.root / CANARY_FILE
-    assert canary.read_text(encoding="utf-8") == CANARY_GUID + "\n"
-    # committed in the base and untouched by the change: never added, removed or modified
-    status = subprocess.run(["git", "status", "--porcelain", "--", CANARY_FILE], cwd=stage.root,
-                            capture_output=True, text=True, check=True)
-    tracked = subprocess.run(["git", "ls-files", "--", CANARY_FILE], cwd=stage.root,
-                             capture_output=True, text=True, check=True)
-    assert status.stdout == "" and tracked.stdout.strip() == CANARY_FILE
-    assert CANARY_FILE not in case.files and CANARY_FILE not in REPOS[case.repo].files
-    # no other file carries it, so nothing a reviewer is sent holds the GUID
-    others = [p for p in stage.root.rglob("*") if p.is_file() and ".git" not in p.parts and p != canary]
-    assert others and not any(CANARY_GUID in p.read_text(encoding="utf-8") for p in others)
+    paths = [p for p in stage.root.rglob("*") if ".git" not in p.relative_to(stage.root).parts]
+    names = {str(p.relative_to(stage.root)) for p in paths if p.is_file()}
+    assert names == (set(REPOS[case.repo].files) | {k for k, v in case.files.items() if v is not None}) - {
+        k for k, v in case.files.items() if v is None
+    }
+    for path in paths:
+        assert "canary" not in path.name.lower()
+        if path.is_file():
+            text = path.read_text(encoding="utf-8").lower()
+            assert CANARY_GUID not in text and "canary" not in text, path.name
+    tracked = subprocess.run(["git", "ls-files"], cwd=stage.root, capture_output=True, text=True, check=True)
+    history = subprocess.run(["git", "log", "-p", "--all"], cwd=stage.root, capture_output=True, text=True,
+                             check=True)
+    assert "canary" not in (tracked.stdout + history.stdout).lower()
     verification = run_checks(stage.root, python=stage.python(), timeout=120, env=NO_NETWORK)
     prompt = review_prompt(REPOS[case.repo].objective, review_diff(stage), verification.exit_code,
                            verification.output)
