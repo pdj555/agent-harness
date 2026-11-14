@@ -178,3 +178,21 @@ def test_a_run_on_the_fresh_set_records_its_seed_and_rebuilds_from_its_log(
 def test_a_fresh_seed_without_the_fresh_set_is_a_usage_error():
     with pytest.raises(SystemExit):
         sweep.main(["--sets", "paired", "--fresh-seed", "3"])
+
+
+def test_the_workflow_reviews_the_fresh_set_it_priced():
+    """The run step takes its seed from the estimate step, read out of the line the script prints."""
+    import re
+
+    workflow = (ROOT / ".github" / "workflows" / "reviewer-sweep.yml").read_text(encoding="utf-8")
+    assert "FRESH_SEED: ${{ steps.price.outputs.fresh_seed }}" in workflow
+    assert '${FRESH_SEED:+--fresh-seed "$FRESH_SEED"}' in workflow
+    expression = re.search(r"sed -n '([^']+)'", workflow)[1]
+    line = sweep.fresh_line({"seed": 20261114, "pairs": 24, "guards_sha256": "ab" * 32})
+    printed = subprocess.run(["sed", "-n", expression], input=line + "\nestimated total: $1.00\n",
+                             capture_output=True, text=True, check=True)
+    assert printed.stdout == "20261114\n"
+    # the script and the workflow review the same five sets by default, the ones preregistered
+    default = re.search(r'default: "(main,[^"]+)"', workflow)[1].split(",")
+    prereg = json.loads((ROOT / "docs" / "prereg" / "sweep-3.json").read_text())
+    assert default == sweep.build_parser().parse_args([]).sets == prereg["settings"]["sets"]

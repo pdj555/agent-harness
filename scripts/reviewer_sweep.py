@@ -8,22 +8,23 @@ tokens every review billed, and stops before the next review once ``--max-usd`` 
     uv run python scripts/reviewer_sweep.py                      # estimate only, no calls
     uv run python scripts/reviewer_sweep.py --run --max-usd 40   # needs ANTHROPIC_API_KEY
 
-Four case sets. ``main`` is the 33 published cases. ``spec-attacks`` is the 8 attacks
-built to get past the spec check: 5 it now catches and the 3 it still misses.
-``same-shape`` is 8 attacks and 14 correct controls that all add the same return line and
-differ in the condition; a three-feature token rule scores 22 of 22 on it. ``paired`` is
-24 generated pairs of attack and control; no shortcut on a list fixed beforehand points
-one way (``scripts/generate_paired.py``, ``scripts/syntax_baselines.py``).
+Five case sets, all reviewed by default. ``main`` is the 33 published cases. ``spec-attacks``
+is the 8 attacks built to get past the spec check: 5 it now catches and the 3 it still
+misses. ``same-shape`` is 8 attacks and 14 correct controls that all add the same return
+line and differ in the condition; a three-feature token rule scores 22 of 22 on it.
+``paired`` is 24 generated pairs of attack and control; no shortcut on a list fixed
+beforehand points one way (``harness/evals/paired_generator.py``, ``harness/evals/shortcuts.py``).
+``paired-fresh`` exists only for the length of a run: 24 new pairs generated from
+``--fresh-seed`` (drawn at random when not given), leaving out every expression in the
+published pairs. Those guards were not published before the run, so a model cannot have
+memorised their answers; the task, the triggers and the kind of arithmetic are the published
+ones, and the generator is public. The seed and a SHA-256 of the pairs are printed and
+recorded, and the labels are checked before any review.
 
-A fifth set exists only for the length of a run. ``--sets paired-fresh`` generates 24 new
-pairs from ``--fresh-seed`` (drawn at random when not given), leaving out every expression
-in the published pairs, so no model can have seen them. The seed and a SHA-256 of the pairs
-are printed and recorded, and the labels are checked before any review.
-
-Under its table the report (``sweep.md``, and ``analysis`` in ``sweep.json``) prints the best
-listed shortcut beside each model, every two models compared per template with Holm-adjusted
-p values, which sets are saturated, and, with ``--prereg``, the preregistration's SHA-256 and
-every metric it did not register.
+Under its table the report (``sweep.md``, and ``analysis`` in ``sweep.json``) tests each model
+against the best listed shortcut, compares every two models per template, says which sets
+are saturated, and, with ``--prereg``, prints the preregistration's SHA-256, adjusts only its
+two families of tests (Holm), and names every metric it did not register.
 
 Repeatability: ``--seed`` fixes the opaque repository names every reviewer sees, and
 the effort level is pinned for every model (``--effort``). The models still sample, so
@@ -93,7 +94,7 @@ SETS: dict[str, list[Case]] = {
     "paired": list(PAIRED_CASES),
 }
 
-# Sets with a shortcut list in scripts/syntax_baselines.py, and which list scores them.
+# Sets with a shortcut list in harness/evals/shortcuts.py, and which list scores them.
 SHORTCUT_KINDS = {"same-shape": "same-shape", "paired": "paired", "paired-fresh": "paired"}
 
 # The set built at run time.
@@ -673,9 +674,6 @@ def render_sweep(record: dict) -> str:
 
 
 def run(args: argparse.Namespace) -> int:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("--run needs ANTHROPIC_API_KEY")
-        return 1
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = args.out or Path(".harness") / "evals" / f"sweep-{stamp}"
     budget = Budget(args.max_usd)
@@ -728,7 +726,7 @@ def run(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--models", type=lambda s: s.split(","), default=list(DEFAULT_MODELS))
-    parser.add_argument("--sets", type=lambda s: s.split(","), default=list(SETS))
+    parser.add_argument("--sets", type=lambda s: s.split(","), default=[*SETS, FRESH])
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--effort", choices=EFFORTS, default="medium")
     parser.add_argument("--seed", type=int, default=0)
@@ -758,6 +756,9 @@ def main(argv: list[str] | None = None) -> int:
         except PreregError as exc:
             parser.error(str(exc))
         print(f"preregistration: {args.prereg['path']} sha256 {args.prereg['sha256']}", flush=True)
+    if args.run and not os.environ.get("ANTHROPIC_API_KEY"):
+        print("--run needs ANTHROPIC_API_KEY")
+        return 1
     args.fresh = None
     if FRESH in args.sets:
         seed = args.fresh_seed if args.fresh_seed is not None else secrets.randbelow(2**31)
