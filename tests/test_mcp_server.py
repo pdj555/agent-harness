@@ -12,7 +12,7 @@ import pytest
 pytest.importorskip("mcp", reason="the mcp extra is not installed: uv sync --extra mcp")
 
 import anyio  # noqa: E402
-from harness.mcp_server import build_server  # noqa: E402
+from harness.mcp_server import INPUTS, build_server  # noqa: E402
 from mcp import Client, StdioServerParameters  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
@@ -86,7 +86,7 @@ def test_the_software_rules_run_on_chosen_cases_and_a_wrong_request_is_a_usage_e
     assert (caught["status"], caught["cases"], caught["failures"]) == ("pass", 1, [])
     assert (missed["status"], missed["failures"][0]["id"]) == ("fail", "tracker-special-case")
     wrong_requests = (
-        (bad_set, "unknown set"), (bad_monitor, "unknown offline monitor"), (bad_case, "unknown case"),
+        (bad_set, "unknown set"), (bad_monitor, "wrong argument monitor"), (bad_case, "unknown case"),
         (no_args, "missing argument: monitor, set"), (no_set, "missing argument: set"),
         (no_path, "missing argument: path"), (bad_seed, "a fresh seed only applies"),
     )
@@ -175,9 +175,9 @@ def test_a_wrongly_typed_argument_is_a_usage_error_document(tmp_path):
         ("read_sweep_summary", {"path": "sweep\x00.json"}),
         ("read_sweep_summary", {"path": ""}),
     ]
-    needs = ["set must be", "monitor must be", "cases must be a list of case ids", "cases must be",
-             "fresh_seed must be a whole number", "fresh_seed must be", "fresh_seed must be",
-             "fresh_seed must be", "path must be a file path", "path must be a file path", "path must be"]
+    needs = ["wrong argument set", "wrong argument monitor", "wrong argument cases", "wrong argument cases.1",
+             "wrong argument fresh_seed", "wrong argument fresh_seed", "wrong argument fresh_seed",
+             "wrong argument fresh_seed", "wrong argument path", "wrong argument path", "wrong argument path"]
     for document, message in zip(_call(tmp_path, *calls), needs, strict=True):
         assert (document["status"], document["exit_code"]) == ("usage_error", 2), document
         assert message in document["error"]
@@ -191,3 +191,51 @@ def test_a_sweep_summary_with_a_number_json_cannot_hold_is_refused(tmp_path):
                       ("read_sweep_summary", {"path": "bare.json"}))
     assert nan["status"] == "usage_error" and "NaN or Infinity" in nan["error"]
     assert bare["status"] == "usage_error" and "'analysis' is a required property" in bare["error"]
+
+
+def test_an_unknown_or_missing_argument_is_a_usage_error_document(tmp_path):
+    calls = [
+        ("run_offline_monitor", {"monitor": "spec", "set": "main", "trials": 3}),
+        ("run_offline_monitor", {"monitor": "spec"}),
+        ("list_case_sets", {"verbose": True}),
+        ("read_sweep_summary", {"path": "sweep.json", "strict": False}),
+    ]
+    needs = ["unknown argument: trials", "missing argument: set", "unknown argument: verbose",
+             "unknown argument: strict"]
+    for document, message in zip(_call(tmp_path, *calls), needs, strict=True):
+        assert (document["status"], document["exit_code"]) == ("usage_error", 2), document
+        assert message in document["error"]
+        assert validate.problems(json.dumps(document)) == []
+    assert not (tmp_path / ".harness").exists()  # nothing ran
+
+
+def test_every_tool_declares_a_typed_input_that_admits_no_other_argument(tmp_path):
+    async def scenario():
+        async with Client(build_server(tmp_path)) as client:
+            return {tool.name: tool.input_schema for tool in (await client.list_tools()).tools}
+
+    declared = anyio.run(scenario)
+    assert declared == INPUTS
+    for schema in declared.values():
+        assert schema["additionalProperties"] is False
+        assert all("type" in spec for spec in schema["properties"].values())
+    run = declared["run_offline_monitor"]
+    assert run["required"] == ["monitor", "set"]
+    assert run["properties"]["monitor"]["enum"] == ["software", "spec"]
+    assert run["properties"]["fresh_seed"]["type"] == "integer"
+
+
+def test_a_sweep_that_supports_no_claim_reads_as_a_failed_summary(tmp_path):
+    audit = {"deviations": [{"setting": "trials"}], "primary_not_computed": 0}
+    deviated = {"saturation": [], "prereg": audit,
+                "claims": {"allowed": False, "withheld": "deviated", "reason": "trials"}}
+    (tmp_path / "deviated.json").write_text(json.dumps({**SWEEP, "analysis": deviated}))
+    (tmp_path / "plain.json").write_text(json.dumps(SWEEP))
+    failed, plain = _call(tmp_path, ("read_sweep_summary", {"path": "deviated.json"}),
+                          ("read_sweep_summary", {"path": "plain.json"}))
+    assert (failed["status"], failed["exit_code"]) == ("fail", 1)
+    assert failed["claims"] == {"preregistered": True, "allowed": False,
+                                "reason": "settings deviate from the preregistration: trials"}
+    assert (plain["status"], plain["claims"]["preregistered"]) == ("pass", False)
+    for document in (failed, plain):
+        assert validate.problems(json.dumps(document)) == []

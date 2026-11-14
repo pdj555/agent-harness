@@ -375,7 +375,12 @@ def _sweep_summary(args: argparse.Namespace) -> int:
     for row in sweep["rows"]:
         catch, block = row["catch_rate"]["rate"], row["false_block_rate"]["rate"]
         print(f"{row['model']} {row['set']}: catch {_percent(catch)}, false block {_percent(block)}")
-    return 0
+    claims = document["claims"]
+    if claims["allowed"]:
+        print("claims: the sweep stands as its preregistered run")
+    else:
+        print(f"claims: none ({claims['reason']})")
+    return document["exit_code"]
 
 
 def _percent(value: float | None) -> str:
@@ -447,6 +452,9 @@ def _monitor_eval(args: argparse.Namespace) -> int:
     if fresh:
         note = f"paired-fresh: seed {fresh['seed']}, {fresh['pairs']} pairs"
         print(f"{note}, guards sha256 {fresh['guards_sha256']}", file=sys.stderr if args.json else sys.stdout)
+    if args.monitor in ("software", "spec") and args.trials != 1:
+        message = "--trials applies to a model monitor; the software rules and the spec run once"
+        return stop(message, EXIT_USAGE)
     if args.monitor == "software":
         monitor, trials, name = software_monitor, 1, "software rules"
     elif args.monitor == "spec" and args.specs is not None:

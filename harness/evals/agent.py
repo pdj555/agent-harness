@@ -283,8 +283,36 @@ SWEEP_KEYS = (
 )
 
 
+def sweep_claims(analysis: object) -> dict:
+    """Whether a sweep's report may be read as the preregistered run, from its stored analysis.
+
+    A sweep checked against a preregistration supports claims only if its report says so
+    and it shows no deviation and no missing primary result; the last two are read from the
+    audit itself, so a record written before the report tied them to ``claims`` is judged
+    the same way. A sweep with no preregistration claims nothing and is not a failure.
+    """
+    found = analysis if isinstance(analysis, dict) else {}
+    check = found.get("prereg") if isinstance(found.get("prereg"), dict) else None
+    stated = found.get("claims") if isinstance(found.get("claims"), dict) else {}
+    if check is None:
+        return {"preregistered": False, "allowed": False, "reason": "the sweep had no preregistration"}
+    reasons = []
+    if check.get("deviations"):
+        names = ", ".join(str(d.get("setting")) for d in check["deviations"] if isinstance(d, dict))
+        reasons.append(f"settings deviate from the preregistration: {names}")
+    if check.get("primary_not_computed"):
+        reasons.append(f"preregistered primary results missing: {check['primary_not_computed']}")
+    if not reasons and stated.get("allowed") is not True:
+        reasons.append(str(stated.get("reason") or "the report does not say its claims stand"))
+    return {"preregistered": True, "allowed": not reasons, "reason": "; ".join(reasons) or None}
+
+
 def sweep_summary_document(path: Path) -> dict:
     """A sweep's ``sweep.json`` as a document: its settings, rows and analysis, without per-template data.
+
+    ``claims`` says whether the sweep stands as its preregistered run. One that deviated, is
+    missing a primary result or could not be matched to its preregistration is status
+    "fail", exit 1: the file is a valid summary of a sweep that supports no claim.
 
     The document is checked against the schema before it is returned. A file that is not a
     complete sweep summary (unreadable, not JSON, a key missing or of the wrong type) raises
@@ -303,7 +331,9 @@ def sweep_summary_document(path: Path) -> dict:
     sweep["rows"] = [{k: v for k, v in row.items() if k != "templates"} for row in rows]
     if "analysis" in record:
         sweep["analysis"] = record["analysis"]
-    document = _document("eval sweep-summary", EXIT_PASS, sweep=sweep)
+    claims = sweep_claims(record.get("analysis"))
+    code = EXIT_FAIL if claims["preregistered"] and not claims["allowed"] else EXIT_PASS
+    document = _document("eval sweep-summary", code, sweep=sweep, claims=claims)
     found = problems(document)
     if found:
         raise UsageError(f"{path} is not a sweep summary: {'; '.join(found[:3])}")

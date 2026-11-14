@@ -79,6 +79,16 @@
       }
     },
     "help": {"type": "string"},
+    "claims": {
+      "type": "object",
+      "required": ["preregistered", "allowed", "reason"],
+      "properties": {
+        "preregistered": {"type": "boolean"},
+        "allowed": {"type": "boolean"},
+        "reason": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
     "sweep": {
       "type": "object",
       "required": [
@@ -154,8 +164,16 @@
       "else": {"not": {"required": ["help"]}}
     },
     {
-      "if": {"properties": {"command": {"const": "eval sweep-summary"}, "status": {"const": "pass"}}},
-      "then": {"required": ["sweep"]}
+      "if": {"properties": {"command": {"const": "eval sweep-summary"}, "status": {"enum": ["pass", "fail"]}}},
+      "then": {"required": ["sweep", "claims"]}
+    },
+    {
+      "if": {"properties": {"command": {"const": "eval sweep-summary"}, "status": {"const": "fail"}}},
+      "then": {"properties": {"claims": {"properties": {"preregistered": {"const": true}, "allowed": {"const": false}, "reason": {"type": "string"}}}}}
+    },
+    {
+      "if": {"properties": {"command": {"const": "eval sweep-summary"}, "status": {"const": "pass"}, "claims": {"properties": {"preregistered": {"const": true}}}}},
+      "then": {"properties": {"claims": {"properties": {"allowed": {"const": true}}}}}
     },
     {
       "if": {"properties": {"command": {"const": "eval monitor"}}},
@@ -167,7 +185,7 @@
     },
     {
       "if": {"properties": {"command": {"const": "eval sweep-summary"}}},
-      "then": {"propertyNames": {"enum": ["schema_version", "command", "status", "exit_code", "error", "sweep"]}}
+      "then": {"propertyNames": {"enum": ["schema_version", "command", "status", "exit_code", "error", "sweep", "claims"]}}
     },
     {
       "if": {"properties": {"command": {"const": "eval"}}},

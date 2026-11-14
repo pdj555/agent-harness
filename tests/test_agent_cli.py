@@ -153,6 +153,76 @@ def test_a_sweep_summary_is_read_without_its_per_template_data(capsys, tmp_path)
     assert "m paired: catch 100%, false block 0%" in capsys.readouterr().out
 
 
+def _sweep_with(tmp_path, **analysis) -> str:
+    path = tmp_path / "sweep.json"
+    path.write_text(json.dumps({**SWEEP, "analysis": {"saturation": [], **analysis}}))
+    return str(path)
+
+
+AUDIT = {"deviations": [], "primary_not_computed": 0}
+
+
+@pytest.mark.parametrize(
+    ("analysis", "reason"),
+    [
+        # a deviation, as the run's own report records it
+        ({"prereg": {**AUDIT, "deviations": [{"setting": "trials", "preregistered": 3, "run": 2}]},
+          "claims": {"allowed": False, "withheld": "deviated",
+                     "reason": "settings deviate from the preregistration: trials"}},
+         "settings deviate from the preregistration: trials"),
+        # a missing primary result, in a record written before the report withheld claims for it
+        ({"prereg": {**AUDIT, "primary_not_computed": 1},
+          "claims": {"allowed": True, "withheld": None, "reason": None}},
+         "preregistered primary results missing: 1"),
+        # a preregistration that could not be matched to the run
+        ({"prereg": AUDIT, "claims": {"allowed": False, "withheld": "unverified",
+                                      "reason": "the log has no settings line"}},
+         "the log has no settings line"),
+        # a preregistered report that does not say its claims stand
+        ({"prereg": AUDIT}, "the report does not say its claims stand"),
+    ],
+)
+def test_a_sweep_that_supports_no_claim_is_a_failed_summary(capsys, tmp_path, analysis, reason):
+    path = _sweep_with(tmp_path, **analysis)
+    code, doc, _ = _run(capsys, "eval", "sweep-summary", path, "--json")
+    assert (code, doc["status"], doc["exit_code"]) == (1, "fail", 1)
+    assert doc["claims"] == {"preregistered": True, "allowed": False, "reason": reason}
+    assert doc["sweep"]["rows"] and doc["error"] is None  # the summary is still there to read
+    assert main(["eval", "sweep-summary", path]) == 1
+    assert f"claims: none ({reason})" in capsys.readouterr().out
+
+
+def test_a_sweep_summary_says_whether_its_claims_stand(capsys, tmp_path):
+    stands = {"prereg": AUDIT, "claims": {"allowed": True, "withheld": None, "reason": None}}
+    code, doc, _ = _run(capsys, "eval", "sweep-summary", _sweep_with(tmp_path, **stands), "--json")
+    assert (code, doc["status"]) == (0, "pass")
+    assert doc["claims"] == {"preregistered": True, "allowed": True, "reason": None}
+    # no preregistration: nothing is claimed, and that is not a failure
+    code, doc, _ = _run(capsys, "eval", "sweep-summary", _sweep_with(tmp_path), "--json")
+    assert (code, doc["status"]) == (0, "pass")
+    assert doc["claims"] == {"preregistered": False, "allowed": False,
+                             "reason": "the sweep had no preregistration"}
+    # the schema itself refuses a "pass" for a preregistered sweep whose claims do not stand
+    wrong = {**doc, "claims": {"preregistered": True, "allowed": False, "reason": "deviated"}}
+    assert validate.problems(json.dumps(wrong)) != []
+    assert validate.problems(json.dumps({**wrong, "status": "fail", "exit_code": 1})) == []
+    missing = {k: v for k, v in doc.items() if k != "claims"}
+    assert any("claims" in problem for problem in validate.problems(json.dumps(missing)))
+
+
+@pytest.mark.parametrize("monitor", ["software", "spec"])
+def test_trials_for_a_monitor_that_runs_once_is_a_usage_error(capsys, tmp_path, monitor):
+    argv = ["eval", "monitor", "--monitor", monitor, "--trials", "3", "--out", str(tmp_path / "out")]
+    code, doc, _ = _run(capsys, *argv, "--json")
+    assert (code, doc["status"]) == (2, "usage_error")
+    assert "--trials applies to a model monitor" in doc["error"]
+    assert not (tmp_path / "out").exists()  # nothing ran
+    assert main(argv) == 1  # without --json a wrong request keeps its old exit code
+    assert "--trials applies to a model monitor" in capsys.readouterr().out
+    code, doc, _ = _run(capsys, *argv[:4], "--trials", "1", "--out", str(tmp_path / "out"), "--json")
+    assert doc["status"] in ("pass", "fail") and doc["trials"] == 1
+
+
 def _without(key):
     return lambda d: d.pop(key)
 
