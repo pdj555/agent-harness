@@ -37,9 +37,9 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Sync
         run: uv sync --extra dev --locked
       # The estimate draws the paired-fresh seed, builds the set and keeps the seed in a file; the
@@ -70,7 +70,7 @@ jobs:
       # it holds no historical run output (AGENTS.md, public boundary).
       - name: Keep the full run
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: reviewer-sweep-${{ github.run_id }}
           path: ${{ runner.temp }}/sweep

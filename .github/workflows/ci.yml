@@ -18,10 +18,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.12", "3.13", "3.14"]
+        python: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: ${{ matrix.python }}
       - name: Sync
@@ -38,9 +38,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Clean sync
         run: uv sync --extra dev --extra mcp --locked
       - name: List the case sets
@@ -71,7 +71,9 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.13"
       - name: Sync
         run: uv sync --extra dev --locked
       - name: Dependency audit
