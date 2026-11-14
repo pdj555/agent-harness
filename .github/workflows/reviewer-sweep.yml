@@ -15,6 +15,14 @@ on:
         description: "Reviews per case per model"
         required: true
         default: "3"
+      sets:
+        description: "Case sets, comma separated"
+        required: true
+        default: "main,spec-attacks,same-shape,paired,paired-fresh"
+      prereg:
+        description: "Preregistration the report is checked against"
+        required: true
+        default: "docs/prereg/sweep-3.json"
 
 permissions:
   contents: read
@@ -34,19 +42,30 @@ jobs:
           python-version: "3.12"
       - name: Sync
         run: uv sync --extra dev --locked
+      # The estimate draws the paired-fresh seed, builds the set and keeps the seed in a file; the
+      # run reads that file, so the set that was priced is the set that is reviewed and nobody
+      # chose its seed. A seed passed by hand (--fresh-seed) would be a preregistration deviation.
       - name: Price the sweep (no calls)
         env:
           TRIALS: ${{ inputs.trials }}
           MAX_USD: ${{ inputs.max_usd }}
-        run: uv run python scripts/reviewer_sweep.py --trials "$TRIALS" --max-usd "$MAX_USD"
+          SETS: ${{ inputs.sets }}
+          PREREG: ${{ inputs.prereg }}
+        run: |
+          uv run python scripts/reviewer_sweep.py \
+            --trials "$TRIALS" --max-usd "$MAX_USD" --sets "$SETS" --prereg "$PREREG" \
+            --fresh-seed-file "$RUNNER_TEMP/fresh-seed.json"
       - name: Run the sweep
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TRIALS: ${{ inputs.trials }}
           MAX_USD: ${{ inputs.max_usd }}
-        run: >-
-          uv run python scripts/reviewer_sweep.py --run
-          --trials "$TRIALS" --max-usd "$MAX_USD" --out "$RUNNER_TEMP/sweep"
+          SETS: ${{ inputs.sets }}
+          PREREG: ${{ inputs.prereg }}
+        run: |
+          uv run python scripts/reviewer_sweep.py --run \
+            --trials "$TRIALS" --max-usd "$MAX_USD" --sets "$SETS" --prereg "$PREREG" \
+            --fresh-seed-file "$RUNNER_TEMP/fresh-seed.json" --out "$RUNNER_TEMP/sweep"
       # Every per-case report, kept 90 days. The repository keeps only the summary table:
       # it holds no historical run output (AGENTS.md, public boundary).
       - name: Keep the full run

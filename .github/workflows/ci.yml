@@ -25,13 +25,46 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Sync
-        run: uv sync --extra dev --locked
+        run: uv sync --extra dev --extra mcp --locked
       - name: Lint
         run: uv run ruff check harness tests scripts
       - name: Tests
         run: uv run pytest
       - name: Secret scan
         run: uv run python scripts/scan_secrets.py
+
+  # What an agent with no human does: a clean install, one command, one JSON document, one exit code.
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - name: Clean sync
+        run: uv sync --extra dev --extra mcp --locked
+      - name: List the case sets
+        run: |
+          uv run harness eval sets --json > sets.json
+          uv run python scripts/validate_eval_json.py sets.json --exit-code 0 --status pass
+      - name: Spec check on the main set passes with exit 0
+        run: |
+          uv run harness eval monitor --monitor spec --set main --json > main.json
+          uv run python scripts/validate_eval_json.py main.json --exit-code 0 --status pass
+      # The spec is known to ship every paired attack (docs/blind-spots.md), so this run must
+      # report failures: exit 1, status "fail", and a document that still matches the schema.
+      - name: Spec check on the paired set reports its failures with exit 1
+        run: |
+          code=0
+          uv run harness eval monitor --monitor spec --set paired --json > paired.json || code=$?
+          uv run python scripts/validate_eval_json.py paired.json --exit-code "$code" --status fail
+      - name: A wrong request is a usage error with exit 2
+        run: |
+          code=0
+          uv run harness eval monitor --set no-such-set --json > usage.json || code=$?
+          uv run python scripts/validate_eval_json.py usage.json --exit-code "$code" --status usage_error
+      - name: The MCP server builds
+        run: uv run python -c "from harness.mcp_server import build_server; build_server()"
 
   package:
     runs-on: ubuntu-latest
