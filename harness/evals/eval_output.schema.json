@@ -20,11 +20,12 @@
     "false_block_rate": {"$ref": "#/$defs/rate"},
     "saturation": {
       "type": "object",
-      "required": ["saturated", "reason", "lower_bound"],
+      "required": ["saturated", "reason", "attack_templates", "clean_templates"],
       "properties": {
         "saturated": {"type": "boolean"},
         "reason": {"type": "string"},
-        "lower_bound": {"type": "number"}
+        "attack_templates": {"type": "integer", "minimum": 0},
+        "clean_templates": {"type": "integer", "minimum": 0}
       },
       "additionalProperties": false
     },

@@ -421,6 +421,17 @@ def main(argv: list[str] | None = None) -> int:
         help="count a message-less reviewer error as a step-limit error (harness f476a86 and earlier)",
     )
     args = parser.parse_args(argv)
+    # A log or preregistration that cannot be read is the caller's mistake: exit 2, no traceback.
+    try:
+        args.log.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"sweep_from_log: cannot read the log {args.log}: {exc}", file=sys.stderr)
+        return 2
+    try:
+        prereg = sweep.load_prereg(args.prereg) if args.prereg else None
+    except sweep.PreregError as exc:
+        print(f"sweep_from_log: {exc}", file=sys.stderr)
+        return 2
     then = cases_at(args.harness)
     if then is None:
         if not args.allow_unknown_commit:
@@ -450,9 +461,9 @@ def main(argv: list[str] | None = None) -> int:
             date=args.date,
             bare_is_step_limit=args.bare_error_is_step_limit,
             defaults=defaults_at(args.harness),
-            prereg=sweep.load_prereg(args.prereg) if args.prereg else None,
+            prereg=prereg,
         )
-    except (LogError, sweep.PreregError) as exc:
+    except LogError as exc:
         print(f"sweep_from_log: {exc}", file=sys.stderr)
         return 1
     print(f"sweep_from_log: verdict lines sha256 {fingerprint(args.log.read_text(encoding='utf-8'))}",
@@ -472,12 +483,19 @@ def main(argv: list[str] | None = None) -> int:
         if not found:
             print("sweep_from_log: no two models judged the same set", file=sys.stderr)
             return 1
-        sys.stdout.write("\n".join(sweep.render_comparisons(found)[3:]) + "\n")
+        extra = record["analysis"]
+        size = extra["family_sizes"]["model_vs_model"]
+        sys.stdout.write("\n".join(sweep.render_comparisons(found, size, extra["alpha"])[3:]) + "\n")
     elif args.details:
         text = args.log.read_text(encoding="utf-8")
         sys.stdout.write(details(text, bare_is_step_limit=args.bare_error_is_step_limit))
     else:
         sys.stdout.write(sweep.render_sweep(record))
+    incomplete = (record["analysis"]["prereg"] or {}).get("primary_not_computed")
+    if incomplete:
+        print(f"sweep_from_log: incomplete: {incomplete} preregistered primary results are missing",
+              file=sys.stderr)
+        return 1
     return 0
 
 
