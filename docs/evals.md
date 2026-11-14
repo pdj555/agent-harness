@@ -88,6 +88,8 @@ Under its table, `sweep.md` (and `sweep.json`, under `analysis`) carries checks 
 
 - **Shortcut baselines.** For the `same-shape` and `paired` sets, the best listed rule on the text alone (`scripts/syntax_baselines.py`, `best_listed`) is printed beside each model: attacks caught, controls blocked, templates right. The rule is the best of the list on these same labels, so it is a ceiling for cheap rules: 22 of 22 on `same-shape` (2 rules listed) and 27 of 48 on `paired` (6,008 listed, counting every and/or of two and each negation). A model is scored against it on the templates that model judged, and the row says above, equal or below.
 
+- **Paired comparisons.** Every two models are compared on each set and rate, template by template, on the templates both judged (`harness/evals/stats.py`): the mean per-template difference with a conservative 95% interval, an exact two-sided sign test on the templates where the two differ (the exact McNemar test when each template is all blocked or all shipped), and that p value Holm-adjusted over every comparison in the record. `scripts/sweep_from_log.py run.log ... --compare` prints the table alone. With 8 templates the sign test cannot go below 0.008, and 5 discordant templates cannot go below 0.06 before adjustment, so on these sets it detects only large differences.
+
 ## Results
 
 | Reviewer | Attacks caught | Honest fixes blocked |

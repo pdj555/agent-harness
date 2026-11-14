@@ -54,6 +54,7 @@ from harness.evals.monitor import (
     template,
     write_report,
 )
+from harness.evals.stats import holm, paired_difference
 from harness.review import review_diff
 from harness.tools import tool_specs
 from harness.verification import run_checks
@@ -257,9 +258,41 @@ def shortcut_baselines(record: dict) -> list[dict]:
     return out
 
 
+COMPARED = {"catch_rate": True, "false_block_rate": False}  # metric -> whether it reads attacks
+
+
+def comparisons(record: dict) -> list[dict]:
+    """Every two models on every set and rate, template by template, Holm-adjusted together.
+
+    Only templates both models judged count. The adjustment covers every comparison in the
+    record, so adding a model or a set makes each one harder to pass.
+    """
+    out = []
+    by_set: dict[str, list[dict]] = {}
+    for row in record["rows"]:
+        if "templates" in row:
+            by_set.setdefault(row["set"], []).append(row)
+    for name, rows in by_set.items():
+        for i, first in enumerate(rows):
+            for second in rows[i + 1:]:
+                for metric, attacks in COMPARED.items():
+                    rates = [
+                        {t: o["rate"] for t, o in row["templates"].items()
+                         if o["attack"] == attacks and o["rate"] is not None}
+                        for row in (first, second)
+                    ]
+                    result = paired_difference(*rates)
+                    if result["templates"]:
+                        out.append({"set": name, "metric": metric, "first": first["model"],
+                                    "second": second["model"], **result})
+    for entry, adjusted in zip(out, holm([entry["p"] for entry in out]), strict=True):
+        entry["p_holm"] = adjusted
+    return out
+
+
 def analysis(record: dict) -> dict:
     """What the report says beyond the table, computed from the record's rows alone."""
-    return {"shortcut_baselines": shortcut_baselines(record)}
+    return {"shortcut_baselines": shortcut_baselines(record), "comparisons": comparisons(record)}
 
 
 def sweep_row(
@@ -289,6 +322,28 @@ def _pct(value: float | None) -> str:
 
 def _share(count: int, of: int) -> str:
     return f"{count / of:.0%}" if of else "n/a"
+
+
+def render_comparisons(found: list[dict]) -> list[str]:
+    lines = [
+        "",
+        "## Paired comparisons",
+        "",
+        "First model minus second, per template both judged. The interval is a conservative 95% "
+        "interval on the mean difference; p is an exact two-sided sign test on the templates where "
+        f"the two differ, Holm-adjusted over all {len(found)} comparisons here.",
+        "",
+        "| Set | Rate | First | Second | Templates | Difference | First higher / lower | p | p (Holm) |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for c in found:
+        low, high = c["ci95"]
+        lines.append(
+            f"| {c['set']} | {c['metric'].replace('_', ' ')} | {c['first']} | {c['second']} "
+            f"| {c['templates']} | {c['difference']:+.0%} ({low:+.0%} to {high:+.0%}) "
+            f"| {c['higher']} / {c['lower']} | {c['p']:.2f} | {c['p_holm']:.2f} |"
+        )
+    return lines
 
 
 def render_baselines(baselines: list[dict]) -> list[str]:
@@ -346,6 +401,8 @@ def render_sweep(record: dict) -> str:
     extra = record.get("analysis") or {}
     if extra.get("shortcut_baselines"):
         lines += render_baselines(extra["shortcut_baselines"])
+    if extra.get("comparisons"):
+        lines += render_comparisons(extra["comparisons"])
     return "\n".join(lines) + "\n"
 
 

@@ -25,7 +25,6 @@ import argparse
 import ast
 import io
 import itertools
-import math
 import random
 import re
 import sys
@@ -35,6 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from harness.evals.cases import PAIRED_CASES, SAME_SHAPE_CASES, Case  # noqa: E402
+from harness.evals.stats import sign_test  # noqa: E402
 
 SETS = {"same-shape": SAME_SHAPE_CASES, "paired": PAIRED_CASES}
 TRIGGER = re.compile(r"bit_length|len\(str|environ|>>|<<|\b([5-9]|\d{2,})\b")
@@ -289,13 +289,6 @@ def shortcut_table(cases: list[Case]) -> dict:
         if abs(d) > abs(worst[0]):
             worst = (d, label)
     return {"rows": rows, "worst_combination": worst, "pairs": len(pairs)}
-
-
-def sign_test(attack_only: int, control_only: int) -> float:
-    """Exact two-sided sign test: chance of a split this lopsided if the cue ignores the label."""
-    n = attack_only + control_only
-    low = min(attack_only, control_only)
-    return min(1.0, 2 * sum(math.comb(n, k) for k in range(low + 1)) / 2**n) if n else 1.0
 
 
 def tokens(text: str) -> list[str]:

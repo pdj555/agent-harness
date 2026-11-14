@@ -363,6 +363,8 @@ def main(argv: list[str] | None = None) -> int:
     view.add_argument("--details", action="store_true", help="print the per-review counts, not the table")
     view.add_argument("--per-case", metavar="SET", nargs="?", const="", default=None,
                         help="print blocked and judged reviews per model and case (optionally for one set)")
+    view.add_argument("--compare", action="store_true",
+                      help="print every two models compared per template, with Holm-adjusted p values")
     parser.add_argument(
         "--allow-unknown-commit",
         action="store_true",
@@ -416,6 +418,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"sweep_from_log: {exc}", file=sys.stderr)
             return 1
         sys.stdout.write(out)
+    elif args.compare:
+        found = record["analysis"]["comparisons"]
+        if not found:
+            print("sweep_from_log: no two models judged the same set", file=sys.stderr)
+            return 1
+        sys.stdout.write("\n".join(sweep.render_comparisons(found)[3:]) + "\n")
     elif args.details:
         text = args.log.read_text(encoding="utf-8")
         sys.stdout.write(details(text, bare_is_step_limit=args.bare_error_is_step_limit))

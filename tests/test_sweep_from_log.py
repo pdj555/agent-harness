@@ -349,3 +349,51 @@ def test_a_model_that_reads_the_arithmetic_scores_above_the_paired_shortcut():
     assert (reads["right"], reads["against_shortcut"]) == (48, "above")
     assert (blocks_all["right"], blocks_all["shortcut_right_on_same_templates"]) == (24, 27)
     assert blocks_all["against_shortcut"] == "below"
+
+
+def _three_models_on_same_shape() -> str:
+    attacks = [case.id for case in SETS["same-shape"] if case.label != "clean"]
+    misses_seven = _all("same-shape")
+    for case_id in attacks[:7]:
+        misses_seven[case_id] = ["ship", "ship"]
+    never_judged = _all("same-shape")
+    never_judged[attacks[0]] = [REFUSAL, REFUSAL]
+    return _log([
+        ("claude-haiku-5-5", "same-shape", _all("same-shape"), 0.01),
+        ("claude-sonnet-5-5", "same-shape", misses_seven, 0.02),
+        ("claude-opus-5-5", "same-shape", never_judged, 0.03),
+    ])
+
+
+def test_models_are_compared_per_template_with_a_holm_adjustment():
+    record = from_log.rebuild(_three_models_on_same_shape(), harness="x", date="d")
+    found = {(c["first"], c["second"], c["metric"]): c for c in record["analysis"]["comparisons"]}
+    assert len(found) == 6  # three pairs of models, two rates, one set
+    catch = found["claude-haiku-5-5", "claude-sonnet-5-5", "catch_rate"]
+    assert (catch["templates"], catch["higher"], catch["lower"]) == (8, 7, 0)
+    assert catch["difference"] == pytest.approx(7 / 8)
+    assert catch["p"] == pytest.approx(2 / 2**7) and catch["ci95"][0] > 0
+    # the smallest of six p values is multiplied by six
+    assert catch["p_holm"] == pytest.approx(6 * 2 / 2**7)
+    # Opus judged 7 of the 8 attack templates, so its pairs rest on 7
+    against_opus = found["claude-sonnet-5-5", "claude-opus-5-5", "catch_rate"]
+    assert (against_opus["templates"], against_opus["higher"], against_opus["lower"]) == (7, 0, 6)
+    assert against_opus["p_holm"] == pytest.approx(5 * 2 / 2**6)
+    tie = found["claude-haiku-5-5", "claude-opus-5-5", "false_block_rate"]
+    assert (tie["templates"], tie["difference"], tie["p"], tie["p_holm"]) == (14, 0, 1.0, 1.0)
+    assert tie["ci95"][0] < 0 < tie["ci95"][1]
+
+
+def test_compare_prints_the_comparisons_and_refuses_a_single_model(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(from_log, "cases_at", lambda commit: None)
+    log = tmp_path / "run.log"
+    log.write_text(_three_models_on_same_shape(), encoding="utf-8")
+    argv = [str(log), "--harness", "x", "--date", "d", "--allow-unknown-commit", "--compare"]
+    assert from_log.main(argv) == 0
+    out = capsys.readouterr().out
+    assert "Holm-adjusted over all 6 comparisons" in out
+    assert "| same-shape | catch rate | claude-haiku-5-5 | claude-sonnet-5-5 | 8 | +88% (+3% to +100%) " \
+           "| 7 / 0 | 0.02 | 0.09 |" in out
+    log.write_text(_log([("claude-haiku-5-5", "spec-attacks", _all("spec-attacks"), 0.01)]), encoding="utf-8")
+    assert from_log.main(argv) == 1
+    assert "no two models" in capsys.readouterr().err
