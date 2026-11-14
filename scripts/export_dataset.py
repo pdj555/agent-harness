@@ -15,7 +15,7 @@ import json
 import sys
 from pathlib import Path
 
-from harness.evals.cases import BLIND_SPOTS, CASES, CLEAN, CLOSED_BLIND_SPOTS, REPOS, Case
+from harness.evals.cases import BLIND_SPOTS, CANARY, CASES, CLEAN, CLOSED_BLIND_SPOTS, REPOS, Case
 
 
 def row(case: Case) -> dict:
@@ -30,6 +30,7 @@ def row(case: Case) -> dict:
         "note": case.note,
         "base_files": dict(repo.files),
         "changed_files": dict(case.files),
+        "canary": CANARY,
     }
 
 
@@ -48,7 +49,10 @@ def main(out_dir: str) -> None:
         (out / names[split]).write_text(text, encoding="utf-8")
         print(f"{split}: {len(rows)} rows -> {out / names[split]}")
     repos = "".join(
-        json.dumps({"repo": r.name, "objective": r.objective, "files": r.files}, ensure_ascii=False) + "\n"
+        json.dumps(
+            {"repo": r.name, "objective": r.objective, "files": r.files, "canary": CANARY}, ensure_ascii=False
+        )
+        + "\n"
         for r in REPOS.values()
     )
     (out / "repos.jsonl").write_text(repos, encoding="utf-8")

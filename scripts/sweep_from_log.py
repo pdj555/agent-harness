@@ -57,6 +57,9 @@ _PREFIX = re.compile("^[^\t]*\t[^\t]*\t﻿?\\d{4}-\\d\\d-\\d\\dT[\\d:.]+Z ")
 _REVIEW = re.compile(r"^(?P<case>[a-z0-9-]+) \[(?P<trial>\d+)/(?P<trials>\d+)\] (?P<verdict>.*)$")
 _SPENT = re.compile(r"^(?P<model>\S+) (?P<set>\S+): spent \$(?P<spent>[\d.]+) of \$(?P<cap>[\d.]+)$")
 _COMMAND = re.compile(r"reviewer_sweep\.py(?P<args>.*\s--run\b.*)$")
+_FRESH = re.compile(
+    r"^paired-fresh: seed (?P<seed>\d+), (?P<pairs>\d+) pairs, guards sha256 (?P<sha>[0-9a-f]{64})$"
+)
 _BARE = "reviewer failed:"
 CASES_FILE = "harness/evals/cases.py"
 
@@ -123,9 +126,34 @@ def settings(text: str, defaults: dict | None = None) -> dict:
     return found
 
 
+def fresh_set(text: str) -> dict | None:
+    """Rebuild the run's paired-fresh set from the seed its log printed, and check it is the same set.
+
+    Returns None when the log reviewed no fresh set. The set is generated again by this
+    checkout's generator; a different SHA-256 means the generator changed since the run, so
+    the verdicts cannot be scored and the log is refused.
+    """
+    lines = [m for m in (_FRESH.match(_strip(raw)) for raw in text.splitlines()) if m]
+    if not lines:
+        return None
+    logged = lines[-1]
+    try:
+        fresh = sweep.fresh_paired(int(logged["seed"]))
+    except ValueError as error:
+        raise LogError(str(error)) from error
+    if fresh["guards_sha256"] != logged["sha"] or fresh["pairs"] != int(logged["pairs"]):
+        raise LogError(
+            f"paired-fresh seed {logged['seed']} now generates a different set than the run reviewed; "
+            "check the run's commit out to score its log"
+        )
+    return fresh
+
+
 def results_for(block: dict, *, bare_is_step_limit: bool = False) -> tuple[list[CaseResult], int]:
     """One CaseResult per case in the set, holding the verdicts the log printed for it."""
     cases = sweep.SETS.get(block["set"])
+    if cases is None and block["set"] == sweep.FRESH:
+        raise LogError("the log reviews paired-fresh but does not print its seed")
     if cases is None:
         raise LogError(f"unknown set {block['set']}")
     reviewed = {case_id for case_id, *_ in block["reviews"]}
@@ -175,6 +203,7 @@ def rebuild(
     """The record ``reviewer_sweep.py --run`` would have written, from its log."""
     rows, previous, trials, cap = [], 0.0, None, None
     unreviewed: dict[str, list[str]] = {}
+    fresh = fresh_set(text)
     for block in parse(text):
         results, block_trials = results_for(block, bare_is_step_limit=bare_is_step_limit)
         partial = [r.id for r in results if 0 < r.trials < block_trials]
@@ -198,6 +227,8 @@ def rebuild(
         "unreviewed_cases": unreviewed,
         "rows": rows,
     }
+    if fresh:
+        record["fresh"] = fresh
     record["analysis"] = sweep.analysis(record)
     return record
 
@@ -385,7 +416,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"sweep_from_log: commit {args.harness} not found; scoring with this checkout's cases",
               file=sys.stderr)
     else:
-        logged = list(dict.fromkeys(block["set"] for block in _blocks_or_none(args.log)))
+        # The fresh set is generated, not kept in the case file; rebuild() checks its SHA-256 instead.
+        logged = list(dict.fromkeys(
+            block["set"] for block in _blocks_or_none(args.log) if block["set"] != sweep.FRESH
+        ))
         try:
             changed = changed_cases(then, logged)
         except LogError as exc:

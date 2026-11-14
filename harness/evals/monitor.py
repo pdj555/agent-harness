@@ -30,7 +30,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from harness.evals.cases import ATTACKS, CASES, CLEAN, DIFFICULTIES, REPOS, Case
+from harness.evals.cases import ATTACKS, CANARY_GUID, CASES, CLEAN, DIFFICULTIES, REPOS, Case
 from harness.evals.specs import SPECS
 from harness.isolation import Stage, ensure_git_repo
 from harness.review import inspect_change, review_diff
@@ -57,8 +57,20 @@ def opaque_name(case_id: str, salt: str) -> str:
     return "repo-" + hashlib.sha256(f"{salt}:{case_id}".encode()).hexdigest()[:10]
 
 
+def with_canary(text: str) -> str:
+    """The file's text ending in a comment that holds the canary GUID and nothing else.
+
+    The comment says nothing about evals, so it does not tell a reviewer it is being tested,
+    and every file of every case carries the same line, so it does not tell cases apart.
+    """
+    return text + ("" if text.endswith("\n") else "\n") + f"# {CANARY_GUID}\n"
+
+
 def build_case(case: Case, workdir: Path, *, salt: str = "") -> Stage:
-    """A Git repository at the buggy base, with the case's change on top, uncommitted."""
+    """A Git repository at the buggy base, with the case's change on top, uncommitted.
+
+    Every file, in the base and in the change, ends with the canary comment.
+    """
     repo = REPOS[case.repo]
     name = opaque_name(case.id, salt)
     root = workdir / name
@@ -66,7 +78,7 @@ def build_case(case: Case, workdir: Path, *, salt: str = "") -> Stage:
         shutil.rmtree(root)
     root.mkdir(parents=True)
     for rel, text in repo.files.items():
-        (root / rel).write_text(text, encoding="utf-8")
+        (root / rel).write_text(with_canary(text), encoding="utf-8")
     ensure_git_repo(root)
     for rel, text in case.files.items():
         path = root / rel
@@ -74,7 +86,7 @@ def build_case(case: Case, workdir: Path, *, salt: str = "") -> Stage:
             path.unlink(missing_ok=True)
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
+            path.write_text(with_canary(text), encoding="utf-8")
     return Stage(id=name, source=root, root=root)
 
 

@@ -15,6 +15,11 @@ differ in the condition; a three-feature token rule scores 22 of 22 on it. ``pai
 24 generated pairs of attack and control; no shortcut on a list fixed beforehand points
 one way (``scripts/generate_paired.py``, ``scripts/syntax_baselines.py``).
 
+A fifth set exists only for the length of a run. ``--sets paired-fresh`` generates 24 new
+pairs from ``--fresh-seed`` (drawn at random when not given), leaving out every expression
+in the published pairs, so no model can have seen them. The seed and a SHA-256 of the pairs
+are printed and recorded, and the labels are checked before any review.
+
 Repeatability: ``--seed`` fixes the opaque repository names every reviewer sees, and
 the effort level is pinned for every model (``--effort``). The models still sample, so
 each case runs ``--trials`` times and every rate carries an exact 95% interval.
@@ -23,8 +28,10 @@ each case runs ``--trials`` times and every rate carries an exact 95% interval.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -39,9 +46,11 @@ from harness.evals.cases import (
     CASES,
     CLOSED_BLIND_SPOTS,
     PAIRED_CASES,
+    PAIRED_GUARDS,
     REPOS,
     SAME_SHAPE_CASES,
     Case,
+    paired_cases,
 )
 from harness.evals.monitor import (
     NO_NETWORK,
@@ -81,7 +90,46 @@ SETS: dict[str, list[Case]] = {
 }
 
 # Sets with a shortcut list in scripts/syntax_baselines.py, and which list scores them.
-SHORTCUT_KINDS = {"same-shape": "same-shape", "paired": "paired"}
+SHORTCUT_KINDS = {"same-shape": "same-shape", "paired": "paired", "paired-fresh": "paired"}
+
+# The set built at run time. FRESH_SEARCH is the search generate_paired.py runs for it.
+FRESH = "paired-fresh"
+FRESH_SEARCH = {"pairs": 24, "steps": 80_000, "sample": 4_000}
+
+
+def fresh_paired(seed: int) -> dict:
+    """Build the paired-fresh set from ``seed``, check its labels, and register it in ``SETS``.
+
+    Pairs that reuse an expression from the published set are left out, so every guard is
+    one no reviewer saw in an earlier run. A set whose labels fail ``verify`` is refused.
+    """
+    import generate_paired
+
+    published = frozenset(
+        generate_paired.canonical(syntax_baselines.expression(guard))
+        for pair in PAIRED_GUARDS
+        for guard in pair
+    )
+    out = generate_paired.generate(seed=seed, exclude=published, **FRESH_SEARCH)
+    cases = paired_cases(out["guards"], stem="ledger-fresh")
+    problems = generate_paired.verify(cases)
+    if problems:
+        raise ValueError(f"paired-fresh seed {seed} built a set with wrong labels: {'; '.join(problems[:3])}")
+    SETS[FRESH] = cases
+    digest = hashlib.sha256(json.dumps(out["guards"]).encode()).hexdigest()
+    return {
+        "seed": seed,
+        "pairs": len(out["guards"]),
+        "guards_sha256": digest,
+        "excludes_published_expressions": True,
+        "worst_listed_imbalance": out["worst_imbalance"],
+        "generator": "scripts/generate_paired.py",
+    }
+
+
+def fresh_line(fresh: dict) -> str:
+    """The line a run prints so that its log alone can rebuild the set."""
+    return f"{FRESH}: seed {fresh['seed']}, {fresh['pairs']} pairs, guards sha256 {fresh['guards_sha256']}"
 
 # The estimate's assumptions, printed with every estimate. Code and JSON run near 3 characters
 # per token, so 3 overstates the count for prose. A review takes a few model steps (read a file,
@@ -419,6 +467,12 @@ def render_sweep(record: dict) -> str:
         "| Model | Set | Attacks caught | Honest fixes blocked | Judged | Errors | Cost |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
+    fresh = record.get("fresh")
+    if fresh:
+        lines[2] += (
+            f" The paired-fresh set is {fresh['pairs']} pairs generated at run time "
+            f"from seed {fresh['seed']} (guards sha256 {fresh['guards_sha256'][:12]})."
+        )
     unreviewed = record.get("unreviewed_cases") or {}
     for row in record["rows"]:
         errors = str(row["reviewer_errors"])
@@ -482,6 +536,8 @@ def run(args: argparse.Namespace) -> int:
         "spent_usd": round(budget.spent, 4),
         "rows": rows,
     }
+    if args.fresh:
+        record["fresh"] = args.fresh
     record["analysis"] = analysis(record)
     (out / "sweep.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     (out / "sweep.md").write_text(render_sweep(record), encoding="utf-8")
@@ -496,6 +552,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--effort", choices=EFFORTS, default="medium")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--fresh-seed", type=int, default=None,
+                        help="seed for --sets paired-fresh; drawn at random and recorded when not given")
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--max-errors", type=int, default=5)
     parser.add_argument("--max-usd", type=float, default=40.0, help="hard cap on spend for the whole sweep")
@@ -507,14 +565,27 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    unknown = [m for m in args.models if m not in PRICES] + [s for s in args.sets if s not in SETS]
+    unknown = [m for m in args.models if m not in PRICES] + [s for s in args.sets if s not in (*SETS, FRESH)]
     if unknown:
         parser.error(f"unknown model or set: {', '.join(unknown)}")
     if args.trials < 1:
         parser.error("--trials must be at least 1")
+    args.fresh = None
+    if FRESH in args.sets:
+        seed = args.fresh_seed if args.fresh_seed is not None else secrets.randbelow(2**31)
+        try:
+            args.fresh = fresh_paired(seed)
+        except ValueError as exc:
+            print(exc)
+            return 1
+        print(fresh_line(args.fresh), flush=True)
+    elif args.fresh_seed is not None:
+        parser.error("--fresh-seed needs --sets to include paired-fresh")
     if args.run:
         return run(args)
     report = estimate(args.models, args.sets, args.trials)
+    if args.fresh:
+        report["fresh"] = args.fresh
     print(json.dumps(report, indent=2))
     print(f"estimated total: ${report['total_usd']:.2f}; --run stops at --max-usd (now ${args.max_usd:.2f})")
     return 0

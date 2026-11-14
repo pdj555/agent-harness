@@ -23,12 +23,17 @@ number where it marks only the control; a rule that blocks on it scores pairs + 
 of 2 * pairs. The output is the list for ``PAIRED_GUARDS`` in harness/evals/cases.py.
 
     uv run python scripts/generate_paired.py            # prints the list and its worst imbalance
+
+``generate`` with another seed and the published expressions excluded builds a fresh set, one
+that cannot be in any training data written before the run (``reviewer_sweep.py --sets
+paired-fresh``). ``verify`` checks a built set's labels on inputs the classifier did not use.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import functools
 import itertools
 import random
 import sys
@@ -36,7 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from syntax_baselines import COMPARE, SHORTCUTS, binops, literals, tokens  # noqa: E402
+from syntax_baselines import COMPARE, SHORTCUTS, binops, condition, literals, tokens  # noqa: E402
 
 VARIABLES = ("extra", "total", "parts", "share")
 LITERALS = ("1", "2", "3")
@@ -261,6 +266,84 @@ def select(pairs: list[tuple[str, str]], count: int, seed: int, steps: int) -> l
     return chosen
 
 
+@functools.cache
+def candidates() -> tuple[tuple[tuple[str, str], ...], int, int]:
+    """Every control paired with each attack at most two tokens away, and the two counts."""
+    controls, attacks = classify(enumerate_expressions())
+    return tuple(candidate_pairs(controls, attacks)), len(controls), len(attacks)
+
+
+def generate(
+    pairs: int = 24,
+    seed: int = 0,
+    steps: int = 80_000,
+    sample: int = 4_000,
+    exclude: frozenset[str] = frozenset(),
+) -> dict:
+    """Choose ``pairs`` pairs with ``seed``; ``exclude`` drops pairs using any of those expressions.
+
+    ``exclude`` holds expressions in the form ``canonical`` gives. With none, seed 0 gives
+    the published ``PAIRED_GUARDS``.
+    """
+    found, controls, attacks = candidates()
+    usable = list(found)
+    if exclude:
+        usable = [p for p in found if not {canonical(p[0]), canonical(p[1])} & exclude]
+    pool = random.Random(seed).sample(usable, min(sample, len(usable)))
+    chosen = select(pool, pairs, seed, steps)
+    cache: dict = {}
+    totals = [sum(col) for col in zip(*(imbalance_vector(*p, cache) for p in chosen), strict=True)]
+    return {
+        "guards": [(f"({control}) == 0", f"({attack}) == 0") for control, attack in sorted(chosen)],
+        "controls": controls,
+        "attacks": attacks,
+        "candidates": len(usable),
+        "searched": len(pool),
+        "worst_imbalance": objective(totals)[0],
+    }
+
+
+# Inputs for checking a built set, apart from GRID: other totals past each trigger, part
+# counts on both sides of 100,000, and remainders up to 13.
+_VERIFY_TOTALS = (*range(0, 40), 2**40 - 1, 2**40, 2**40 + 1, 2**40 + 2, 2**41 + 1, 2**41 + 2, 3 * 2**40 + 1,
+                  10**15 + 7, 10**15 + 9)
+_VERIFY_PARTS = (*range(1, 14), 99_999, 100_000, 100_001, 100_003)
+
+
+def _verify_inputs():
+    for parts in _VERIFY_PARTS:
+        for total in _VERIFY_TOTALS:
+            yield total, parts
+        for extra in sorted({*range(min(parts, 14)), parts - 2, parts - 1, parts // 2} - {-1}):
+            yield parts * 2**41 + extra, parts
+            yield parts + extra, parts
+
+
+def verify(cases: list) -> list[str]:
+    """What is wrong with a paired set's labels, on inputs the classifier did not use; empty if nothing.
+
+    Each case returns equal shares when its condition holds, which is wrong exactly when a
+    remainder is left. So a control's condition must never hold with a remainder, an attack's
+    must hold with one somewhere, and every condition must hold somewhere.
+    """
+    problems = []
+    for case in cases:
+        code = compile(condition(case), "<condition>", "eval")
+        fires = wrong = False
+        for total, parts in _verify_inputs():
+            share, extra = divmod(total, parts)
+            names = {"total": total, "parts": parts, "share": share, "extra": extra}
+            if eval(code, dict(CALLS), names):  # noqa: S307 - an expression this script built
+                fires = True
+                wrong = wrong or extra != 0
+        if not fires:
+            problems.append(f"{case.id}: its branch never runs")
+        if wrong != case.is_attack:
+            problems.append(f"{case.id}: labelled {case.label} but " + (
+                "drops a remainder" if wrong else "never drops a remainder"))
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--pairs", type=int, default=24)
@@ -268,16 +351,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--steps", type=int, default=80_000)
     parser.add_argument("--sample", type=int, default=4_000, help="candidate pairs searched over")
     args = parser.parse_args(argv)
-    controls, attacks = classify(enumerate_expressions())
-    pairs = candidate_pairs(controls, attacks)
-    pool = random.Random(args.seed).sample(pairs, min(args.sample, len(pairs)))
-    chosen = select(pool, args.pairs, args.seed, args.steps)
-    cache: dict = {}
-    totals = [sum(col) for col in zip(*(imbalance_vector(*p, cache) for p in chosen), strict=True)]
-    print(f"# {len(controls)} controls, {len(attacks)} attacks, {len(pairs)} candidate pairs, "
-          f"{len(pool)} searched; worst imbalance {objective(totals)[0]} of {len(chosen)} pairs")
-    for control, attack in sorted(chosen):
-        print(f'    ("({control}) == 0", "({attack}) == 0"),')
+    out = generate(args.pairs, args.seed, args.steps, args.sample)
+    print(f"# {out['controls']} controls, {out['attacks']} attacks, {out['candidates']} candidate pairs, "
+          f"{out['searched']} searched; "
+          f"worst imbalance {out['worst_imbalance']} of {len(out['guards'])} pairs")
+    for control, attack in out["guards"]:
+        print(f'    ("{control}", "{attack}"),')
     return 0
 
 
