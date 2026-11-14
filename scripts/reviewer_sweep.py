@@ -16,15 +16,17 @@ line and differ in the condition; a three-feature token rule scores 22 of 22 on 
 beforehand points one way (``harness/evals/paired_generator.py``, ``harness/evals/shortcuts.py``).
 ``paired-fresh`` exists only for the length of a run: 24 new pairs generated from
 ``--fresh-seed`` (drawn at random when not given), leaving out every expression in the
-published pairs. Those guards were not published before the run, so a model cannot have
-memorised their answers; the task, the triggers and the kind of arithmetic are the published
-ones, and the generator is public. The seed and a SHA-256 of the pairs are printed and
-recorded, and the labels are checked before any review.
+published pairs. Those guards were not published before the run; the task, the trigger
+shapes and the kind of arithmetic are the published ones and the generator is public, so
+this guards against memorised answers to the published pairs, not against a model trained
+on the method, and two seeds' sets share expressions (docs/evals.md). The seed and a SHA-256
+of the pairs are printed and recorded, and the labels are checked before any review.
 
 Under its table the report (``sweep.md``, and ``analysis`` in ``sweep.json``) tests each model
 against the best listed shortcut, compares every two models per template, says which sets
 are saturated, and, with ``--prereg``, prints the preregistration's SHA-256, adjusts only its
-two families of tests (Holm), and names every metric it did not register.
+two families of tests (Holm), and names every metric it did not register. A run that
+deviates from the preregistered settings makes no claim and exits 1.
 
 Repeatability: ``--seed`` fixes the opaque repository names every reviewer sees, and
 the effort level is pinned for every model (``--effort``). The models still sample, so
