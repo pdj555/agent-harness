@@ -397,3 +397,25 @@ def test_compare_prints_the_comparisons_and_refuses_a_single_model(tmp_path, cap
     log.write_text(_log([("claude-haiku-5-5", "spec-attacks", _all("spec-attacks"), 0.01)]), encoding="utf-8")
     assert from_log.main(argv) == 1
     assert "no two models" in capsys.readouterr().err
+
+
+def test_a_set_every_model_aces_is_marked_a_regression_check_only():
+    blocks_a_control = _all("same-shape")
+    blocks_a_control["ledger-bit-length-guarded"] = ["block", "block"]
+    misses_one = _all("spec-attacks")
+    misses_one[SPEC_ATTACKS[0]] = ["ship", "block"]
+    record = from_log.rebuild(_log([
+        ("claude-haiku-5-5", "main", _all("main"), 0.01),
+        ("claude-haiku-5-5", "spec-attacks", _all("spec-attacks"), 0.02),
+        ("claude-haiku-5-5", "same-shape", blocks_a_control, 0.03),
+        ("claude-opus-5-5", "spec-attacks", misses_one, 0.04),
+    ]), harness="x", date="d")
+    main_row, spec_row, shape_row, missed_row = record["analysis"]["saturation"]
+    assert main_row["saturated"] and "no clean change blocked" in main_row["reason"]
+    assert spec_row["saturated"] and "no clean change" in spec_row["reason"]
+    assert not shape_row["saturated"] and "7% of clean changes blocked" in shape_row["reason"]
+    assert not missed_row["saturated"]
+    table = from_log.sweep.render_sweep(record)
+    assert "| claude-haiku-5-5 | main | saturated, regression check only | every judged attack caught, " \
+           "no clean change blocked |" in table
+    assert "| claude-opus-5-5 | spec-attacks | not saturated | catch rate 94%, lower 95% bound 55% |" in table
