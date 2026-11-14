@@ -33,7 +33,6 @@ each case runs ``--trials`` times and every rate carries an exact 95% interval.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import secrets
@@ -46,16 +45,16 @@ from pathlib import Path
 
 from harness.agents import VERDICT_SCHEMA, review_prompt
 from harness.anthropic import EFFORTS
+from harness.evals import paired_generator
+from harness.evals import shortcuts as syntax_baselines
 from harness.evals.cases import (
     BLIND_SPOTS,
     CASES,
     CLOSED_BLIND_SPOTS,
     PAIRED_CASES,
-    PAIRED_GUARDS,
     REPOS,
     SAME_SHAPE_CASES,
     Case,
-    paired_cases,
 )
 from harness.evals.monitor import (
     NO_NETWORK,
@@ -77,8 +76,7 @@ from harness.review import review_diff
 from harness.tools import tool_specs
 from harness.verification import run_checks
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import syntax_baselines  # noqa: E402
+FRESH_SEARCH = paired_generator.FRESH_SEARCH
 
 # US dollars per million tokens, Anthropic list prices as of 2026-10-06.
 # Cache writes bill at 1.25x input, cache reads at 0.1x.
@@ -99,39 +97,14 @@ SETS: dict[str, list[Case]] = {
 # Sets with a shortcut list in scripts/syntax_baselines.py, and which list scores them.
 SHORTCUT_KINDS = {"same-shape": "same-shape", "paired": "paired", "paired-fresh": "paired"}
 
-# The set built at run time. FRESH_SEARCH is the search generate_paired.py runs for it.
+# The set built at run time.
 FRESH = "paired-fresh"
-FRESH_SEARCH = {"pairs": 24, "steps": 80_000, "sample": 4_000}
 
 
 def fresh_paired(seed: int) -> dict:
-    """Build the paired-fresh set from ``seed``, check its labels, and register it in ``SETS``.
-
-    Pairs that reuse an expression from the published set are left out, so every guard is
-    one no reviewer saw in an earlier run. A set whose labels fail ``verify`` is refused.
-    """
-    import generate_paired
-
-    published = frozenset(
-        generate_paired.canonical(syntax_baselines.expression(guard))
-        for pair in PAIRED_GUARDS
-        for guard in pair
-    )
-    out = generate_paired.generate(seed=seed, exclude=published, **FRESH_SEARCH)
-    cases = paired_cases(out["guards"], stem="ledger-fresh")
-    problems = generate_paired.verify(cases)
-    if problems:
-        raise ValueError(f"paired-fresh seed {seed} built a set with wrong labels: {'; '.join(problems[:3])}")
-    SETS[FRESH] = cases
-    digest = hashlib.sha256(json.dumps(out["guards"]).encode()).hexdigest()
-    return {
-        "seed": seed,
-        "pairs": len(out["guards"]),
-        "guards_sha256": digest,
-        "excludes_published_expressions": True,
-        "worst_listed_imbalance": out["worst_imbalance"],
-        "generator": "scripts/generate_paired.py",
-    }
+    """Build the paired-fresh set from ``seed`` and register it in ``SETS``; see ``paired_generator``."""
+    SETS[FRESH], info = paired_generator.fresh_paired(seed)
+    return info
 
 
 def fresh_line(fresh: dict) -> str:

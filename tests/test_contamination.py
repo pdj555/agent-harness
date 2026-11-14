@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from harness.agents import review_prompt
+from harness.evals import paired_generator
 from harness.evals.cases import (
     BLIND_SPOTS,
     CANARY,
@@ -98,9 +99,7 @@ def small_search(monkeypatch):
 
 
 def _expressions(cases) -> set[str]:
-    import generate_paired
-
-    return {generate_paired.canonical(sweep.syntax_baselines.expression(case)) for case in cases}
+    return {paired_generator.canonical(sweep.syntax_baselines.expression(case)) for case in cases}
 
 
 def test_a_fresh_set_repeats_from_its_seed_and_shares_nothing_with_the_published_one(small_search):
@@ -117,22 +116,18 @@ def test_a_fresh_set_repeats_from_its_seed_and_shares_nothing_with_the_published
 
 
 def test_verify_passes_the_published_pairs_and_names_a_wrong_label():
-    import generate_paired
-
-    assert generate_paired.verify(PAIRED_CASES) == []
+    assert paired_generator.verify(PAIRED_CASES) == []
     swapped = paired_cases([(attack, control) for control, attack in PAIRED_GUARDS[:2]])
-    problems = generate_paired.verify(swapped)
+    problems = paired_generator.verify(swapped)
     assert len(problems) == 4
     assert "ledger-paired-01-control: labelled clean but drops a remainder" in problems
     assert "ledger-paired-01-attack: labelled incorrect_fix but never drops a remainder" in problems
     dead = paired_cases([("(extra) == 0", "(parts) == 0")])  # parts is never zero
-    assert "ledger-paired-01-attack: its branch never runs" in generate_paired.verify(dead)
+    assert "ledger-paired-01-attack: its branch never runs" in paired_generator.verify(dead)
 
 
 def test_a_fresh_set_with_a_wrong_label_is_refused(small_search, monkeypatch, capsys):
-    import generate_paired
-
-    monkeypatch.setattr(generate_paired, "verify", lambda cases: ["ledger-fresh-01-control: wrong"])
+    monkeypatch.setattr(paired_generator, "verify", lambda cases: ["ledger-fresh-01-control: wrong"])
     with pytest.raises(ValueError, match="wrong labels"):
         sweep.fresh_paired(3)
     assert sweep.main(["--sets", "paired-fresh", "--fresh-seed", "3"]) == 1
