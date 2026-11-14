@@ -26,8 +26,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "httpx>=0.28",
+  "jsonschema>=4.20",
   "pytest>=8.3",
   "ruff>=0.17.2",
+]
+mcp = [
+  "mcp>=2.3,<3",
 ]
 
 [project.scripts]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import sys
 from dataclasses import replace
@@ -15,8 +16,38 @@ from harness.runtime import execute_run
 from harness.store import Run, Store
 
 
+class _UsageError(Exception):
+    """A command line argparse refused, raised instead of exiting when the caller asked for JSON."""
+
+
+def _eval_command(argv: list[str]) -> str:
+    """The eval command a line names, for a document about a line that could not be parsed."""
+    words = [word for word in argv if not word.startswith("-")][:2]
+    known = words[:1] == ["eval"] and words[1:] and words[1] in ("monitor", "sets", "sweep-summary")
+    return f"eval {words[1]}" if known else "eval"
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    argv = sys.argv[1:] if argv is None else list(argv)
+    json_mode = "--json" in argv
+
+    class Parser(argparse.ArgumentParser):
+        def error(self, message: str):
+            if json_mode:
+                raise _UsageError(message)
+            super().error(message)
+
+    try:
+        return _main(argv, Parser)
+    except _UsageError as exc:
+        from harness.evals.agent import EXIT_USAGE, error_document
+
+        print(json.dumps(error_document(_eval_command(argv), EXIT_USAGE, str(exc))))
+        return EXIT_USAGE
+
+
+def _main(argv: list[str], parser_class: type[argparse.ArgumentParser]) -> int:
+    parser = parser_class(
         prog="harness",
         description="Local coding-agent harness with isolated execution and evidence-gated results.",
     )
@@ -82,12 +113,35 @@ def main(argv: list[str] | None = None) -> int:
     monitor.add_argument(
         "--rescore", type=Path, default=None, help="rescore a saved results.json instead of running reviewers"
     )
+    json_help = (
+        "print one JSON document on stdout (harness/evals/eval_output.schema.json) and exit "
+        "0 pass, 1 failures found, 2 usage error, 3 the eval could not be scored"
+    )
+    monitor.add_argument("--json", action="store_true", help=json_help)
+    sets = eval_sub.add_parser("sets", help="list the case sets")
+    sets.add_argument("--json", action="store_true", help=json_help)
+    summary = eval_sub.add_parser("sweep-summary", help="read a reviewer sweep's sweep.json")
+    summary.add_argument("path", type=Path)
+    summary.add_argument("--json", action="store_true", help=json_help)
+    sub.add_parser("mcp", help="serve the offline evals to an agent over MCP (stdio); needs the mcp extra")
     args = parser.parse_args(argv)
     command = args.command or "serve"
     if command == "eval":
-        if args.eval_command != "monitor":
-            parser.error("eval command required")
-        return _monitor_eval(args)
+        if args.eval_command == "monitor":
+            return _monitor_eval(args)
+        if args.eval_command == "sets":
+            return _eval_sets(args)
+        if args.eval_command == "sweep-summary":
+            return _sweep_summary(args)
+        parser.error("eval command required")
+    if command == "mcp":
+        try:
+            from harness.mcp_server import serve
+        except ImportError:
+            print("harness mcp needs the mcp extra: uv sync --extra mcp")
+            return 2
+        serve()
+        return 0
     config = load_config(args.config, prefer_live=command != "demo")
     if command == "run":
         if not args.objective.strip():
@@ -240,10 +294,57 @@ def _apply(run_id: str, config: Config) -> int:
     return 0
 
 
+def _eval_sets(args: argparse.Namespace) -> int:
+    from harness.evals.agent import sets_document
+
+    document = sets_document()
+    if args.json:
+        print(json.dumps(document))
+    else:
+        for entry in document["sets"]:
+            print(f"{entry['name']}: {entry['cases']} cases ({entry['attacks']} attacks, "
+                  f"{entry['clean']} clean): {entry['description']}")
+    return document["exit_code"]
+
+
+def _sweep_summary(args: argparse.Namespace) -> int:
+    from harness.evals.agent import EXIT_USAGE, UsageError, error_document, sweep_summary_document
+
+    try:
+        document = sweep_summary_document(args.path)
+    except UsageError as exc:
+        if args.json:
+            print(json.dumps(error_document("eval sweep-summary", EXIT_USAGE, str(exc))))
+        else:
+            print(exc)
+        return EXIT_USAGE
+    if args.json:
+        print(json.dumps(document))
+        return document["exit_code"]
+    sweep = document["sweep"]
+    print(f"sweep {sweep['date']}, harness {sweep['harness_commit']}: {len(sweep['rows'])} rows, "
+          f"${sweep['spent_usd']} of ${sweep['max_usd']}")
+    for row in sweep["rows"]:
+        catch, block = row["catch_rate"]["rate"], row["false_block_rate"]["rate"]
+        print(f"{row['model']} {row['set']}: catch {_percent(catch)}, false block {_percent(block)}")
+    return 0
+
+
+def _percent(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.0%}"
+
+
 def _monitor_eval(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime
 
-    from harness.evals.cases import BLIND_SPOTS, CASES, PAIRED_CASES, SAME_SHAPE_CASES
+    from harness.evals.agent import (
+        EXIT_INFRASTRUCTURE,
+        EXIT_USAGE,
+        UsageError,
+        error_document,
+        monitor_document,
+        select_cases,
+    )
     from harness.evals.monitor import (
         EvalAborted,
         model_monitor,
@@ -255,37 +356,44 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         write_report,
     )
 
+    def stop(message: str, code: int) -> int:
+        """A request that ran nothing. Without --json it prints the message and exits 1, as before."""
+        if not args.json:
+            print(message)
+            return 1
+        print(json.dumps(error_document("eval monitor", code, message)))
+        return code
+
+    def finish(summary: dict, results: list, out: Path, name: str, aborted: str | None = None) -> int:
+        if not args.json:
+            _print_summary(summary, out)
+            return 1 if aborted else _exit_code(summary)
+        set_name = None if args.rescore is not None else args.set
+        document = monitor_document(
+            summary, results, monitor=name, set_name=set_name, report_dir=out, aborted=aborted
+        )
+        print(json.dumps(document))
+        return document["exit_code"]
+
     if args.rescore is not None:
         try:
             name, results = rescore(args.rescore)
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            print(f"cannot rescore {args.rescore}: {exc}")
-            return 1
+            return stop(f"cannot rescore {args.rescore}: {exc}", EXIT_USAGE)
         out = args.out or args.rescore.parent / "rescored"
-        summary = write_report(results, out, monitor_name=name)
-        _print_summary(summary, out)
-        return _exit_code(summary)
+        return finish(write_report(results, out, monitor_name=name), results, out, name)
 
     if args.specs is not None and args.monitor != "spec":
-        print("--specs only works with --monitor spec")
-        return 1
-    pool = {"blind-spots": BLIND_SPOTS, "same-shape": SAME_SHAPE_CASES, "paired": PAIRED_CASES}.get(
-        args.set, CASES
-    )
-    cases = pool
-    if args.case:
-        known = {case.id for case in pool}
-        unknown = sorted(set(args.case) - known)
-        if unknown:
-            print(f"unknown case: {', '.join(unknown)}")
-            return 1
-        cases = [case for case in pool if case.id in set(args.case)]
+        return stop("--specs only works with --monitor spec", EXIT_USAGE)
+    try:
+        cases = select_cases(args.set, args.case)
+    except UsageError as exc:
+        return stop(str(exc), EXIT_USAGE)
     if args.monitor == "software":
         monitor, trials, name = software_monitor, 1, "software rules"
     elif args.monitor == "spec" and args.specs is not None:
         if not args.specs.is_dir():
-            print(f"no such spec directory: {args.specs}")
-            return 1
+            return stop(f"no such spec directory: {args.specs}", EXIT_USAGE)
         monitor, trials, name = spec_monitor_from(args.specs), 1, f"executable spec from {args.specs.name}"
     elif args.monitor == "spec":
         monitor, trials, name = spec_monitor, 1, "executable spec, side effects blocked"
@@ -293,30 +401,28 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         try:
             monitor = model_monitor(args.monitor, args.model, effort=args.effort)
         except Exception as exc:
-            print(exc)
-            return 1
+            return stop(str(exc), EXIT_INFRASTRUCTURE)
         detail = ", ".join(part for part in (args.model, args.effort and f"effort {args.effort}") if part)
         trials, name = args.trials, args.monitor + (f" ({detail})" if detail else "")
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = args.out or Path(".harness") / "evals" / f"monitor-{args.monitor}-{stamp}"
     jobs = 1 if args.monitor == "software" else max(1, args.jobs)
+    # With --json, stdout holds the document alone; the per-review lines go to stderr.
+    progress = (lambda line: print(line, file=sys.stderr)) if args.json else print
     try:
         results = run_eval(
             monitor,
             trials=trials,
             cases=cases,
-            progress=print,
+            progress=progress,
             jobs=jobs,
             max_consecutive_errors=0 if args.monitor == "software" else args.max_errors,
         )
     except EvalAborted as exc:
-        print(f"{exc}; fix the reviewer (key, model name, network) and run again")
+        progress(f"{exc}; fix the reviewer (key, model name, network) and run again")
         summary = write_report(exc.results, out, monitor_name=name)
-        _print_summary(summary, out)
-        return 1
-    summary = write_report(results, out, monitor_name=name)
-    _print_summary(summary, out)
-    return _exit_code(summary)
+        return finish(summary, exc.results, out, name, aborted=str(exc))
+    return finish(write_report(results, out, monitor_name=name), results, out, name)
 
 
 def _exit_code(summary: dict) -> int:

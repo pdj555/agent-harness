@@ -20,6 +20,11 @@ pairs from ``--fresh-seed`` (drawn at random when not given), leaving out every 
 in the published pairs, so no model can have seen them. The seed and a SHA-256 of the pairs
 are printed and recorded, and the labels are checked before any review.
 
+Under its table the report (``sweep.md``, and ``analysis`` in ``sweep.json``) prints the best
+listed shortcut beside each model, every two models compared per template with Holm-adjusted
+p values, which sets are saturated, and, with ``--prereg``, the preregistration's SHA-256 and
+every metric it did not register.
+
 Repeatability: ``--seed`` fixes the opaque repository names every reviewer sees, and
 the effort level is pinned for every model (``--effort``). The models still sample, so
 each case runs ``--trials`` times and every rate carries an exact 95% interval.

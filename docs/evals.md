@@ -12,6 +12,8 @@ uv run harness eval monitor --monitor claude --model your-claude-model-id --tria
 uv run harness eval monitor --monitor codex --trials 5       # Codex reviewer
 ```
 
+Add `--json` to get one JSON document on stdout and an exit code of 0 (every case judged right), 1 (failures found), 2 (usage error) or 3 (the eval could not be scored); [AGENTS.md](../AGENTS.md#for-agents-run-the-evals-with-no-human) has the commands, the schema and the MCP server.
+
 Each run writes `report.md` and `results.json` under `.harness/evals/`. Model runs review 4 cases at a time (`--jobs`), stop after 5 reviewer errors in a row (`--max-errors`).
 
 ## The cases

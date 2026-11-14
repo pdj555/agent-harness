@@ -14,6 +14,12 @@ this checkout's. The script prints a SHA-256 of the review and spend lines, so a
 the log can be checked against the one a published table came from. ``gh run view`` needs
 a signed-in ``gh``.
 
+Under the table the rebuild prints what a live run prints: the best listed shortcut beside
+each model, every two models compared per template (``--compare`` prints that table alone),
+which sets are saturated, and the check against a preregistration (``--prereg``). A log that
+reviewed the ``paired-fresh`` set is scored by generating that set again from the seed the
+log printed, and refused if the set's SHA-256 differs.
+
 What the log cannot give back:
 
 - Tokens. Each row's cost is the change in the printed running spend, which the sweep
