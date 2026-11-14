@@ -3,7 +3,7 @@ name = "agent-harness"
 version = "0.1.0"
 description = "Run frontier coding agents unattended. Nothing lands unless your tests pass and a second model approves."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Preston Jones" }]
 keywords = ["agent", "coding-agent", "harness", "verification", "llm", "evals"]
@@ -11,7 +11,6 @@ classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
-  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Testing",
@@ -64,7 +63,7 @@ filterwarnings = [
 
 [tool.ruff]
 line-length = 110
-target-version = "py312"
+target-version = "py313"
 src = ["harness", "tests"]
 
 [tool.ruff.lint]
