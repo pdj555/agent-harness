@@ -46,8 +46,10 @@ def test_sets_lists_every_set_as_json(capsys):
     code, doc, _ = _run(capsys, "eval", "sets", "--json")
     assert (code, doc["status"]) == (0, "pass")
     assert {s["name"]: (s["cases"], s["attacks"]) for s in doc["sets"]} == {
-        "main": (33, 27), "blind-spots": (3, 3), "same-shape": (22, 8), "paired": (48, 24),
+        "main": (33, 27), "spec-attacks": (8, 8), "blind-spots": (3, 3), "same-shape": (22, 8),
+        "paired": (48, 24), "paired-fresh": (48, 24),
     }
+    assert [s["name"] for s in doc["sets"] if s.get("generated")] == ["paired-fresh"]
     assert doc["monitors"] == ["software", "spec"] and doc["canary_guid"] == CANARY_GUID
     assert main(["eval", "sets"]) == 0
     assert "paired: 48 cases (24 attacks, 24 clean)" in capsys.readouterr().out
@@ -86,6 +88,9 @@ def test_a_monitor_that_ships_attacks_exits_one_and_names_them(capsys, tmp_path)
         (["eval", "monitor", "--rescore", "no-such-file.json", "--json"], "cannot rescore"),
         (["eval", "sweep-summary", "no-such-file.json", "--json"], "cannot read a sweep summary"),
         (["eval", "--json"], "unrecognized arguments: --json"),
+        (["eval", "monitor", "--json", "--fresh-seed", "3"], "a fresh seed only applies"),
+        (["eval", "monitor", "--json", "--set", "paired-fresh", "--fresh-seed", "-1"], "0 or more"),
+        (["eval", "monitor", "--json", "--monitor", "sp"], "invalid choice"),
     ],
 )
 def test_a_wrong_request_exits_two_with_a_document(capsys, argv, message):
@@ -125,26 +130,128 @@ def test_a_reviewer_that_cannot_start_or_keeps_failing_exits_three(capsys, monke
     assert code == 3 and "stopped after 2 reviewer errors in a row" in doc["error"]
 
 
+RATE = {"rate": 1.0, "ci95": [0.86, 1.0], "cases": 24, "templates": 24}
+SWEEP = {
+    "date": "d", "harness_commit": "abc", "models": ["m"], "sets": ["paired"], "trials": 3,
+    "effort": "medium", "seed": 0, "max_usd": 10.0, "spent_usd": 1.5,
+    "rows": [{
+        "model": "m", "set": "paired", "catch_rate": RATE, "false_block_rate": {**RATE, "rate": 0.0},
+        "judged_trials": 144, "reviewer_errors": 0, "usd": 1.5,
+        "templates": {"paired-01-attack": {"attack": True, "blocked": 3, "judged": 3, "rate": 1.0}},
+    }],
+    "analysis": {"saturation": []},
+}
+
+
 def test_a_sweep_summary_is_read_without_its_per_template_data(capsys, tmp_path):
-    record = {
-        "date": "d", "harness_commit": "abc", "models": ["m"], "sets": ["paired"], "trials": 3,
-        "effort": "medium", "seed": 0, "max_usd": 10.0, "spent_usd": 1.5,
-        "rows": [{
-            "model": "m", "set": "paired", "catch_rate": {"rate": 1.0}, "false_block_rate": {"rate": 0.0},
-            "templates": {"paired-01-attack": {"attack": True, "blocked": 3, "judged": 3, "rate": 1.0}},
-        }],
-        "analysis": {"saturation": []},
-    }
+    path = tmp_path / "sweep.json"
+    path.write_text(json.dumps(SWEEP))
+    code, doc, _ = _run(capsys, "eval", "sweep-summary", str(path), "--json")
+    assert code == 0 and doc["sweep"]["spent_usd"] == 1.5 and "fresh" not in doc["sweep"]
+    assert doc["sweep"]["rows"] == [{k: v for k, v in SWEEP["rows"][0].items() if k != "templates"}]
+    assert main(["eval", "sweep-summary", str(path)]) == 0
+    assert "m paired: catch 100%, false block 0%" in capsys.readouterr().out
+
+
+def _without(key):
+    return lambda d: d.pop(key)
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        (lambda d: d.clear(), "it has no rows"),
+        (lambda d: d.update(rows="none"), "it has no rows"),
+        (lambda d: d.update(rows=[3]), "it has no rows"),
+        (_without("models"), "'models' is a required property"),
+        (_without("spent_usd"), "'spent_usd' is a required property"),
+        (_without("date"), "'date' is a required property"),
+        (lambda d: d["rows"][0].pop("catch_rate"), "'catch_rate' is a required property"),
+        (lambda d: d["rows"][0].pop("model"), "'model' is a required property"),
+        (lambda d: d["rows"][0].update(catch_rate={"rate": 1.0}), "'ci95' is a required property"),
+        (lambda d: d.update(trials="three"), "sweep/trials"),
+        (lambda d: d.update(analysis=[1]), "sweep/analysis"),
+    ],
+)
+def test_a_malformed_sweep_summary_is_a_usage_error_never_a_pass(capsys, tmp_path, damage, message):
+    record = json.loads(json.dumps(SWEEP))
+    damage(record)
     path = tmp_path / "sweep.json"
     path.write_text(json.dumps(record))
     code, doc, _ = _run(capsys, "eval", "sweep-summary", str(path), "--json")
-    assert code == 0 and doc["sweep"]["spent_usd"] == 1.5 and doc["sweep"]["fresh"] is None
-    assert doc["sweep"]["rows"] == [{k: v for k, v in record["rows"][0].items() if k != "templates"}]
-    assert main(["eval", "sweep-summary", str(path)]) == 0
-    assert "m paired: catch 100%, false block 0%" in capsys.readouterr().out
-    path.write_text(json.dumps({"summary": {}}))
+    assert (code, doc["status"]) == (2, "usage_error")
+    assert "is not a sweep summary" in doc["error"] and message in doc["error"]
+    assert main(["eval", "sweep-summary", str(path)]) == 2  # the text form too
+    assert "is not a sweep summary" in capsys.readouterr().out
+    path.write_text("[1, 2]")
     code, doc, _ = _run(capsys, "eval", "sweep-summary", str(path), "--json")
-    assert code == 2 and "not a sweep summary" in doc["error"]
+    assert code == 2 and "it has no rows" in doc["error"]
+
+
+def test_a_real_sweep_record_reads_back_as_a_valid_summary(capsys, tmp_path, monkeypatch):
+    """What the sweep writes is what the summary reads: the run's own sweep.json passes the schema."""
+    sweep = _load("reviewer_sweep")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+    verdict = {"ship": False, "findings": ["no"], "usage": {"output_tokens": 10}}
+    monkeypatch.setattr(sweep, "model_monitor", lambda name, model, *, effort=None: lambda *args: verdict)
+    out = tmp_path / "sweep"
+    sweep.main(["--run", "--models", "claude-haiku-5-5", "--sets", "spec-attacks", "--trials", "1",
+                "--out", str(out)])
+    capsys.readouterr()
+    code, doc, _ = _run(capsys, "eval", "sweep-summary", str(out / "sweep.json"), "--json")
+    assert code == 0 and doc["sweep"]["rows"][0]["judged_trials"] == 8
+    assert doc["sweep"]["analysis"]["saturation"][0]["saturated"] is True
+
+
+def test_json_is_read_by_argparse_not_by_scanning_the_line(capsys):
+    # an abbreviation is not --json: argparse refuses it as it refuses any unknown flag
+    with pytest.raises(SystemExit) as stop:
+        main(["eval", "sets", "--jso"])
+    assert stop.value.code == 2 and "unrecognized arguments: --jso" in capsys.readouterr().err
+    # --json belongs to eval; another command rejects it in plain text and runs nothing
+    for argv in (["run", ".", "objective", "--json"], ["demo", "--json"]):
+        with pytest.raises(SystemExit) as stop:
+            main(argv)
+        captured = capsys.readouterr()
+        assert stop.value.code == 2 and captured.out == "" and "--json" in captured.err
+    # before the command it is still an eval line asking for JSON, so the refusal is a document
+    code, doc, _ = _run(capsys, "--json", "eval", "sets")
+    assert (code, doc["status"]) == (2, "usage_error") and "unrecognized arguments: --json" in doc["error"]
+    # a value that happens to read --json does not switch the mode
+    assert main(["eval", "monitor", "--case=--json"]) == 1
+    assert capsys.readouterr().out == "unknown case: --json\n"
+
+
+def test_help_beside_json_is_a_document_and_plain_help_is_text(capsys):
+    for argv in (["eval", "monitor", "--json", "--help"], ["eval", "sets", "-h", "--json"]):
+        code, doc, _ = _run(capsys, *argv)
+        assert (code, doc["command"], doc["status"]) == (0, "help", "pass")
+        assert "--json" in doc["help"] and doc["help"].startswith("usage: harness eval")
+    with pytest.raises(SystemExit) as stop:
+        main(["eval", "monitor", "--help"])
+    assert stop.value.code == 0 and capsys.readouterr().out.startswith("usage: harness eval monitor")
+
+
+def test_the_spec_attacks_and_a_fresh_set_run_from_the_command_line(capsys, tmp_path, monkeypatch):
+    from harness.evals import paired_generator
+
+    code, doc, _ = _run(capsys, "eval", "monitor", "--monitor", "spec", "--set", "spec-attacks", "--json",
+                        "--out", str(tmp_path / "attacks"))
+    assert code == 1 and doc["cases"] == 8 and len(doc["failures"]) == 3  # the three it still misses
+    for key, value in (("pairs", 3), ("steps", 300), ("sample", 300)):
+        monkeypatch.setitem(paired_generator.FRESH_SEARCH, key, value)
+    argv = ["eval", "monitor", "--monitor", "spec", "--set", "paired-fresh", "--fresh-seed", "4", "--json"]
+    code, doc, err = _run(capsys, *argv, "--out", str(tmp_path / "fresh"))
+    assert (code, doc["set"], doc["cases"]) == (1, "paired-fresh", 6)
+    assert doc["fresh"]["seed"] == 4 and f"guards sha256 {doc['fresh']['guards_sha256']}" in err
+    assert [f["id"] for f in doc["failures"]] == [f"ledger-fresh-0{n}-attack" for n in (1, 2, 3)]
+    again = _run(capsys, *argv, "--out", str(tmp_path / "again"))[1]
+    assert again["fresh"] == doc["fresh"]
+    drawn = _run(capsys, *argv[:-3], "--json", "--out", str(tmp_path / "drawn"))[1]
+    assert isinstance(drawn["fresh"]["seed"], int)  # no seed given: one is drawn and reported
+    monkeypatch.setattr(paired_generator, "verify", lambda cases: ["ledger-fresh-01-control: wrong"])
+    code, doc, _ = _run(capsys, *argv)
+    assert (code, doc["status"]) == (3, "infrastructure_error") and "wrong labels" in doc["error"]
 
 
 @pytest.mark.parametrize(

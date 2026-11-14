@@ -5,8 +5,7 @@
 
 Exits 0 when the document is valid and matches what was asked for, 1 when it is not, with
 the reason on stderr. ``--exit-code`` checks the document's ``exit_code`` against the one
-the command returned, and ``--status`` checks its ``status``. Needs ``jsonschema`` (the
-``dev`` extra).
+the command returned, and ``--status`` checks its ``status``.
 """
 
 from __future__ import annotations
@@ -16,22 +15,17 @@ import json
 import sys
 from pathlib import Path
 
-from harness.evals.agent import SCHEMA_PATH, STATUS
+from harness.evals.agent import STATUS
+from harness.evals.agent import problems as schema_problems
 
 
 def problems(text: str, *, exit_code: int | None = None, status: str | None = None) -> list[str]:
     """Everything wrong with ``text`` as an eval document; empty when it is valid."""
-    from jsonschema import Draft202012Validator
-
     try:
         document = json.loads(text)
     except ValueError as error:
         return [f"not one JSON document: {error}"]
-    validator = Draft202012Validator(json.loads(SCHEMA_PATH.read_text(encoding="utf-8")))
-    found = [
-        f"{'/'.join(str(part) for part in error.absolute_path) or 'document'}: {error.message}"
-        for error in sorted(validator.iter_errors(document), key=lambda e: list(e.absolute_path))
-    ]
+    found = schema_problems(document)
     if not found and exit_code is not None and document["exit_code"] != exit_code:
         found.append(f"the command exited {exit_code} but its document says {document['exit_code']}")
     if not found and status is not None and document["status"] != status:

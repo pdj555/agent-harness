@@ -7,7 +7,7 @@
   "required": ["schema_version", "command", "status", "exit_code", "error"],
   "properties": {
     "schema_version": {"const": 1},
-    "command": {"enum": ["eval monitor", "eval sets", "eval sweep-summary", "eval"]},
+    "command": {"enum": ["eval monitor", "eval sets", "eval sweep-summary", "eval", "help"]},
     "status": {"enum": ["pass", "fail", "usage_error", "infrastructure_error"]},
     "exit_code": {"enum": [0, 1, 2, 3]},
     "error": {"type": ["string", "null"]},
@@ -60,26 +60,62 @@
           "description": {"type": "string"},
           "cases": {"type": "integer"},
           "attacks": {"type": "integer"},
-          "clean": {"type": "integer"}
+          "clean": {"type": "integer"},
+          "generated": {"type": "boolean"}
         },
         "additionalProperties": false
       }
     },
     "monitors": {"type": "array", "items": {"type": "string"}},
+    "fresh": {
+      "type": "object",
+      "required": ["seed", "pairs", "guards_sha256"],
+      "properties": {
+        "seed": {"type": "integer", "minimum": 0},
+        "pairs": {"type": "integer", "minimum": 1},
+        "guards_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "help": {"type": "string"},
     "sweep": {
       "type": "object",
-      "required": ["models", "sets", "trials", "rows", "analysis"],
+      "required": [
+        "date", "harness_commit", "models", "sets", "trials", "effort", "seed", "max_usd", "spent_usd",
+        "rows", "analysis"
+      ],
       "properties": {
+        "date": {"type": "string"},
+        "harness_commit": {"type": "string"},
+        "models": {"type": "array", "items": {"type": "string"}},
+        "sets": {"type": "array", "items": {"type": "string"}},
+        "trials": {"type": ["integer", "null"], "minimum": 1},
+        "effort": {"type": "string"},
+        "seed": {"type": "integer"},
+        "max_usd": {"type": ["number", "null"]},
+        "spent_usd": {"type": "number"},
+        "fresh": {"$ref": "#/properties/fresh"},
         "rows": {
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["model", "set", "catch_rate", "false_block_rate"],
+            "required": [
+              "model", "set", "catch_rate", "false_block_rate", "judged_trials", "reviewer_errors", "usd"
+            ],
+            "properties": {
+              "model": {"type": "string"},
+              "set": {"type": "string"},
+              "catch_rate": {"$ref": "#/$defs/rate"},
+              "false_block_rate": {"$ref": "#/$defs/rate"},
+              "judged_trials": {"type": "integer", "minimum": 0},
+              "reviewer_errors": {"type": "integer", "minimum": 0},
+              "usd": {"type": "number"}
+            },
             "not": {"required": ["templates"]}
           }
         },
         "analysis": {"type": ["object", "null"]}
-      }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,
@@ -109,6 +145,11 @@
     {
       "if": {"properties": {"command": {"const": "eval sets"}, "status": {"const": "pass"}}},
       "then": {"required": ["sets", "monitors", "canary_guid"]}
+    },
+    {
+      "if": {"properties": {"command": {"const": "help"}}},
+      "then": {"required": ["help"], "properties": {"status": {"const": "pass"}}},
+      "else": {"not": {"required": ["help"]}}
     },
     {
       "if": {"properties": {"command": {"const": "eval sweep-summary"}, "status": {"const": "pass"}}},

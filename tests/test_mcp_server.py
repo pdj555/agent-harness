@@ -48,7 +48,9 @@ def test_the_server_offers_three_described_tools(tmp_path):
     tools = {tool.name: tool for tool in anyio.run(scenario)}
     assert set(tools) == {"list_case_sets", "run_offline_monitor", "read_sweep_summary"}
     assert all(tool.description for tool in tools.values())
-    assert set(tools["run_offline_monitor"].input_schema["required"]) == {"monitor", "set"}
+    assert set(tools["run_offline_monitor"].input_schema["properties"]) == {
+        "monitor", "set", "cases", "fresh_seed",
+    }
 
 
 def test_an_agent_lists_the_sets_and_runs_the_spec_on_one(tmp_path):
@@ -57,7 +59,9 @@ def test_an_agent_lists_the_sets_and_runs_the_spec_on_one(tmp_path):
         ("list_case_sets", {}),
         ("run_offline_monitor", {"monitor": "spec", "set": "blind-spots"}),
     )
-    assert [s["name"] for s in sets["sets"]] == ["main", "blind-spots", "same-shape", "paired"]
+    assert [s["name"] for s in sets["sets"]] == [
+        "main", "spec-attacks", "blind-spots", "same-shape", "paired", "paired-fresh",
+    ]
     assert (run["status"], run["exit_code"], run["cases"]) == ("fail", 1, 3)
     assert [f["id"] for f in run["failures"]] == [
         "ledger-bit-length", "ledger-digit-count", "ledger-reversed-env-value",
@@ -67,44 +71,74 @@ def test_an_agent_lists_the_sets_and_runs_the_spec_on_one(tmp_path):
 
 
 def test_the_software_rules_run_on_chosen_cases_and_a_wrong_request_is_a_usage_error(tmp_path):
-    caught, missed, bad_set, bad_monitor, bad_case = _call(
+    caught, missed, bad_set, bad_monitor, bad_case, no_args, no_set, no_path, bad_seed = _call(
         tmp_path,
         ("run_offline_monitor", {"monitor": "software", "set": "main", "cases": ["tracker-skip-test"]}),
         ("run_offline_monitor", {"monitor": "software", "set": "main", "cases": ["tracker-special-case"]}),
         ("run_offline_monitor", {"monitor": "spec", "set": "no-such-set"}),
         ("run_offline_monitor", {"monitor": "claude", "set": "main"}),
         ("run_offline_monitor", {"monitor": "spec", "set": "main", "cases": ["no-such-case"]}),
+        ("run_offline_monitor", {}),
+        ("run_offline_monitor", {"monitor": "spec"}),
+        ("read_sweep_summary", {}),
+        ("run_offline_monitor", {"monitor": "spec", "set": "main", "fresh_seed": 3}),
     )
     assert (caught["status"], caught["cases"], caught["failures"]) == ("pass", 1, [])
     assert (missed["status"], missed["failures"][0]["id"]) == ("fail", "tracker-special-case")
-    for wrong, message in ((bad_set, "unknown set"), (bad_monitor, "unknown offline monitor"),
-                           (bad_case, "unknown case")):
+    wrong_requests = (
+        (bad_set, "unknown set"), (bad_monitor, "unknown offline monitor"), (bad_case, "unknown case"),
+        (no_args, "missing argument: monitor, set"), (no_set, "missing argument: set"),
+        (no_path, "missing argument: path"), (bad_seed, "a fresh seed only applies"),
+    )
+    for wrong, message in wrong_requests:
         assert (wrong["status"], wrong["exit_code"]) == ("usage_error", 2) and message in wrong["error"]
+
+
+RATE = {"rate": 0.5, "ci95": [0.3, 0.7], "cases": 24, "templates": 24}
+SWEEP = {
+    "date": "d", "harness_commit": "abc", "models": ["m"], "sets": ["paired"], "trials": 3,
+    "effort": "medium", "seed": 0, "max_usd": 10.0, "spent_usd": 1.5,
+    "rows": [{"model": "m", "set": "paired", "catch_rate": RATE, "false_block_rate": RATE,
+              "judged_trials": 144, "reviewer_errors": 0, "usd": 1.5, "templates": {}}],
+    "analysis": {"prereg": None},
+}
 
 
 def test_a_sweep_summary_is_read_only_from_under_the_working_directory(tmp_path):
     root = tmp_path / "work"
     root.mkdir()
-    record = {
-        "date": "d", "harness_commit": "abc", "models": ["m"], "sets": ["paired"], "trials": 3, "rows": [
-            {"model": "m", "set": "paired", "catch_rate": {"rate": 0.5}, "false_block_rate": {"rate": 0.0},
-             "templates": {}},
-        ], "analysis": {"prereg": None},
-    }
-    (root / "sweep.json").write_text(json.dumps(record))
-    (tmp_path / "outside.json").write_text(json.dumps(record))
-    inside, outside, absolute, missing = _call(
+    (root / "sweep.json").write_text(json.dumps(SWEEP))
+    (root / "broken.json").write_text(json.dumps({**SWEEP, "rows": [{"model": "m"}]}))
+    (root / "empty.json").write_text("{}")
+    (tmp_path / "outside.json").write_text(json.dumps(SWEEP))
+    inside, outside, absolute, missing, broken, empty = _call(
         root,
         ("read_sweep_summary", {"path": "sweep.json"}),
         ("read_sweep_summary", {"path": "../outside.json"}),
         ("read_sweep_summary", {"path": str(tmp_path / "outside.json")}),
         ("read_sweep_summary", {"path": "none.json"}),
+        ("read_sweep_summary", {"path": "broken.json"}),
+        ("read_sweep_summary", {"path": "empty.json"}),
     )
-    assert inside["status"] == "pass" and inside["sweep"]["rows"][0]["catch_rate"] == {"rate": 0.5}
+    assert inside["status"] == "pass" and inside["sweep"]["rows"][0]["catch_rate"] == RATE
     assert "templates" not in inside["sweep"]["rows"][0]
     for refused in (outside, absolute):
         assert refused["status"] == "usage_error" and "outside the working directory" in refused["error"]
     assert missing["status"] == "usage_error" and "cannot read" in missing["error"]
+    # a malformed file is a usage error through MCP as on the command line, never a pass
+    assert broken["status"] == "usage_error" and "'set' is a required property" in broken["error"]
+    assert empty["status"] == "usage_error" and "it has no rows" in empty["error"]
+
+
+def test_an_agent_runs_the_spec_on_a_set_generated_from_its_seed(tmp_path, monkeypatch):
+    from harness.evals import paired_generator
+
+    for key, value in (("pairs", 3), ("steps", 300), ("sample", 300)):
+        monkeypatch.setitem(paired_generator.FRESH_SEARCH, key, value)
+    arguments = {"monitor": "spec", "set": "paired-fresh", "fresh_seed": 4}
+    first, second = _call(tmp_path, ("run_offline_monitor", arguments), ("run_offline_monitor", arguments))
+    assert (first["status"], first["cases"], first["fresh"]["seed"]) == ("fail", 6, 4)
+    assert first["fresh"] == second["fresh"] and len(first["failures"]) == 3
 
 
 def test_harness_mcp_serves_the_same_tools_over_stdio(tmp_path):

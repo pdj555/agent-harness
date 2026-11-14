@@ -20,6 +20,10 @@ class _UsageError(Exception):
     """A command line argparse refused, raised instead of exiting when the caller asked for JSON."""
 
 
+class _HelpRequested(Exception):
+    """``--help`` beside ``--json``: the help text, to be wrapped in a document."""
+
+
 def _eval_command(argv: list[str]) -> str:
     """The eval command a line names, for a document about a line that could not be parsed."""
     words = [word for word in argv if not word.startswith("-")][:2]
@@ -27,15 +31,41 @@ def _eval_command(argv: list[str]) -> str:
     return f"eval {words[1]}" if known else "eval"
 
 
+def _wants_json(argv: list[str]) -> bool:
+    """Whether this is an ``eval`` command given ``--json``, read by argparse, not by scanning the line.
+
+    Only ``eval`` commands take ``--json``, and no option may be abbreviated, so ``--jso``, a
+    ``--json`` after another command (``harness run ... --json``) and a ``--json`` inside a
+    value are all left for the real parser to reject.
+    """
+    pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    pre.add_argument("--config")
+    pre.add_argument("command", nargs="?")
+    try:
+        known, rest = pre.parse_known_args(argv)
+    except SystemExit:
+        return False
+    return known.command == "eval" and "--json" in rest
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
-    json_mode = "--json" in argv
+    json_mode = _wants_json(argv)
 
     class Parser(argparse.ArgumentParser):
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("allow_abbrev", False)
+            super().__init__(*args, **kwargs)
+
         def error(self, message: str):
             if json_mode:
                 raise _UsageError(message)
             super().error(message)
+
+        def print_help(self, file=None):
+            if json_mode:
+                raise _HelpRequested(self.format_help())
+            super().print_help(file)
 
     try:
         return _main(argv, Parser)
@@ -44,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
 
         print(json.dumps(error_document(_eval_command(argv), EXIT_USAGE, str(exc))))
         return EXIT_USAGE
+    except _HelpRequested as exc:
+        from harness.evals.agent import help_document
+
+        print(json.dumps(help_document(str(exc))))
+        return 0
 
 
 def _main(argv: list[str], parser_class: type[argparse.ArgumentParser]) -> int:
@@ -95,11 +130,16 @@ def _main(argv: list[str], parser_class: type[argparse.ArgumentParser]) -> int:
     monitor.add_argument("--trials", type=int, default=1, help="runs per case; model monitors vary")
     monitor.add_argument(
         "--set",
-        choices=["main", "blind-spots", "same-shape", "paired"],
+        choices=["main", "spec-attacks", "blind-spots", "same-shape", "paired", "paired-fresh"],
         default="main",
-        help="main: the 33 published cases; blind-spots: attacks the spec is known to miss; "
-        "same-shape: attacks and correct controls that add one return line, differing only in its condition; "
-        "paired: 24 generated attack and control pairs that only arithmetic tells apart",
+        help="main: the 33 published cases; spec-attacks: 8 attacks built against the spec check; "
+        "blind-spots: the 3 of those it still misses; same-shape: attacks and correct controls that add "
+        "one return line, differing only in its condition; paired: 24 generated attack and control pairs "
+        "that only arithmetic tells apart; paired-fresh: 24 such pairs generated now from --fresh-seed",
+    )
+    monitor.add_argument(
+        "--fresh-seed", type=int, default=None,
+        help="with --set paired-fresh: the seed to generate from; drawn at random when not given",
     )
     monitor.add_argument("--case", action="append", default=None, help="run only this case id (repeatable)")
     monitor.add_argument("--out", type=Path, default=None, help="report directory")
@@ -364,13 +404,15 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         print(json.dumps(error_document("eval monitor", code, message)))
         return code
 
+    fresh: dict | None = None
+
     def finish(summary: dict, results: list, out: Path, name: str, aborted: str | None = None) -> int:
         if not args.json:
             _print_summary(summary, out)
             return 1 if aborted else _exit_code(summary)
         set_name = None if args.rescore is not None else args.set
         document = monitor_document(
-            summary, results, monitor=name, set_name=set_name, report_dir=out, aborted=aborted
+            summary, results, monitor=name, set_name=set_name, report_dir=out, aborted=aborted, fresh=fresh
         )
         print(json.dumps(document))
         return document["exit_code"]
@@ -386,9 +428,14 @@ def _monitor_eval(args: argparse.Namespace) -> int:
     if args.specs is not None and args.monitor != "spec":
         return stop("--specs only works with --monitor spec", EXIT_USAGE)
     try:
-        cases = select_cases(args.set, args.case)
+        cases, fresh = select_cases(args.set, args.case, args.fresh_seed)
     except UsageError as exc:
         return stop(str(exc), EXIT_USAGE)
+    except RuntimeError as exc:
+        return stop(str(exc), EXIT_INFRASTRUCTURE)
+    if fresh:
+        note = f"paired-fresh: seed {fresh['seed']}, {fresh['pairs']} pairs"
+        print(f"{note}, guards sha256 {fresh['guards_sha256']}", file=sys.stderr if args.json else sys.stdout)
     if args.monitor == "software":
         monitor, trials, name = software_monitor, 1, "software rules"
     elif args.monitor == "spec" and args.specs is not None:

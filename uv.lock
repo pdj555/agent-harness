@@ -13,6 +13,7 @@ source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "fastapi" },
+    { name = "jsonschema" },
     { name = "openai-codex" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -20,7 +21,6 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "httpx" },
-    { name = "jsonschema" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -33,7 +33,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=2.1.0" },
     { name = "fastapi", specifier = ">=0.162.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28" },
-    { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.20" },
+    { name = "jsonschema", specifier = ">=4.20" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.3,<3" },
     { name = "openai-codex", specifier = ">=0.163.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },

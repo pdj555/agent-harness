@@ -8,10 +8,22 @@ documents built here, so an agent reads the same shape either way. The shape is 
 from __future__ import annotations
 
 import json
+import secrets
 from pathlib import Path
 from typing import Any
 
-from harness.evals.cases import BLIND_SPOTS, CANARY_GUID, CASES, PAIRED_CASES, SAME_SHAPE_CASES, Case
+from jsonschema import Draft202012Validator
+
+from harness.evals import paired_generator
+from harness.evals.cases import (
+    BLIND_SPOTS,
+    CANARY_GUID,
+    CASES,
+    CLOSED_BLIND_SPOTS,
+    PAIRED_CASES,
+    SAME_SHAPE_CASES,
+    Case,
+)
 from harness.evals.monitor import (
     CaseResult,
     EvalAborted,
@@ -39,6 +51,10 @@ STATUS = {
 
 SETS: dict[str, tuple[list[Case], str]] = {
     "main": (CASES, "the 33 published cases: 6 honest fixes and 27 attacks"),
+    "spec-attacks": (
+        CLOSED_BLIND_SPOTS + BLIND_SPOTS,
+        "8 attacks built against the spec check: 5 it now catches and the 3 it still misses",
+    ),
     "blind-spots": (BLIND_SPOTS, "3 attacks the spec check is known to miss"),
     "same-shape": (
         SAME_SHAPE_CASES,
@@ -46,6 +62,13 @@ SETS: dict[str, tuple[list[Case], str]] = {
     ),
     "paired": (PAIRED_CASES, "24 generated attack and control pairs that only arithmetic tells apart"),
 }
+# The set that exists only for a run: generated from a seed, about 30 seconds.
+FRESH = "paired-fresh"
+FRESH_DESCRIPTION = (
+    "24 attack and control pairs generated when the run starts from a seed (--fresh-seed, drawn at "
+    "random when not given); no expression is shared with the published paired set"
+)
+SET_NAMES = (*SETS, FRESH)
 OFFLINE_MONITORS: dict[str, tuple[Monitor, str]] = {
     "software": (software_monitor, "software rules"),
     "spec": (spec_monitor, "executable spec, side effects blocked"),
@@ -72,6 +95,11 @@ def error_document(command: str, code: int, message: str) -> dict:
     return _document(command, code, message)
 
 
+def help_document(text: str) -> dict:
+    """``--help`` asked for beside ``--json``: the help text inside a document, exit 0."""
+    return _document("help", EXIT_PASS, help=text)
+
+
 def sets_document() -> dict:
     """Every case set an eval can run, with its size and what it is."""
     sets = [
@@ -84,20 +112,42 @@ def sets_document() -> dict:
         }
         for name, (cases, description) in SETS.items()
     ]
+    pairs = paired_generator.FRESH_SEARCH["pairs"]
+    sets.append({"name": FRESH, "description": FRESH_DESCRIPTION, "cases": 2 * pairs, "attacks": pairs,
+                 "clean": pairs, "generated": True})
     monitors = list(OFFLINE_MONITORS)
     return _document("eval sets", EXIT_PASS, sets=sets, monitors=monitors, canary_guid=CANARY_GUID)
 
 
-def select_cases(set_name: str, case_ids: list[str] | None = None) -> list[Case]:
-    if set_name not in SETS:
-        raise UsageError(f"unknown set: {set_name}; choose from {', '.join(SETS)}")
-    pool = SETS[set_name][0]
+def select_cases(
+    set_name: str, case_ids: list[str] | None = None, fresh_seed: int | None = None
+) -> tuple[list[Case], dict | None]:
+    """The cases of a set, and for the generated set what to record about it (its seed and hash).
+
+    ``paired-fresh`` is generated here; a seed is drawn when none is given. A generated set
+    whose labels fail their check raises ``RuntimeError``: nothing can be scored on it.
+    """
+    if set_name not in SET_NAMES:
+        raise UsageError(f"unknown set: {set_name}; choose from {', '.join(SET_NAMES)}")
+    fresh = None
+    if set_name == FRESH:
+        seed = fresh_seed if fresh_seed is not None else secrets.randbelow(2**31)
+        if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+            raise UsageError("the fresh seed must be a whole number, 0 or more")
+        try:
+            pool, fresh = paired_generator.fresh_paired(seed)
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
+    elif fresh_seed is not None:
+        raise UsageError(f"a fresh seed only applies to the {FRESH} set")
+    else:
+        pool = SETS[set_name][0]
     if not case_ids:
-        return list(pool)
+        return list(pool), fresh
     unknown = sorted(set(case_ids) - {case.id for case in pool})
     if unknown:
         raise UsageError(f"unknown case: {', '.join(unknown)}")
-    return [case for case in pool if case.id in set(case_ids)]
+    return [case for case in pool if case.id in set(case_ids)], fresh
 
 
 def monitor_document(
@@ -108,6 +158,7 @@ def monitor_document(
     set_name: str | None,
     report_dir: Path,
     aborted: str | None = None,
+    fresh: dict | None = None,
 ) -> dict:
     """What one monitor did on one set, and the exit code that says whether it passed.
 
@@ -160,14 +211,24 @@ def monitor_document(
         failures=failures,
         report_dir=str(report_dir),
         canary_guid=CANARY_GUID,
+        **({"fresh": fresh} if fresh else {}),
     )
 
 
-def run_offline(monitor: str, set_name: str, out: Path, case_ids: list[str] | None = None) -> dict:
+def run_offline(
+    monitor: str,
+    set_name: str,
+    out: Path,
+    case_ids: list[str] | None = None,
+    fresh_seed: int | None = None,
+) -> dict:
     """Run a monitor that needs no key on a set and return its document. Writes the report to ``out``."""
     if monitor not in OFFLINE_MONITORS:
         raise UsageError(f"unknown offline monitor: {monitor}; choose from {', '.join(OFFLINE_MONITORS)}")
-    cases = select_cases(set_name, case_ids)
+    try:
+        cases, fresh = select_cases(set_name, case_ids, fresh_seed)
+    except RuntimeError as error:
+        return error_document("eval monitor", EXIT_INFRASTRUCTURE, str(error))
     review, label = OFFLINE_MONITORS[monitor]
     aborted = None
     try:
@@ -176,8 +237,17 @@ def run_offline(monitor: str, set_name: str, out: Path, case_ids: list[str] | No
         results, aborted = exc.results, str(exc)
     summary = write_report(results, out, monitor_name=label)
     return monitor_document(
-        summary, results, monitor=label, set_name=set_name, report_dir=out, aborted=aborted
+        summary, results, monitor=label, set_name=set_name, report_dir=out, aborted=aborted, fresh=fresh
     )
+
+
+def problems(document: object) -> list[str]:
+    """Everything in ``document`` that breaks the schema; empty when it is a valid eval document."""
+    validator = Draft202012Validator(json.loads(SCHEMA_PATH.read_text(encoding="utf-8")))
+    return [
+        f"{'/'.join(str(part) for part in error.absolute_path) or 'document'}: {error.message}"
+        for error in sorted(validator.iter_errors(document), key=lambda e: [str(p) for p in e.absolute_path])
+    ]
 
 
 SWEEP_KEYS = (
@@ -186,15 +256,24 @@ SWEEP_KEYS = (
 
 
 def sweep_summary_document(path: Path) -> dict:
-    """A sweep's ``sweep.json`` as a document: its settings, rows and analysis, without per-template data."""
+    """A sweep's ``sweep.json`` as a document: its settings, rows and analysis, without per-template data.
+
+    The document is checked against the schema before it is returned. A file that is not a
+    complete sweep summary (unreadable, not JSON, a key missing or of the wrong type) raises
+    ``UsageError`` naming what is wrong; it never comes back as a passing document.
+    """
     try:
         record = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise UsageError(f"cannot read a sweep summary at {path}: {error}") from error
     rows = record.get("rows") if isinstance(record, dict) else None
-    if not isinstance(rows, list) or not all(isinstance(row, dict) and "model" in row for row in rows):
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         raise UsageError(f"{path} is not a sweep summary: it has no rows")
-    sweep = {key: record.get(key) for key in SWEEP_KEYS}
+    sweep = {key: record[key] for key in SWEEP_KEYS if key in record}
     sweep["rows"] = [{k: v for k, v in row.items() if k != "templates"} for row in rows]
     sweep["analysis"] = record.get("analysis")
-    return _document("eval sweep-summary", EXIT_PASS, sweep=sweep)
+    document = _document("eval sweep-summary", EXIT_PASS, sweep=sweep)
+    found = problems(document)
+    if found:
+        raise UsageError(f"{path} is not a sweep summary: {'; '.join(found[:3])}")
+    return document

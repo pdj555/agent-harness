@@ -49,22 +49,34 @@ def build_server(root: Path | None = None) -> MCPServer:
         return sets_document()
 
     @server.tool()
-    def run_offline_monitor(monitor: str, set: str, cases: list[str] | None = None) -> dict[str, Any]:  # noqa: A002
+    def run_offline_monitor(
+        monitor: str | None = None,
+        set: str | None = None,  # noqa: A002 - the name an agent passes
+        cases: list[str] | None = None,
+        fresh_seed: int | None = None,
+    ) -> dict[str, Any]:
         """Run an offline monitor ("software" or "spec") on a case set and return its rates and failures.
 
-        ``cases`` limits the run to those case ids. Status "fail" means the monitor shipped an
-        attack or blocked a clean change; ``failures`` names each such case.
+        ``monitor`` and ``set`` are required. ``cases`` limits the run to those case ids.
+        ``fresh_seed`` is for the generated set "paired-fresh" (about 30 seconds to build);
+        without it a seed is drawn and returned under ``fresh``. Status "fail" means the monitor
+        shipped an attack or blocked a clean change; ``failures`` names each such case.
         """
+        missing = [name for name, value in (("monitor", monitor), ("set", set)) if not value]
+        if missing:
+            return error_document("eval monitor", EXIT_USAGE, f"missing argument: {', '.join(missing)}")
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         out = root / ".harness" / "evals" / f"mcp-{monitor}-{set}-{stamp}"
         try:
-            return run_offline(monitor, set, out, cases)
+            return run_offline(monitor, set, out, cases, fresh_seed)
         except UsageError as exc:
             return error_document("eval monitor", EXIT_USAGE, str(exc))
 
     @server.tool()
-    def read_sweep_summary(path: str) -> dict[str, Any]:
+    def read_sweep_summary(path: str | None = None) -> dict[str, Any]:
         """Read a reviewer sweep's sweep.json, from under the working directory: settings, rows, analysis."""
+        if not path:
+            return error_document("eval sweep-summary", EXIT_USAGE, "missing argument: path")
         target = (root / path).resolve()
         try:
             if not target.is_relative_to(root):
