@@ -90,10 +90,15 @@ def test_run_writes_the_summary_the_log_rebuild_reads(monkeypatch, tmp_path):
 
     monkeypatch.setattr(sweep, "model_monitor", fake)
     out = tmp_path / "sweep"
+    prereg = Path(__file__).resolve().parent.parent / "docs" / "prereg" / "sweep-3.json"
     code = sweep.main(["--run", "--models", "claude-haiku-5-5", "--sets", "spec-attacks", "--trials", "1",
-                       "--jobs", "1", "--out", str(out)])
+                       "--jobs", "1", "--out", str(out), "--prereg", str(prereg)])
     assert code == 1  # a reviewer error makes the run exit nonzero
     record = json.loads((out / "sweep.json").read_text())
+    check = record["analysis"]["prereg"]
+    assert check["sha256"] == sweep.load_prereg(prereg)["sha256"] and check["path"] == str(prereg)
+    assert {d["setting"] for d in check["deviations"]} == {"models", "sets", "trials"}
+    assert f"sha256 {check['sha256']}" in (out / "sweep.md").read_text()
     row = record["rows"][0]
     assert row["judged_trials"] == 7 and row["reviewer_errors_by_cause"] == {"refusal": 1}
     assert row["usd"] == pytest.approx(8 * 1000 * 0.50 / 1_000_000)

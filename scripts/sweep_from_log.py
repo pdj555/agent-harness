@@ -198,7 +198,13 @@ def results_for(block: dict, *, bare_is_step_limit: bool = False) -> tuple[list[
 
 
 def rebuild(
-    text: str, *, harness: str, date: str, bare_is_step_limit: bool = False, defaults: dict | None = None
+    text: str,
+    *,
+    harness: str,
+    date: str,
+    bare_is_step_limit: bool = False,
+    defaults: dict | None = None,
+    prereg: dict | None = None,
 ) -> dict:
     """The record ``reviewer_sweep.py --run`` would have written, from its log."""
     rows, previous, trials, cap = [], 0.0, None, None
@@ -229,7 +235,7 @@ def rebuild(
     }
     if fresh:
         record["fresh"] = fresh
-    record["analysis"] = sweep.analysis(record)
+    record["analysis"] = sweep.analysis(record, prereg)
     return record
 
 
@@ -396,6 +402,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="print blocked and judged reviews per model and case (optionally for one set)")
     view.add_argument("--compare", action="store_true",
                       help="print every two models compared per template, with Holm-adjusted p values")
+    parser.add_argument("--prereg", type=Path, default=None,
+                        help="a preregistration (docs/prereg/*.json) to check the rebuilt report against")
     parser.add_argument(
         "--allow-unknown-commit",
         action="store_true",
@@ -436,8 +444,9 @@ def main(argv: list[str] | None = None) -> int:
             date=args.date,
             bare_is_step_limit=args.bare_error_is_step_limit,
             defaults=defaults_at(args.harness),
+            prereg=sweep.load_prereg(args.prereg) if args.prereg else None,
         )
-    except LogError as exc:
+    except (LogError, sweep.PreregError) as exc:
         print(f"sweep_from_log: {exc}", file=sys.stderr)
         return 1
     print(f"sweep_from_log: verdict lines sha256 {fingerprint(args.log.read_text(encoding='utf-8'))}",

@@ -65,6 +65,8 @@ from harness.evals.monitor import (
     template,
     write_report,
 )
+from harness.evals.prereg import PreregError, audit
+from harness.evals.prereg import load as load_prereg
 from harness.evals.stats import holm, paired_difference
 from harness.review import review_diff
 from harness.tools import tool_specs
@@ -309,9 +311,10 @@ def shortcut_baselines(record: dict) -> list[dict]:
 
 
 COMPARED = {"catch_rate": True, "false_block_rate": False}  # metric -> whether it reads attacks
+ALPHA = 0.05  # a difference counts as found when its Holm-adjusted p is below this
 
 
-def comparisons(record: dict) -> list[dict]:
+def comparisons(record: dict, alpha: float = ALPHA) -> list[dict]:
     """Every two models on every set and rate, template by template, Holm-adjusted together.
 
     Only templates both models judged count. The adjustment covers every comparison in the
@@ -337,6 +340,7 @@ def comparisons(record: dict) -> list[dict]:
                                     "second": second["model"], **result})
     for entry, adjusted in zip(out, holm([entry["p"] for entry in out]), strict=True):
         entry["p_holm"] = adjusted
+        entry["found"] = adjusted < alpha
     return out
 
 
@@ -349,13 +353,43 @@ def saturated_rows(record: dict, lower_bound: float = SATURATION_LOWER_BOUND) ->
     ]
 
 
-def analysis(record: dict) -> dict:
-    """What the report says beyond the table, computed from the record's rows alone."""
-    return {
+ROW_METRICS = ("judged_reviews", "reviewer_errors_by_cause", "cost_usd")  # every row has these
+
+
+def computed_metrics(record: dict, found: dict) -> list[tuple[str, str]]:
+    """Every (set, metric) the report holds, in the names a preregistration uses."""
+    out: list[tuple[str, str]] = []
+    for row in record["rows"]:
+        for metric in COMPARED:
+            if row[metric].get("rate") is not None:  # a set with no clean change has no false-block rate
+                out.append((row["set"], metric))
+        out += [(row["set"], metric) for metric in ROW_METRICS]
+    out += [(row["set"], "saturation") for row in found["saturation"]]
+    out += [(entry["set"], "templates_right_vs_best_shortcut") for entry in found["shortcut_baselines"]]
+    out += [(c["set"], f"paired_difference.{c['metric']}") for c in found["comparisons"]]
+    return list(dict.fromkeys(out))
+
+
+def analysis(record: dict, prereg: dict | None = None) -> dict:
+    """What the report says beyond the table, computed from the record's rows alone.
+
+    With a preregistration, its thresholds are the ones used, and ``prereg`` holds the audit:
+    its SHA-256, the metrics computed here that it does not list, the ones it lists that were
+    not computed, and every setting of the run that differs from it.
+    """
+    thresholds = (prereg or {}).get("thresholds", {})
+    alpha = thresholds.get("alpha", ALPHA)
+    lower_bound = thresholds.get("saturation_lower_bound", SATURATION_LOWER_BOUND)
+    found = {
         "shortcut_baselines": shortcut_baselines(record),
-        "comparisons": comparisons(record),
-        "saturation": saturated_rows(record),
+        "comparisons": comparisons(record, alpha),
+        "alpha": alpha,
+        "saturation": saturated_rows(record, lower_bound),
     }
+    computed = computed_metrics(record, found)
+    found["prereg"] = audit(prereg, computed, record) if prereg else None
+    found["computed_metrics"] = [list(pair) for pair in computed]
+    return found
 
 
 def sweep_row(
@@ -385,6 +419,32 @@ def _pct(value: float | None) -> str:
 
 def _share(count: int, of: int) -> str:
     return f"{count / of:.0%}" if of else "n/a"
+
+
+def _named(pairs: list[list[str]]) -> str:
+    by_set: dict[str, list[str]] = {}
+    for name, metric in pairs:
+        by_set.setdefault(name, []).append(metric)
+    return "; ".join(f"{name}: {', '.join(metrics)}" for name, metrics in by_set.items())
+
+
+def render_prereg(found: dict) -> list[str]:
+    lines = ["", "## Preregistration", ""]
+    check = found.get("prereg")
+    if not check:
+        return lines + ["None given (`--prereg`). Every metric in this report is not preregistered."]
+    lines.append(f"{check['name']}, written {check['written']}: `{check['path']}`, sha256 {check['sha256']}.")
+    for title, key in (("Primary", "primary"), ("Secondary", "secondary"),
+                       ("Not preregistered", "not_preregistered"),
+                       ("Preregistered, not computed", "preregistered_not_computed")):
+        lines += ["", f"{title}: {_named(check[key]) or 'none'}."]
+    if check["deviations"]:
+        lines += ["", "Deviations from the preregistered settings:", ""]
+        lines += [f"- {d['setting']}: preregistered {d['preregistered']}, run {d['run']}"
+                  for d in check["deviations"]]
+    else:
+        lines += ["", "Deviations from the preregistered settings: none."]
+    return lines
 
 
 def render_saturation(rows: list[dict]) -> list[str]:
@@ -424,6 +484,9 @@ def render_comparisons(found: list[dict]) -> list[str]:
             f"| {c['templates']} | {c['difference']:+.0%} ({low:+.0%} to {high:+.0%}) "
             f"| {c['higher']} / {c['lower']} | {c['p']:.2f} | {c['p_holm']:.2f} |"
         )
+    if all("found" in c for c in found):
+        lines += ["", f"Differences found (adjusted p below the threshold): {sum(c['found'] for c in found)} "
+                      f"of {len(found)}."]
     return lines
 
 
@@ -492,6 +555,8 @@ def render_sweep(record: dict) -> str:
         lines += render_comparisons(extra["comparisons"])
     if extra.get("saturation"):
         lines += render_saturation(extra["saturation"])
+    if extra:
+        lines += render_prereg(extra)
     return "\n".join(lines) + "\n"
 
 
@@ -538,7 +603,7 @@ def run(args: argparse.Namespace) -> int:
     }
     if args.fresh:
         record["fresh"] = args.fresh
-    record["analysis"] = analysis(record)
+    record["analysis"] = analysis(record, args.prereg)
     (out / "sweep.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     (out / "sweep.md").write_text(render_sweep(record), encoding="utf-8")
     print(f"report: {out / 'sweep.md'}")
@@ -558,6 +623,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-errors", type=int, default=5)
     parser.add_argument("--max-usd", type=float, default=40.0, help="hard cap on spend for the whole sweep")
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--prereg", type=Path, default=None,
+                        help="a preregistration (docs/prereg/*.json) to check the report against")
     parser.add_argument("--run", action="store_true", help="call the models; without it, estimate only")
     return parser
 
@@ -570,6 +637,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unknown model or set: {', '.join(unknown)}")
     if args.trials < 1:
         parser.error("--trials must be at least 1")
+    if args.prereg is not None:
+        try:
+            args.prereg = load_prereg(args.prereg)
+        except PreregError as exc:
+            parser.error(str(exc))
+        print(f"preregistration: {args.prereg['path']} sha256 {args.prereg['sha256']}", flush=True)
     args.fresh = None
     if FRESH in args.sets:
         seed = args.fresh_seed if args.fresh_seed is not None else secrets.randbelow(2**31)

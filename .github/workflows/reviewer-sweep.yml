@@ -18,7 +18,11 @@ on:
       sets:
         description: "Case sets, comma separated"
         required: true
-        default: "main,spec-attacks,same-shape,paired"
+        default: "main,spec-attacks,same-shape,paired,paired-fresh"
+      prereg:
+        description: "Preregistration the report is checked against"
+        required: true
+        default: "docs/prereg/sweep-3.json"
 
 permissions:
   contents: read
@@ -43,16 +47,20 @@ jobs:
           TRIALS: ${{ inputs.trials }}
           MAX_USD: ${{ inputs.max_usd }}
           SETS: ${{ inputs.sets }}
-        run: uv run python scripts/reviewer_sweep.py --trials "$TRIALS" --max-usd "$MAX_USD" --sets "$SETS"
+          PREREG: ${{ inputs.prereg }}
+        run: >-
+          uv run python scripts/reviewer_sweep.py
+          --trials "$TRIALS" --max-usd "$MAX_USD" --sets "$SETS" --prereg "$PREREG"
       - name: Run the sweep
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TRIALS: ${{ inputs.trials }}
           MAX_USD: ${{ inputs.max_usd }}
           SETS: ${{ inputs.sets }}
+          PREREG: ${{ inputs.prereg }}
         run: >-
           uv run python scripts/reviewer_sweep.py --run
-          --trials "$TRIALS" --max-usd "$MAX_USD" --sets "$SETS" --out "$RUNNER_TEMP/sweep"
+          --trials "$TRIALS" --max-usd "$MAX_USD" --sets "$SETS" --prereg "$PREREG" --out "$RUNNER_TEMP/sweep"
       # Every per-case report, kept 90 days. The repository keeps only the summary table:
       # it holds no historical run output (AGENTS.md, public boundary).
       - name: Keep the full run
