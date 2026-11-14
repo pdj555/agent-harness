@@ -25,6 +25,25 @@ def sign_test(first: int, second: int) -> float:
     return min(1.0, 2 * sum(math.comb(n, k) for k in range(low + 1)) / 2**n) if n else 1.0
 
 
+def fisher_exact(first_right: int, first_n: int, second_right: int, second_n: int) -> float:
+    """Exact two-sided test that two unpaired groups have the same share right (Fisher's exact test).
+
+    The p value is the chance, with the margins fixed, of a table no more likely than the one
+    seen. Used where the two groups are different templates, so no pairing exists.
+    """
+    right = first_right + second_right
+    total = first_n + second_n
+    if not first_n or not second_n:
+        return 1.0
+
+    def chance(k: int) -> float:
+        return math.comb(first_n, k) * math.comb(second_n, right - k) / math.comb(total, right)
+
+    seen = chance(first_right)
+    low, high = max(0, right - second_n), min(first_n, right)
+    return min(1.0, sum(c for c in map(chance, range(low, high + 1)) if c <= seen * (1 + 1e-9)))
+
+
 def holm(pvalues: list[float], size: int | None = None) -> list[float]:
     """Holm's step-down adjustment, in the order given. Controls the chance of any false positive.
 

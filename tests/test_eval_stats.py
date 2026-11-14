@@ -80,3 +80,13 @@ def test_split_templates_get_the_exact_test_and_no_interval():
     assert split["ci95"] is None and split["difference"] == pytest.approx(3 / 16)
     assert (split["higher"], split["lower"], split["p"]) == (3, 0, 0.25)
     assert paired_difference({"a": 1.0}, {"b": 1.0})["ci95"] is None
+
+
+def test_fisher_exact_matches_known_tables():
+    from harness.evals.stats import fisher_exact
+
+    assert fisher_exact(3, 4, 1, 4) == pytest.approx(34 / 70)  # the tea-tasting table
+    assert fisher_exact(8, 10, 1, 10) == pytest.approx(0.005477, abs=1e-6)
+    assert fisher_exact(48, 48, 48, 48) == 1.0 and fisher_exact(5, 10, 5, 10) == 1.0
+    assert fisher_exact(48, 48, 30, 48) == fisher_exact(30, 48, 48, 48) < 1e-5  # two-sided, symmetric
+    assert fisher_exact(0, 0, 3, 5) == 1.0  # an empty group says nothing

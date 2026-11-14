@@ -109,6 +109,33 @@ def test_run_writes_the_summary_the_log_rebuild_reads(monkeypatch, tmp_path):
     assert expected in table
 
 
+def test_a_run_that_cannot_stand_as_the_preregistered_run_says_so_and_exits_nonzero(
+    monkeypatch, tmp_path, capsys
+):
+    """Every review right and none errored, but one model and one set where three and five were registered."""
+    import json
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+    verdict = lambda case, *rest: {"ship": not case.is_attack, "findings": [],  # noqa: E731
+                                   "usage": {"output_tokens": 10}}
+    monkeypatch.setattr(sweep, "model_monitor", lambda name, model, *, effort=None: verdict)
+    prereg = Path(__file__).resolve().parent.parent / "docs" / "prereg" / "sweep-3.json"
+    argv = ["--run", "--models", "claude-haiku-5-5", "--sets", "spec-attacks", "--jobs", "1",
+            "--out", str(tmp_path / "sweep")]
+    assert sweep.main([*argv, "--prereg", str(prereg)]) == 1
+    out = capsys.readouterr().out
+    assert "no claim is made: settings deviate from the preregistration: models, sets" in out
+    (line,) = [text for text in out.splitlines() if text.startswith(sweep.SETTINGS_PREFIX)]
+    logged = json.loads(line.removeprefix(sweep.SETTINGS_PREFIX))
+    assert logged["prereg_sha256"] == sweep.load_prereg(prereg)["sha256"]
+    assert (logged["models"], logged["sets"], logged["trials"]) == (["claude-haiku-5-5"], ["spec-attacks"], 3)
+    record = json.loads((tmp_path / "sweep" / "sweep.json").read_text())
+    assert record["analysis"]["claims"]["allowed"] is False and record["code_sha256"] == sweep.code_sha256()
+    # the same run with no preregistration claims nothing and is not a failure
+    assert sweep.main(argv) == 0
+    assert "no claim is made" not in capsys.readouterr().out
+
+
 def test_build_parser_defaults_are_the_published_settings():
     args = sweep.build_parser().parse_args([])
     assert (args.effort, args.seed, args.trials, args.max_usd) == ("medium", 0, 3, 40.0)

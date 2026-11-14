@@ -8,13 +8,18 @@ rebuilt from the log with the same scoring code when the run's own summary was l
     uv run python scripts/sweep_from_log.py run.log --harness f476a86 --date 2026-11-09 \\
         --bare-error-is-step-limit
 
-The cases the log scores are checked against the run's commit when this checkout has it. Effort and seed come
-from the logged command, else from the run commit's defaults; the scoring code is always
-this checkout's. The script prints a SHA-256 of the review and spend lines, so a copy of
+The cases the log scores are checked against the run's commit when this checkout has it. A
+run prints one ``sweep-settings:`` line holding its models, sets, trials, effort, seed, fresh
+seed, and the hashes of its preregistration and scoring code; the rebuild reads its settings
+from that line. A log without it (runs 1 and 2) is still scored, with effort and seed read
+from the logged command or the run commit's defaults, but no claim is made from it. The
+scoring code is always this checkout's.
+
+The script prints a SHA-256 of the review and spend lines, so a copy of
 the log can be checked against the one a published table came from. ``gh run view`` needs
 a signed-in ``gh``.
 
-Under the table the rebuild prints what a live run prints: the best listed shortcut beside
+Under the table the rebuild prints what a live run prints: the best known shortcut beside
 each model, every two models compared per template (``--compare`` prints that table alone),
 which sets are saturated, and the check against a preregistration (``--prereg``). A log that
 reviewed the ``paired-fresh`` set is scored by generating that set again from the seed the
@@ -42,6 +47,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import json
 import math
 import re
 import subprocess
@@ -82,37 +88,60 @@ class LogRefused(LogError):
     exit_code = 2
 
 
-_PREREG = re.compile(r"^preregistration: (?P<path>.*) sha256 (?P<sha>[0-9a-f]{64})$")
+def logged_settings(text: str) -> dict | None:
+    """The settings the run printed on its one machine-readable line; None when the log has no such line.
+
+    That line, not the echoed command, says what was run: a command can be wrapped over
+    several lines, hidden behind a variable, or left out of the log, and its defaults are
+    not in it at all.
+    """
+    found = []
+    for raw in text.splitlines():
+        line = _strip(raw)
+        if line.startswith(sweep.SETTINGS_PREFIX):
+            try:
+                found.append(json.loads(line.removeprefix(sweep.SETTINGS_PREFIX)))
+            except ValueError as error:
+                raise LogRefused(f"the log's settings line is not JSON: {error}") from error
+    if not found:
+        return None
+    if any(entry != found[-1] for entry in found) or not isinstance(found[-1], dict):
+        raise LogRefused("the log holds more than one run's settings")
+    missing = [key for key in sweep.SETTINGS_KEYS if key not in found[-1]]
+    if missing:
+        raise LogRefused(f"the log's settings line lacks {', '.join(missing)}")
+    return found[-1]
 
 
-def logged_prereg(text: str) -> str | None:
-    """The SHA-256 of the preregistration the run printed, or None when the log records none."""
-    found = [m["sha"] for m in (_PREREG.match(_strip(raw)) for raw in text.splitlines()) if m]
-    if len(set(found)) > 1:
-        raise LogRefused("the log records more than one preregistration hash")
-    return found[0] if found else None
-
-
-def prereg_standing(text: str, prereg: dict | None, *, mismatch_ok: bool = False) -> str | None:
+def prereg_standing(logged: dict | None, prereg: dict | None, *, mismatch_ok: bool = False) -> str | None:
     """Why this preregistration cannot back a claim about this log; None when it can.
 
-    The run prints the hash of the file it was started with. A file with another hash is not
-    the one the run was registered against and is refused, unless ``mismatch_ok``; then, and
-    when the log records no hash at all, the report is made but every test in it is exploratory.
+    The run records, on its settings line, the hash of the preregistration it was started
+    with and the hash of the code that scores it. A preregistration with another hash is not
+    the one the run was registered against and is refused, unless ``mismatch_ok``. Then, and
+    when the log has no settings line, when the run had no preregistration, or when this
+    checkout's scoring code is not the run's, the report is made and every test in it is
+    exploratory.
     """
     if prereg is None:
         return None
-    logged = logged_prereg(text)
     if logged is None:
-        return "the log records no preregistration hash, so this file cannot be shown to be the run's"
-    if logged != prereg["sha256"]:
+        return "the log has no settings line, so neither its settings nor its preregistration can be checked"
+    if logged["prereg_sha256"] is None:
+        return "the run was not started with a preregistration"
+    if logged["prereg_sha256"] != prereg["sha256"]:
         if not mismatch_ok:
             raise LogRefused(
-                f"the run recorded preregistration sha256 {logged}, and {prereg['path']} hashes to "
-                f"{prereg['sha256']}; pass the file the run used, or --prereg-mismatch-ok to report "
-                "with every claim withheld"
+                f"the run recorded preregistration sha256 {logged['prereg_sha256']}, and {prereg['path']} "
+                f"hashes to {prereg['sha256']}; pass the file the run used, or --prereg-mismatch-ok to "
+                "report with every claim withheld"
             )
-        return f"this file's sha256 is not the one the run recorded ({logged[:12]})"
+        return f"this file's sha256 is not the one the run recorded ({logged['prereg_sha256'][:12]})"
+    if logged["code_sha256"] != sweep.code_sha256():
+        return (
+            f"the scoring code is not the run's (the run recorded {str(logged['code_sha256'])[:12]}, this "
+            f"checkout is {sweep.code_sha256()[:12]}); check the run's commit out to score it"
+        )
     return None
 
 
@@ -266,6 +295,7 @@ def rebuild(
     """The record ``reviewer_sweep.py --run`` would have written, from its log."""
     rows, previous, trials, cap = [], 0.0, None, None
     unreviewed: dict[str, list[str]] = {}
+    logged = logged_settings(text)
     fresh = fresh_set(text)
     for block in parse(text):
         results, block_trials = results_for(block, bare_is_step_limit=bare_is_step_limit)
@@ -277,13 +307,28 @@ def rebuild(
         usd = block["spent"] - previous
         previous, trials, cap = block["spent"], block_trials, block["cap"]
         rows.append(sweep.sweep_row(block["model"], block["set"], summary, usd, bool(partial), results))
+    if logged:
+        # The run's own word for what it ran. A model or set it names with no rows in the log
+        # is a missing result, not a smaller run; reviews it owes and did not make are wrong.
+        if trials != logged["trials"]:
+            raise LogError(f"the log's reviews are numbered of {trials}, its settings say {logged['trials']}")
+        ran = {key: logged[key] for key in sweep.SETTINGS_KEYS}
+    else:
+        ran = {
+            "models": list(dict.fromkeys(row["model"] for row in rows)),
+            "sets": list(dict.fromkeys(row["set"] for row in rows)),
+            "trials": trials,
+            **settings(text, defaults),
+            "fresh_seed": fresh["seed"] if fresh else None,
+            "fresh_seed_source": None,
+            "prereg_sha256": None,
+            "code_sha256": None,
+        }
     record = {
         "date": date,
         "harness_commit": harness,
-        "models": list(dict.fromkeys(row["model"] for row in rows)),
-        "sets": list(dict.fromkeys(row["set"] for row in rows)),
-        "trials": trials,
-        **settings(text, defaults),
+        **ran,
+        "settings_logged": bool(logged),
         "prices_per_million": sweep.PRICES,
         "max_usd": cap,
         "spent_usd": previous,
@@ -291,8 +336,8 @@ def rebuild(
         "rows": rows,
     }
     if fresh:
-        record["fresh"] = fresh
-    unverified = prereg_standing(text, prereg, mismatch_ok=prereg_mismatch_ok)
+        record["fresh"] = {**fresh, "source": ran["fresh_seed_source"]}
+    unverified = prereg_standing(logged, prereg, mismatch_ok=prereg_mismatch_ok)
     record["analysis"] = sweep.analysis(record, prereg, unverified)
     return record
 
@@ -549,12 +594,9 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(details(text, bare_is_step_limit=args.bare_error_is_step_limit))
     else:
         sys.stdout.write(sweep.render_sweep(record))
-    withheld = record["analysis"]["claims"]["withheld"]
-    if withheld:
-        print(f"sweep_from_log: no claim is made: {record['analysis']['claims']['reason']}", file=sys.stderr)
     problem = sweep.incomplete(record["analysis"])
     if problem:
-        print(f"sweep_from_log: not the preregistered run: {problem}", file=sys.stderr)
+        print(f"sweep_from_log: no claim is made: {problem}", file=sys.stderr)
         return 1
     return 0
 

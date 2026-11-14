@@ -6,10 +6,11 @@ preregistration edited after the run no longer matches the hash in the run's rec
 ``audit`` then says, per model and set, which computed metrics were not preregistered,
 which preregistered ones were not computed, and where the run's settings differ.
 
-Two families of tests are registered, each Holm-adjusted on its own at the registered size:
-``model_vs_shortcut`` (each model against the best listed shortcut on each named set) and
-``model_vs_model`` (every two models on each named set and rate). Anything computed outside
-them is exploratory and is reported unadjusted.
+Families of tests are registered, each Holm-adjusted on its own at the registered size:
+``model_vs_shortcut`` (each model against the best known shortcut on each named set),
+``model_vs_model`` (every two models on each named set and rate) and, optionally,
+``paired_vs_fresh`` (each model's accuracy on the published pairs against the fresh ones).
+Anything computed outside them is exploratory and is reported unadjusted.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ ANY_SET = "*"
 MAX_ALPHA = 0.2
 MIN_SHARE = 0.5
 SHORTCUT_METRIC = "templates_right_vs_best_shortcut"
+FRESH_METRIC = "accuracy_paired_vs_fresh"
+PAIRED, FRESH = "paired", "paired-fresh"
 # Decision rules the report evaluates itself. Any other rule must be marked "judgement".
 MACHINE_RULES = ("above_shortcut", "difference_found", "seen_published_pairs")
 RULE_KINDS = ("machine", "judgement")
@@ -69,6 +72,10 @@ def load(path: Path) -> dict:
     _require(isinstance(trials, int) and not isinstance(trials, bool) and trials >= 1,
              "the preregistered trials must be a whole number, 1 or more")
     sets = settings["sets"]
+    if FRESH in sets:
+        seed = settings.get("fresh_seed")
+        ok = seed == "random" or (isinstance(seed, int) and not isinstance(seed, bool) and seed >= 0)
+        _require(ok, "the preregistered fresh_seed must be \"random\" or a whole number, 0 or more")
 
     metrics = doc.get("metrics")
     _require(isinstance(metrics, list) and metrics, "the preregistration needs a list of 'metrics'")
@@ -87,6 +94,11 @@ def load(path: Path) -> dict:
             _require(_names(family.get(key)), f"the family {name!r} needs a list of {key!r}")
         outside = [s for s in family["sets"] if s not in sets]
         _require(not outside, f"the family {name!r} names sets the run does not: {', '.join(outside)}")
+    if "paired_vs_fresh" in families:
+        ok = isinstance(families["paired_vs_fresh"], dict)
+        _require(ok, "the family 'paired_vs_fresh' must be an object")
+        _require(PAIRED in sets and FRESH in sets,
+                 "the family 'paired_vs_fresh' needs both paired and paired-fresh among the sets")
 
     _require(isinstance(doc.get("slices"), list), "the preregistration needs 'slices'")
     thresholds = doc.get("thresholds")
@@ -123,7 +135,8 @@ def family_members(prereg: dict) -> dict[str, list[tuple[str, str, str]]]:
         for a, b in combinations(models, 2)
         for metric in families["model_vs_model"]["metrics"]
     ]
-    return {"model_vs_shortcut": shortcut, "model_vs_model": pairs}
+    fresh = [(m, FRESH, FRESH_METRIC) for m in models] if "paired_vs_fresh" in families else []
+    return {"model_vs_shortcut": shortcut, "model_vs_model": pairs, "paired_vs_fresh": fresh}
 
 
 def registered(prereg: dict) -> dict[tuple[str, str, str], str]:
@@ -154,6 +167,16 @@ def deviations(prereg: dict, settings: dict) -> list[dict]:
         same = sorted(planned) == sorted(actual or []) if isinstance(planned, list) else planned == actual
         if not same:
             out.append({"setting": key, "preregistered": planned, "run": actual})
+    if FRESH in prereg["settings"]["sets"] and FRESH in (settings.get("sets") or []):
+        # How the fresh set's seed was chosen is a setting too: one picked by hand can be picked
+        # to suit. A run without the fresh set already deviates in ``sets``.
+        planned = prereg["settings"]["fresh_seed"]
+        seed, source = settings.get("fresh_seed"), settings.get("fresh_seed_source")
+        if planned == "random" and source != "drawn":
+            run = f"{seed} ({source or 'source not recorded'})"
+            out.append({"setting": "fresh_seed", "preregistered": "drawn at random by the run", "run": run})
+        elif planned != "random" and seed != planned:
+            out.append({"setting": "fresh_seed", "preregistered": planned, "run": seed})
     return out
 
 

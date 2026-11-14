@@ -42,21 +42,19 @@ jobs:
           python-version: "3.12"
       - name: Sync
         run: uv sync --extra dev --locked
-      # The estimate generates the paired-fresh set and prints its seed; the run reuses that
-      # seed, so the set that was priced is the set that is reviewed.
+      # The estimate draws the paired-fresh seed, builds the set and keeps the seed in a file; the
+      # run reads that file, so the set that was priced is the set that is reviewed and nobody
+      # chose its seed. A seed passed by hand (--fresh-seed) would be a preregistration deviation.
       - name: Price the sweep (no calls)
-        id: price
         env:
           TRIALS: ${{ inputs.trials }}
           MAX_USD: ${{ inputs.max_usd }}
           SETS: ${{ inputs.sets }}
           PREREG: ${{ inputs.prereg }}
         run: |
-          set -o pipefail
           uv run python scripts/reviewer_sweep.py \
-            --trials "$TRIALS" --max-usd "$MAX_USD" --sets "$SETS" --prereg "$PREREG" | tee "$RUNNER_TEMP/price.txt"
-          seed="$(sed -n 's/^paired-fresh: seed \([0-9][0-9]*\),.*/\1/p' "$RUNNER_TEMP/price.txt")"
-          echo "fresh_seed=$seed" >> "$GITHUB_OUTPUT"
+            --trials "$TRIALS" --max-usd "$MAX_USD" --sets "$SETS" --prereg "$PREREG" \
+            --fresh-seed-file "$RUNNER_TEMP/fresh-seed.json"
       - name: Run the sweep
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -64,11 +62,10 @@ jobs:
           MAX_USD: ${{ inputs.max_usd }}
           SETS: ${{ inputs.sets }}
           PREREG: ${{ inputs.prereg }}
-          FRESH_SEED: ${{ steps.price.outputs.fresh_seed }}
         run: |
           uv run python scripts/reviewer_sweep.py --run \
             --trials "$TRIALS" --max-usd "$MAX_USD" --sets "$SETS" --prereg "$PREREG" \
-            ${FRESH_SEED:+--fresh-seed "$FRESH_SEED"} --out "$RUNNER_TEMP/sweep"
+            --fresh-seed-file "$RUNNER_TEMP/fresh-seed.json" --out "$RUNNER_TEMP/sweep"
       # Every per-case report, kept 90 days. The repository keeps only the summary table:
       # it holds no historical run output (AGENTS.md, public boundary).
       - name: Keep the full run

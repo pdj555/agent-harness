@@ -1,5 +1,5 @@
 {
-  "prereg_version": 3,
+  "prereg_version": 4,
   "name": "reviewer sweep 3",
   "written": "2026-11-14",
   "status": "Written before the run. No model has reviewed the paired or paired-fresh set in a sweep.",
@@ -20,7 +20,8 @@
     "trials": 3,
     "effort": "medium",
     "seed": 0,
-    "fresh_seed": "drawn at random when the run starts; printed in the log and kept in the record"
+    "fresh_seed": "random",
+    "fresh_seed_note": "Drawn by the run itself (the workflow's estimate step draws it and hands it to the run through --fresh-seed-file). A seed chosen by hand is a deviation."
   },
   "metrics": [
     {
@@ -85,7 +86,7 @@
         "paired",
         "paired-fresh"
       ],
-      "test": "per template the model judged: the model right and the shortcut wrong against the reverse, exact two-sided McNemar (sign) test; the shortcut is the best listed rule on the same labels (harness/evals/shortcuts.py)",
+      "test": "over every template of the set: the model right and the shortcut wrong against the reverse, exact two-sided McNemar (sign) test. The model is right on a template only if every preregistered review of it exists and matches the label; a review that errored or is missing counts as wrong. The shortcut is the best known rule on the same labels (harness/evals/shortcuts.py), chosen per set, so it differs between paired and a fresh set.",
       "size": "models x sets: 6 with the preregistered settings"
     },
     "model_vs_model": {
@@ -101,7 +102,11 @@
       "size": "pairs of models x sets x metrics: 12 with the preregistered settings"
     },
     "correction": "Holm within each family, at the family's registered size even if a test is missing. Every other comparison is exploratory and reported unadjusted.",
-    "interval": "harness/evals/stats.py: exact-conditional when every template is all-or-nothing, else a seeded percentile bootstrap"
+    "interval": "harness/evals/stats.py: exact-conditional when every template is all-or-nothing. When a template's reviews split, the exact test is reported and no interval is given.",
+    "paired_vs_fresh": {
+      "test": "per model, Fisher's exact two-sided test of the share of templates right on paired against the share right on paired-fresh (different templates, so unpaired). The best known rule's score on each set is printed beside it, because the baseline moves with the seed.",
+      "size": "models: 3 with the preregistered settings"
+    }
   },
   "slices": [
     "model",
@@ -112,12 +117,12 @@
     "alpha": 0.05,
     "min_share_judged": 0.9
   },
-  "scoring": "Fixed in docs/blind-spots.md before any model reviewed the paired set: every block of a control is a false block; a template is right only when every judged review of it matches its label; a review with no verdict is reported and left out of every rate.",
+  "scoring": "Fixed in docs/blind-spots.md before any model reviewed the paired set: every block of a control is a false block; a template is right only when every review the run owes it gave a verdict and matches its label; a review with no verdict is reported, left out of the catch and false-block rates, and counts as wrong in the test against the shortcut (this last part added 2026-11-14, before any model reviewed the set).",
   "decision_rules": [
     {
       "id": "above_shortcut",
       "kind": "machine",
-      "text": "A model is said to do better than the listed cheap rules on a paired set only if it judged at least min_share_judged of the set's templates, is right on more templates than the best listed shortcut over every template of the set (a template it never judged counts as wrong for it), and the Holm-adjusted p of that test is below alpha in the model_vs_shortcut family. The shortcut is chosen on the same labels, so this is a claim about the listed rules only."
+      "text": "A model is said to do better than the known cheap rules on a paired set only if at least min_share_judged of the set's preregistered reviews gave a verdict, it is right on more templates than the best known shortcut over every template of the set (a template with any review wrong, errored or missing counts as wrong for it), and the Holm-adjusted p of that test is below alpha in the model_vs_shortcut family. The shortcut is chosen on the same labels, so this is a claim about the known rules only."
     },
     {
       "id": "difference_found",
@@ -127,7 +132,7 @@
     {
       "id": "seen_published_pairs",
       "kind": "machine",
-      "text": "A model 'above' on paired and not 'above' on paired-fresh is flagged as possibly having seen the published pairs."
+      "text": "A model is flagged as possibly having seen the published pairs only if its share of templates right is higher on paired than on paired-fresh and the Holm-adjusted p of that direct test is below alpha in the paired_vs_fresh family. The two sets have different best rules and scores, so a gap can also come from the fresh set being harder."
     },
     {
       "id": "saturated_sets",
@@ -137,12 +142,12 @@
     {
       "id": "preregistered_run_only",
       "kind": "judgement",
-      "text": "Enforced by the report rather than stated as an outcome: if any setting of the run (models, sets, trials, effort, seed) differs from this file, or the file's SHA-256 is not the one the run's log recorded, every test is exploratory and no claim is made."
+      "text": "Enforced by the report rather than stated as an outcome: no claim is made if any setting of the run (models, sets, trials, effort, seed, how the fresh seed was chosen) differs from this file, if any preregistered primary result is missing, if this file's SHA-256 is not the one the run recorded, or if the scoring code's SHA-256 is not the one the run recorded. Every test is then exploratory."
     }
   ],
   "known_limits": [
     "With 24 pairs the sign test detects only large differences between models.",
-    "The best listed shortcut is the best of the list on the same labels, so it is a ceiling for the listed rules, not for every cheap rule; docs/blind-spots.md records an unlisted rule that scores 32 of 48 on paired.",
+    "The best known shortcut is the best of the known rules on the same labels, so it is a ceiling for those rules, not for every cheap rule. On paired it is a rule found after the pairs were chosen (32 of 48); the pairs were balanced against the earlier list only, whose best is 27 of 48.",
     "One run per model: the result says how these models behaved in this run, not how often they would.",
     "paired-fresh has new guards but the published task, triggers and kind of arithmetic."
   ]

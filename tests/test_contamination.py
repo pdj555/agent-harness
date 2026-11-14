@@ -160,6 +160,13 @@ def test_a_run_on_the_fresh_set_records_its_seed_and_rebuilds_from_its_log(
     log = capsys.readouterr().out
     record = json.loads((out / "sweep.json").read_text())
     assert record["fresh"]["seed"] == 5 and record["fresh"]["excludes_published_expressions"]
+    assert (record["fresh"]["source"], record["fresh_seed"]) == ("given", 5)
+    assert record["fresh_seed_source"] == "given"
+    # the run prints its settings on one line, and the rebuild reads them from it
+    (line,) = [text for text in log.splitlines() if text.startswith(sweep.SETTINGS_PREFIX)]
+    logged = json.loads(line.removeprefix(sweep.SETTINGS_PREFIX))
+    assert logged == {key: record[key] for key in sweep.SETTINGS_KEYS}
+    assert logged["code_sha256"] == sweep.code_sha256() and logged["prereg_sha256"] is None
     assert f"paired-fresh: seed 5, 6 pairs, guards sha256 {record['fresh']['guards_sha256']}" in log
     assert record["rows"][0]["judged_trials"] == 12
     assert record["rows"][0]["catch_rate"]["rate"] == 1 and record["rows"][0]["false_block_rate"]["rate"] == 0
@@ -167,7 +174,8 @@ def test_a_run_on_the_fresh_set_records_its_seed_and_rebuilds_from_its_log(
 
     sweep.SETS.pop(sweep.FRESH)  # the rebuild has only the log to go on
     rebuilt = from_log.rebuild(log, harness="x", date="d")
-    assert rebuilt["fresh"] == record["fresh"]
+    assert rebuilt["fresh"] == record["fresh"] and rebuilt["settings_logged"] is True
+    assert {key: rebuilt[key] for key in sweep.SETTINGS_KEYS} == logged
     assert rebuilt["rows"][0]["templates"] == record["rows"][0]["templates"]
     tampered = log.replace(record["fresh"]["guards_sha256"], "0" * 64)
     with pytest.raises(from_log.LogError, match="different set"):
@@ -183,18 +191,40 @@ def test_a_fresh_seed_without_the_fresh_set_is_a_usage_error():
         sweep.main(["--sets", "paired", "--fresh-seed", "3"])
 
 
+def test_a_seed_file_carries_a_drawn_seed_from_the_estimate_to_the_run(small_search, tmp_path, capsys):
+    """Drawn once, by the script; read back by the next invocation; never a seed somebody wrote in."""
+    seed_file = tmp_path / "fresh-seed.json"
+    seed, source = sweep.fresh_seed(None, seed_file)
+    assert source == "drawn" and json.loads(seed_file.read_text()) == {"seed": seed, "source": "drawn"}
+    assert sweep.fresh_seed(None, seed_file) == (seed, "drawn")
+    assert sweep.fresh_seed(8, None) == (8, "given")
+    assert sweep.fresh_seed(None, None)[1] == "drawn"
+    with pytest.raises(ValueError, match="not both"):
+        sweep.fresh_seed(8, seed_file)
+    for planted in ('{"seed": 8, "source": "given"}', '{"seed": 8}', '{"seed": -1, "source": "drawn"}',
+                    '{"seed": true, "source": "drawn"}', "8"):
+        seed_file.write_text(planted)
+        with pytest.raises(ValueError, match="fresh seed file"):
+            sweep.fresh_seed(None, seed_file)
+    # two invocations of the script, as the workflow makes them: the same set, its seed drawn
+    seed_file.unlink()
+    argv = ["--models", "claude-haiku-5-5", "--sets", "paired-fresh", "--fresh-seed-file", str(seed_file)]
+    assert sweep.main(argv) == 0 and sweep.main(argv) == 0
+    lines = [text for text in capsys.readouterr().out.splitlines() if text.startswith(sweep.SETTINGS_PREFIX)]
+    first, second = (json.loads(text.removeprefix(sweep.SETTINGS_PREFIX)) for text in lines)
+    assert first == second and first["fresh_seed_source"] == "drawn"
+    assert first["fresh_seed"] == json.loads(seed_file.read_text())["seed"]
+    sweep.SETS.pop(sweep.FRESH, None)
+
+
 def test_the_workflow_reviews_the_fresh_set_it_priced():
-    """The run step takes its seed from the estimate step, read out of the line the script prints."""
+    """Both steps name the same seed file, and neither passes a seed by hand."""
     import re
 
     workflow = (ROOT / ".github" / "workflows" / "reviewer-sweep.yml").read_text(encoding="utf-8")
-    assert "FRESH_SEED: ${{ steps.price.outputs.fresh_seed }}" in workflow
-    assert '${FRESH_SEED:+--fresh-seed "$FRESH_SEED"}' in workflow
-    expression = re.search(r"sed -n '([^']+)'", workflow)[1]
-    line = sweep.fresh_line({"seed": 20261114, "pairs": 24, "guards_sha256": "ab" * 32})
-    printed = subprocess.run(["sed", "-n", expression], input=line + "\nestimated total: $1.00\n",
-                             capture_output=True, text=True, check=True)
-    assert printed.stdout == "20261114\n"
+    assert workflow.count('--fresh-seed-file "$RUNNER_TEMP/fresh-seed.json"') == 2
+    assert "--fresh-seed " not in workflow and "FRESH_SEED" not in workflow
+    assert "runs-on: ubuntu-latest" in workflow and "self-hosted" not in workflow
     # the script and the workflow review the same five sets by default, the ones preregistered
     default = re.search(r'default: "(main,[^"]+)"', workflow)[1].split(",")
     prereg = json.loads((ROOT / "docs" / "prereg" / "sweep-3.json").read_text())

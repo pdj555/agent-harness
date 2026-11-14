@@ -118,14 +118,40 @@ def test_audit_is_per_model_and_set_and_reports_deviations():
     assert [OPUS, "paired", SHORTCUT] in missing  # a registered model missing from a primary set
     assert [OPUS, "paired", "catch_rate"] in missing and [HAIKU, "paired-fresh", "catch_rate"] in missing
     assert [HAIKU, "paired", "catch_rate"] not in missing
-    # primary: 6 shortcut tests, 12 pair tests, 12 rates; 2 of them were computed
-    assert out["primary_not_computed"] == 6 + 12 + 12 - 2
-    assert out["family_sizes"] == {"model_vs_shortcut": 6, "model_vs_model": 12}
+    # primary: 6 shortcut tests, 12 pair tests, 3 paired-against-fresh tests, 12 rates; 2 were computed
+    assert out["primary_not_computed"] == 6 + 12 + 3 + 12 - 2
+    assert [HAIKU, "paired-fresh", "accuracy_paired_vs_fresh"] in missing
+    assert out["family_sizes"] == {"model_vs_shortcut": 6, "model_vs_model": 12, "paired_vs_fresh": 3}
     assert out["thresholds"] == {"alpha": 0.05, "min_share_judged": 0.9}
     assert {d["setting"]: (d["preregistered"], d["run"]) for d in out["deviations"]} == {
         "trials": (3, 2),
         "sets": (prereg["settings"]["sets"], ["paired", "main"]),
     }
     # the same models in another order is not a deviation
-    reordered = {**prereg["settings"], "models": prereg["settings"]["models"][::-1]}
+    drawn = {**prereg["settings"], "fresh_seed": 7, "fresh_seed_source": "drawn"}
+    reordered = {**drawn, "models": prereg["settings"]["models"][::-1]}
     assert audit(prereg, computed, reordered)["deviations"] == []
+    # the preregistration says the run draws the fresh seed: one handed to it is a deviation
+    for source in ("given", None):
+        (deviation,) = audit(prereg, computed, {**drawn, "fresh_seed_source": source})["deviations"]
+        assert deviation["setting"] == "fresh_seed"
+        assert deviation["preregistered"] == "drawn at random by the run"
+        assert deviation["run"].startswith("7 (")
+
+
+def test_a_preregistered_fresh_seed_is_random_or_a_number_and_a_number_must_be_the_one_run(tmp_path):
+    for bad in (None, "any", -1, True, 1.5):
+        with pytest.raises(PreregError, match="fresh_seed must be"):
+            load(_write(tmp_path, lambda d, bad=bad: d["settings"].update(fresh_seed=bad)))
+    with pytest.raises(PreregError, match="needs both paired and paired-fresh"):
+        load(_write(tmp_path, lambda d: (
+            d["settings"].update(sets=["main", "paired"]),
+            d.update(metrics=[m for m in d["metrics"] if m["set"] in ("main", "paired", "*")]),
+            d["families"]["model_vs_shortcut"].update(sets=["paired"]),
+            d["families"]["model_vs_model"].update(sets=["paired"]),
+        )))
+    fixed = load(_write(tmp_path, lambda d: d["settings"].update(fresh_seed=11)))
+    ran = {**fixed["settings"], "fresh_seed_source": "given"}
+    assert audit(fixed, [], ran)["deviations"] == []
+    (deviation,) = audit(fixed, [], {**ran, "fresh_seed": 12})["deviations"]
+    assert (deviation["setting"], deviation["preregistered"], deviation["run"]) == ("fresh_seed", 11, 12)
