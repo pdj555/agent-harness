@@ -184,8 +184,8 @@ def rebuild(
         summary = summarize(results)
         usd = block["spent"] - previous
         previous, trials, cap = block["spent"], block_trials, block["cap"]
-        rows.append(sweep.sweep_row(block["model"], block["set"], summary, usd, stopped=bool(partial)))
-    return {
+        rows.append(sweep.sweep_row(block["model"], block["set"], summary, usd, bool(partial), results))
+    record = {
         "date": date,
         "harness_commit": harness,
         "models": list(dict.fromkeys(row["model"] for row in rows)),
@@ -198,6 +198,8 @@ def rebuild(
         "unreviewed_cases": unreviewed,
         "rows": rows,
     }
+    record["analysis"] = sweep.analysis(record)
+    return record
 
 
 def _at(commit: str, path: str) -> str | None:
