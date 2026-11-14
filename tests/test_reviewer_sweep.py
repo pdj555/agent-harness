@@ -96,7 +96,8 @@ def test_run_writes_the_summary_the_log_rebuild_reads(monkeypatch, tmp_path):
     assert code == 1  # a reviewer error makes the run exit nonzero
     record = json.loads((out / "sweep.json").read_text())
     check = record["analysis"]["prereg"]
-    assert check["sha256"] == sweep.load_prereg(prereg)["sha256"] and check["path"] == str(prereg)
+    assert check["sha256"] == sweep.load_prereg(prereg)["sha256"]
+    assert check["path"] == "docs/prereg/sweep-3.json"
     assert {d["setting"] for d in check["deviations"]} == {"models", "sets", "trials"}
     assert f"sha256 {check['sha256']}" in (out / "sweep.md").read_text()
     row = record["rows"][0]

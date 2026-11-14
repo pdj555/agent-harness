@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import random
-
 import pytest
-from harness.evals.stats import discordant_interval, holm, paired_difference, sign_test
+from harness.evals.stats import discordant_interval, holm, interval_coverage, paired_difference, sign_test
 
 
 def test_sign_test_matches_exact_binomial_tails():
@@ -54,34 +52,31 @@ def test_the_exact_interval_excludes_zero_exactly_when_the_test_rejects(template
             assert mirrored == pytest.approx((-high, -low))
 
 
-def test_the_exact_interval_covers_the_true_difference_in_simulation():
-    """Templates drawn at random: first higher with one chance, lower with another, else tied."""
-    rng = random.Random(0)
-    settings = [(0, 0), (0.05, 0.05), (0.1, 0), (0.25, 0.25), (0.5, 0), (0.5, 0.1), (0.9, 0),
-                (0.6, 0.3), (0.5, 0.5), (0.2, 0.1), (1, 0), (0.8, 0.2)]
-    for templates in (8, 24):
-        for up, down in settings:
-            covered = 0
-            for _ in range(1500):
-                draws = [rng.random() for _ in range(templates)]
-                higher = sum(d < up for d in draws)
-                lower = sum(up <= d < up + down for d in draws)
-                low, high = discordant_interval(higher, lower, templates)
-                covered += low - 1e-9 <= up - down <= high + 1e-9
-            assert covered / 1500 >= 0.95, (templates, up, down, covered / 1500)
+def test_the_exact_interval_covers_the_true_difference_by_enumeration():
+    """Exact coverage, every outcome counted, on a 0.05 grid: never below 95%, and the documented minima."""
+    for templates, documented in ((8, 0.9735), (24, 0.9649)):
+        worst = min(
+            interval_coverage(templates, i / 20, j / 20) for i in range(21) for j in range(21 - i)
+        )
+        assert worst == pytest.approx(documented, abs=1e-4)
+        assert worst >= 0.95
+    # the finer grid's minima quoted in the docstring and docs/evals.md
+    assert interval_coverage(8, 0.47, 0.53) == pytest.approx(0.9699, abs=1e-4)
+    assert interval_coverage(24, 0.48, 0.52) == pytest.approx(0.9612, abs=1e-4)
+    assert interval_coverage(48, 0.51, 0.49) == pytest.approx(0.9579, abs=1e-4)
+    assert interval_coverage(24, 0, 0) == 1.0 and interval_coverage(24, 1, 0) == pytest.approx(1.0)
 
 
-def test_paired_difference_says_which_interval_it_used():
+def test_split_templates_get_the_exact_test_and_no_interval():
     same = {str(i): 1.0 for i in range(8)}
     none = paired_difference(same, same)
-    assert none["method"] == "exact" and none["p"] == 1.0
+    assert none["p"] == 1.0
     assert none["ci95"] == pytest.approx((-(1 - 0.025 ** (1 / 8)), 1 - 0.025 ** (1 / 8)))
     five = paired_difference(same, {str(i): 0.0 if i < 5 else 1.0 for i in range(8)})
     assert five["p"] == pytest.approx(0.0625) and five["ci95"][0] < 0 < five["ci95"][1]
     six = paired_difference(same, {str(i): 0.0 if i < 6 else 1.0 for i in range(8)})
     assert six["p"] == pytest.approx(0.03125) and six["ci95"][0] > 0
     split = paired_difference(same, {str(i): 0.5 if i < 3 else 1.0 for i in range(8)})
-    assert split["method"] == "bootstrap" and split["difference"] == pytest.approx(3 / 16)
-    assert split["ci95"] == paired_difference(same, {str(i): 0.5 if i < 3 else 1.0 for i in range(8)})["ci95"]
-    assert 0 <= split["ci95"][0] < split["difference"] < split["ci95"][1] <= 0.5
-    assert paired_difference({"a": 1.0}, {"b": 1.0})["method"] is None
+    assert split["ci95"] is None and split["difference"] == pytest.approx(3 / 16)
+    assert (split["higher"], split["lower"], split["p"]) == (3, 0, 0.25)
+    assert paired_difference({"a": 1.0}, {"b": 1.0})["ci95"] is None

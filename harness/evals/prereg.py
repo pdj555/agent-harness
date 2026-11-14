@@ -23,6 +23,7 @@ ROLES = ("primary", "secondary")
 SETTINGS = ("models", "sets", "trials", "effort", "seed")
 ANY_SET = "*"
 MAX_ALPHA = 0.2
+MIN_SHARE = 0.5
 SHORTCUT_METRIC = "templates_right_vs_best_shortcut"
 # Decision rules the report evaluates itself. Any other rule must be marked "judgement".
 MACHINE_RULES = ("above_shortcut", "difference_found", "seen_published_pairs")
@@ -90,10 +91,13 @@ def load(path: Path) -> dict:
     _require(isinstance(doc.get("slices"), list), "the preregistration needs 'slices'")
     thresholds = doc.get("thresholds")
     _require(isinstance(thresholds, dict), "the preregistration needs 'thresholds'")
-    _require(set(thresholds) == {"alpha"}, "the preregistered thresholds are exactly: alpha")
-    alpha = thresholds["alpha"]
+    _require(set(thresholds) == {"alpha", "min_share_judged"},
+             "the preregistered thresholds are exactly: alpha, min_share_judged")
+    alpha, share = thresholds["alpha"], thresholds["min_share_judged"]
     ok = isinstance(alpha, (int, float)) and not isinstance(alpha, bool) and 0 < alpha <= MAX_ALPHA
     _require(ok, f"the preregistered alpha must be a number above 0 and at most {MAX_ALPHA}")
+    ok = isinstance(share, (int, float)) and not isinstance(share, bool) and MIN_SHARE <= share <= 1
+    _require(ok, f"the preregistered min_share_judged must be a number from {MIN_SHARE} to 1")
 
     rules = doc.get("decision_rules")
     _require(isinstance(rules, list) and rules, "the preregistration needs 'decision_rules'")
@@ -142,6 +146,17 @@ def registered(prereg: dict) -> dict[tuple[str, str, str], str]:
     return found
 
 
+def deviations(prereg: dict, settings: dict) -> list[dict]:
+    """Every setting of a run that differs from the one preregistered. Order of a list does not count."""
+    out = []
+    for key in SETTINGS:
+        planned, actual = prereg["settings"][key], settings.get(key)
+        same = sorted(planned) == sorted(actual or []) if isinstance(planned, list) else planned == actual
+        if not same:
+            out.append({"setting": key, "preregistered": planned, "run": actual})
+    return out
+
+
 def audit(prereg: dict, computed: list[tuple[str, str, str]], settings: dict) -> dict:
     """Check a run against its preregistration, per model and set.
 
@@ -158,12 +173,6 @@ def audit(prereg: dict, computed: list[tuple[str, str, str]], settings: dict) ->
         role = wanted.get(key)
         (by_role[role] if role else not_preregistered).append(list(key))
     not_computed = [list(key) for key in wanted if key not in done]
-    deviations = []
-    for key in SETTINGS:
-        planned, actual = prereg["settings"][key], settings.get(key)
-        same = sorted(planned) == sorted(actual or []) if isinstance(planned, list) else planned == actual
-        if not same:
-            deviations.append({"setting": key, "preregistered": planned, "run": actual})
     return {
         "path": prereg["path"],
         "sha256": prereg["sha256"],
@@ -176,5 +185,5 @@ def audit(prereg: dict, computed: list[tuple[str, str, str]], settings: dict) ->
         "not_preregistered": not_preregistered,
         "preregistered_not_computed": not_computed,
         "primary_not_computed": sum(wanted[tuple(key)] == "primary" for key in not_computed),
-        "deviations": deviations,
+        "deviations": deviations(prereg, settings),
     }

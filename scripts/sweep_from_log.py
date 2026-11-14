@@ -73,6 +73,48 @@ CASES_FILE = "harness/evals/cases.py"
 class LogError(ValueError):
     """The log does not hold a complete sweep, or this checkout cannot score it."""
 
+    exit_code = 1
+
+
+class LogRefused(LogError):
+    """The caller handed over something that must not be scored as it stands: exit 2."""
+
+    exit_code = 2
+
+
+_PREREG = re.compile(r"^preregistration: (?P<path>.*) sha256 (?P<sha>[0-9a-f]{64})$")
+
+
+def logged_prereg(text: str) -> str | None:
+    """The SHA-256 of the preregistration the run printed, or None when the log records none."""
+    found = [m["sha"] for m in (_PREREG.match(_strip(raw)) for raw in text.splitlines()) if m]
+    if len(set(found)) > 1:
+        raise LogRefused("the log records more than one preregistration hash")
+    return found[0] if found else None
+
+
+def prereg_standing(text: str, prereg: dict | None, *, mismatch_ok: bool = False) -> str | None:
+    """Why this preregistration cannot back a claim about this log; None when it can.
+
+    The run prints the hash of the file it was started with. A file with another hash is not
+    the one the run was registered against and is refused, unless ``mismatch_ok``; then, and
+    when the log records no hash at all, the report is made but every test in it is exploratory.
+    """
+    if prereg is None:
+        return None
+    logged = logged_prereg(text)
+    if logged is None:
+        return "the log records no preregistration hash, so this file cannot be shown to be the run's"
+    if logged != prereg["sha256"]:
+        if not mismatch_ok:
+            raise LogRefused(
+                f"the run recorded preregistration sha256 {logged}, and {prereg['path']} hashes to "
+                f"{prereg['sha256']}; pass the file the run used, or --prereg-mismatch-ok to report "
+                "with every claim withheld"
+            )
+        return f"this file's sha256 is not the one the run recorded ({logged[:12]})"
+    return None
+
 
 def _strip(raw: str) -> str:
     return _PREFIX.sub("", raw).lstrip("﻿").rstrip()
@@ -99,6 +141,14 @@ def parse(text: str) -> list[dict]:
         raise LogError("no sweep spend lines in the log")
     if reviews:
         raise LogError(f"{len(reviews)} review lines after the last spend line: the log is cut short")
+    seen: set[tuple[str, str]] = set()
+    for block in blocks:
+        key = (block["model"], block["set"])
+        if key in seen:
+            raise LogRefused(
+                f"{block['model']} {block['set']} is logged twice: two runs in one log are not one run"
+            )
+        seen.add(key)
     return blocks
 
 
@@ -211,6 +261,7 @@ def rebuild(
     bare_is_step_limit: bool = False,
     defaults: dict | None = None,
     prereg: dict | None = None,
+    prereg_mismatch_ok: bool = False,
 ) -> dict:
     """The record ``reviewer_sweep.py --run`` would have written, from its log."""
     rows, previous, trials, cap = [], 0.0, None, None
@@ -241,7 +292,8 @@ def rebuild(
     }
     if fresh:
         record["fresh"] = fresh
-    record["analysis"] = sweep.analysis(record, prereg)
+    unverified = prereg_standing(text, prereg, mismatch_ok=prereg_mismatch_ok)
+    record["analysis"] = sweep.analysis(record, prereg, unverified)
     return record
 
 
@@ -410,6 +462,9 @@ def main(argv: list[str] | None = None) -> int:
                       help="print every two models compared per template, with Holm-adjusted p values")
     parser.add_argument("--prereg", type=Path, default=None,
                         help="a preregistration (docs/prereg/*.json) to check the rebuilt report against")
+    parser.add_argument("--prereg-mismatch-ok", action="store_true",
+                        help="report against a preregistration whose hash is not the one the run logged; "
+                        "every claim is then withheld")
     parser.add_argument(
         "--allow-unknown-commit",
         action="store_true",
@@ -432,6 +487,8 @@ def main(argv: list[str] | None = None) -> int:
     except sweep.PreregError as exc:
         print(f"sweep_from_log: {exc}", file=sys.stderr)
         return 2
+    if prereg:
+        prereg["path"] = sweep.repo_relative(prereg["path"])
     then = cases_at(args.harness)
     if then is None:
         if not args.allow_unknown_commit:
@@ -462,10 +519,11 @@ def main(argv: list[str] | None = None) -> int:
             bare_is_step_limit=args.bare_error_is_step_limit,
             defaults=defaults_at(args.harness),
             prereg=prereg,
+            prereg_mismatch_ok=args.prereg_mismatch_ok,
         )
     except LogError as exc:
         print(f"sweep_from_log: {exc}", file=sys.stderr)
-        return 1
+        return exc.exit_code
     print(f"sweep_from_log: verdict lines sha256 {fingerprint(args.log.read_text(encoding='utf-8'))}",
           file=sys.stderr)
     for where, cases in record["unreviewed_cases"].items():
@@ -491,10 +549,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(details(text, bare_is_step_limit=args.bare_error_is_step_limit))
     else:
         sys.stdout.write(sweep.render_sweep(record))
-    incomplete = (record["analysis"]["prereg"] or {}).get("primary_not_computed")
-    if incomplete:
-        print(f"sweep_from_log: incomplete: {incomplete} preregistered primary results are missing",
-              file=sys.stderr)
+    withheld = record["analysis"]["claims"]["withheld"]
+    if withheld:
+        print(f"sweep_from_log: no claim is made: {record['analysis']['claims']['reason']}", file=sys.stderr)
+    problem = sweep.incomplete(record["analysis"])
+    if problem:
+        print(f"sweep_from_log: not the preregistered run: {problem}", file=sys.stderr)
         return 1
     return 0
 

@@ -19,7 +19,7 @@ def test_the_committed_preregistration_loads_and_is_hashed_from_its_bytes():
     assert prereg["sha256"] == hashlib.sha256(SWEEP_3.read_bytes()).hexdigest()
     assert prereg["settings"]["trials"] == 3 and prereg["settings"]["effort"] == "medium"
     assert prereg["settings"]["sets"] == ["main", "spec-attacks", "same-shape", "paired", "paired-fresh"]
-    assert prereg["thresholds"] == {"alpha": 0.05}
+    assert prereg["thresholds"] == {"alpha": 0.05, "min_share_judged": 0.9}
 
 
 def test_the_two_families_are_six_and_twelve_tests():
@@ -40,6 +40,10 @@ def test_every_registered_result_is_per_model_and_set():
     assert wanted[OPUS, "main", "catch_rate"] == "secondary"  # the wildcard, on every registered set
     assert wanted[SONNET, "spec-attacks", "cost_usd"] == "secondary"
     assert (HAIKU, "same-shape", SHORTCUT) not in wanted
+    # spec-attacks has no clean change, so no false-block rate is registered there
+    assert (HAIKU, "spec-attacks", "false_block_rate") not in wanted
+    assert wanted[HAIKU, "spec-attacks", "catch_rate"] == "secondary"
+    assert wanted[HAIKU, "main", "false_block_rate"] == "secondary"
     assert ("claude-fable-5-1", "paired", "catch_rate") not in wanted
 
 
@@ -71,6 +75,8 @@ def _write(tmp_path, change) -> Path:
         (lambda d: d["thresholds"].update(alpha=0), "alpha must be a number above 0 and at most 0.2"),
         (lambda d: d["thresholds"].update(alpha=True), "alpha must be a number above 0 and at most 0.2"),
         (lambda d: d["thresholds"].update(saturation_lower_bound=0.9), "thresholds are exactly: alpha"),
+        (lambda d: d["thresholds"].update(min_share_judged=0.1), "min_share_judged must be a number"),
+        (lambda d: d["thresholds"].pop("min_share_judged"), "exactly: alpha, min_share_judged"),
         (lambda d: d.pop("decision_rules"), "needs 'decision_rules'"),
         (lambda d: d["decision_rules"][0].pop("kind"), "needs id, kind and text"),
         (lambda d: d["decision_rules"][3].update(kind="machine"), "cannot check rule 'saturated_sets'"),
@@ -115,7 +121,7 @@ def test_audit_is_per_model_and_set_and_reports_deviations():
     # primary: 6 shortcut tests, 12 pair tests, 12 rates; 2 of them were computed
     assert out["primary_not_computed"] == 6 + 12 + 12 - 2
     assert out["family_sizes"] == {"model_vs_shortcut": 6, "model_vs_model": 12}
-    assert out["thresholds"] == {"alpha": 0.05}
+    assert out["thresholds"] == {"alpha": 0.05, "min_share_judged": 0.9}
     assert {d["setting"]: (d["preregistered"], d["run"]) for d in out["deviations"]} == {
         "trials": (3, 2),
         "sets": (prereg["settings"]["sets"], ["paired", "main"]),

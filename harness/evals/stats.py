@@ -8,8 +8,8 @@ conservative; none assumes a normal distribution, because the sets have 8 to 24 
 
 from __future__ import annotations
 
+import functools
 import math
-import random
 
 from harness.evals.monitor import _beta_quantile
 
@@ -49,6 +49,7 @@ def _interval(successes: float, trials: float, alpha: float) -> tuple[float, flo
     return low, high
 
 
+@functools.cache
 def discordant_interval(higher: int, lower: int, templates: int) -> tuple[float, float]:
     """95% interval for a paired difference in rates when every template is all-or-nothing.
 
@@ -58,8 +59,10 @@ def discordant_interval(higher: int, lower: int, templates: int) -> tuple[float,
     test: it leaves out one half exactly when that test gives p below 0.05. So this interval
     excludes zero exactly when the unadjusted test rejects at 5%. Each end is then scaled by
     the end of the exact 95% interval for the discordant share that takes it further from
-    zero. Two 95% intervals guarantee 90% coverage of the true difference; in simulation it
-    was 97% or more (tests/test_eval_stats.py). With no discordant template it is plus and
+    zero. Two 95% intervals guarantee 90% coverage of the true difference. The exact coverage
+    (``interval_coverage``, every outcome enumerated, on a 0.01 grid of the two chances) is
+    at least 97.0% with 8 templates, 96.1% with 24 and 95.8% with 48, lowest where the two
+    directions are about equally likely and no template ties. With no discordant template it is plus and
     minus the upper bound on the discordant share, never zero width.
     """
     differ = higher + lower
@@ -69,44 +72,55 @@ def discordant_interval(higher: int, lower: int, templates: int) -> tuple[float,
     return low * (share_low if low > 0 else share_high), high * (share_high if high > 0 else share_low)
 
 
-def bootstrap_interval(diffs: list[float], resamples: int = 10_000, seed: int = 0) -> tuple[float, float]:
-    """95% percentile bootstrap interval for the mean of per-template differences, fixed seed.
-
-    Used when a template's rate is a fraction (its reviews split), where no exact interval
-    matches the sign test. It resamples templates, so it is repeatable but approximate, and
-    it can disagree with the test, which counts only the direction of each difference.
-    """
-    rng = random.Random(seed)
-    n = len(diffs)
-    means = sorted(sum(rng.choices(diffs, k=n)) / n for _ in range(resamples))
-    return means[int(0.025 * resamples)], means[min(resamples - 1, int(0.975 * resamples))]
-
-
 def paired_difference(first: dict[str, float], second: dict[str, float]) -> dict:
     """Compare two scorers' per-template rates on the templates both judged.
 
     ``first`` and ``second`` map a template to a rate on it: the share of judged reviews that
     blocked, or 1 and 0 for right and wrong. The result holds the mean per-template
-    difference, first minus second; the templates where the first is higher and lower; an
-    exact two-sided sign test on those (the exact McNemar test when every rate is 0 or 1);
-    and a 95% interval. ``method`` says which interval: ``exact`` (``discordant_interval``,
-    which excludes zero exactly when p is below 0.05) when every difference is -1, 0 or 1,
-    otherwise ``bootstrap`` (``bootstrap_interval``), which need not agree with the test.
+    difference, first minus second; the templates where the first is higher and lower; and an
+    exact two-sided sign test on those (the exact McNemar test when every rate is 0 or 1).
+    ``ci95`` is ``discordant_interval`` when every difference is -1, 0 or 1. When a
+    template's reviews split, so that a difference is a fraction, no interval is given
+    (``ci95`` is None): none is known that agrees with the test, and the test stands alone.
     """
     shared = [t for t in first if t in second]
     n = len(shared)
-    empty = {"templates": 0, "difference": None, "ci95": None, "higher": 0, "lower": 0, "p": None}
     if not n:
-        return {**empty, "method": None}
+        return {"templates": 0, "difference": None, "ci95": None, "higher": 0, "lower": 0, "p": None}
     diffs = [first[t] - second[t] for t in shared]
     higher, lower = sum(d > 0 for d in diffs), sum(d < 0 for d in diffs)
     exact = all(d in (-1, 0, 1) for d in diffs)
     return {
         "templates": n,
         "difference": sum(diffs) / n,
-        "ci95": discordant_interval(higher, lower, n) if exact else bootstrap_interval(diffs),
-        "method": "exact" if exact else "bootstrap",
+        "ci95": discordant_interval(higher, lower, n) if exact else None,
         "higher": higher,
         "lower": lower,
         "p": sign_test(higher, lower),
     }
+
+
+def interval_coverage(templates: int, up: float, down: float) -> float:
+    """The exact chance that ``discordant_interval`` covers the true difference ``up - down``.
+
+    Each template independently has the first higher with chance ``up``, lower with chance
+    ``down``, and tied otherwise. Every outcome is enumerated; nothing is simulated.
+    """
+    tie = 1 - up - down
+    covered = 0.0
+    for higher in range(templates + 1):
+        for lower in range(templates + 1 - higher):
+            ties = templates - higher - lower
+            if (not up and higher) or (not down and lower) or (tie < 1e-12 and ties):
+                continue
+            log_p = (
+                math.lgamma(templates + 1) - math.lgamma(higher + 1) - math.lgamma(lower + 1)
+                - math.lgamma(ties + 1)
+                + (higher * math.log(up) if higher else 0.0)
+                + (lower * math.log(down) if lower else 0.0)
+                + (ties * math.log(tie) if ties else 0.0)
+            )
+            low, high = discordant_interval(higher, lower, templates)
+            if low - 1e-12 <= up - down <= high + 1e-12:
+                covered += math.exp(log_p)
+    return covered

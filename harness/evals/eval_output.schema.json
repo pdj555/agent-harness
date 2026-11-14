@@ -25,7 +25,9 @@
         "saturated": {"type": "boolean"},
         "reason": {"type": "string"},
         "attack_templates": {"type": "integer", "minimum": 0},
-        "clean_templates": {"type": "integer", "minimum": 0}
+        "clean_templates": {"type": "integer", "minimum": 0},
+        "unjudged_attack_templates": {"type": "integer", "minimum": 0},
+        "unjudged_clean_templates": {"type": "integer", "minimum": 0}
       },
       "additionalProperties": false
     },
