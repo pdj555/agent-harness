@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/pdj555/agent-harness/blob/main/harness/evals/eval_output.schema.json",
   "title": "harness eval --json output",
-  "description": "The one JSON document every `harness eval ... --json` command prints on stdout, and every tool of the MCP server returns. The process exit code equals `exit_code`.",
+  "description": "Each command has its own shape: a document may carry only the fields of the command it names, and an error document of a command that ran nothing carries only the common five. The one JSON document every `harness eval ... --json` command prints on stdout, and every tool of the MCP server returns. The process exit code equals `exit_code`.",
   "type": "object",
   "required": ["schema_version", "command", "status", "exit_code", "error"],
   "properties": {
@@ -156,6 +156,30 @@
     {
       "if": {"properties": {"command": {"const": "eval sweep-summary"}, "status": {"const": "pass"}}},
       "then": {"required": ["sweep"]}
+    },
+    {
+      "if": {"properties": {"command": {"const": "eval monitor"}}},
+      "then": {"propertyNames": {"enum": ["schema_version", "command", "status", "exit_code", "error", "monitor", "set", "cases", "trials", "judged_trials", "catch_rate", "false_block_rate", "saturation", "reviewer_errors", "reviewer_errors_by_cause", "invalid_cases", "unjudged_cases", "failures", "report_dir", "canary_guid", "fresh"]}}
+    },
+    {
+      "if": {"properties": {"command": {"const": "eval sets"}}},
+      "then": {"propertyNames": {"enum": ["schema_version", "command", "status", "exit_code", "error", "sets", "monitors", "canary_guid"]}}
+    },
+    {
+      "if": {"properties": {"command": {"const": "eval sweep-summary"}}},
+      "then": {"propertyNames": {"enum": ["schema_version", "command", "status", "exit_code", "error", "sweep"]}}
+    },
+    {
+      "if": {"properties": {"command": {"const": "eval"}}},
+      "then": {"propertyNames": {"enum": ["schema_version", "command", "status", "exit_code", "error"]}}
+    },
+    {
+      "if": {"properties": {"command": {"const": "help"}}},
+      "then": {"propertyNames": {"enum": ["schema_version", "command", "status", "exit_code", "error", "help"]}}
+    },
+    {
+      "if": {"properties": {"status": {"enum": ["usage_error", "infrastructure_error"]}, "command": {"enum": ["eval sets", "eval sweep-summary", "eval", "help"]}}},
+      "then": {"propertyNames": {"enum": ["schema_version", "command", "status", "exit_code", "error"]}}
     }
   ],
   "$defs": {

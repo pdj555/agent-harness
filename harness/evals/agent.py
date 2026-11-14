@@ -8,6 +8,7 @@ documents built here, so an agent reads the same shape either way. The shape is 
 from __future__ import annotations
 
 import json
+import math
 import secrets
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,32 @@ def _document(command: str, code: int, error: str | None = None, **fields: Any) 
         "error": error,
         **fields,
     }
+
+
+def dumps(document: dict) -> str:
+    """The document as strict JSON: one line, and never NaN or Infinity, which are not JSON."""
+    return json.dumps(document, allow_nan=False)
+
+
+def _finite(value: object) -> bool:
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, dict):
+        return all(_finite(v) for v in value.values())
+    if isinstance(value, list):
+        return all(_finite(v) for v in value)
+    return True
+
+
+def prepare_out(out: Path) -> None:
+    """Make sure the report directory can be written before anything runs; ``UsageError`` if not."""
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        probe = out / ".write-check"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+    except OSError as error:
+        raise UsageError(f"cannot write the report to {out}: {error}") from error
 
 
 def error_document(command: str, code: int, message: str) -> dict:
@@ -229,6 +256,7 @@ def run_offline(
         cases, fresh = select_cases(set_name, case_ids, fresh_seed)
     except RuntimeError as error:
         return error_document("eval monitor", EXIT_INFRASTRUCTURE, str(error))
+    prepare_out(out)
     review, label = OFFLINE_MONITORS[monitor]
     aborted = None
     try:
@@ -266,12 +294,15 @@ def sweep_summary_document(path: Path) -> dict:
         record = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise UsageError(f"cannot read a sweep summary at {path}: {error}") from error
+    if not _finite(record):
+        raise UsageError(f"{path} is not a sweep summary: it holds NaN or Infinity, which are not JSON")
     rows = record.get("rows") if isinstance(record, dict) else None
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         raise UsageError(f"{path} is not a sweep summary: it has no rows")
     sweep = {key: record[key] for key in SWEEP_KEYS if key in record}
     sweep["rows"] = [{k: v for k, v in row.items() if k != "templates"} for row in rows]
-    sweep["analysis"] = record.get("analysis")
+    if "analysis" in record:
+        sweep["analysis"] = record["analysis"]
     document = _document("eval sweep-summary", EXIT_PASS, sweep=sweep)
     found = problems(document)
     if found:

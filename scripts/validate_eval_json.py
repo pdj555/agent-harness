@@ -3,9 +3,9 @@
     uv run harness eval monitor --monitor spec --set paired --json > out.json; code=$?
     uv run python scripts/validate_eval_json.py out.json --exit-code "$code"
 
-Exits 0 when the document is valid and matches what was asked for, 1 when it is not, with
-the reason on stderr. ``--exit-code`` checks the document's ``exit_code`` against the one
-the command returned, and ``--status`` checks its ``status``.
+Exits 0 when the document is valid and matches what was asked for, 1 when it is not, and 2
+when the file cannot be read, with the reason on stderr. ``--exit-code`` checks the
+document's ``exit_code`` against the one the command returned, and ``--status`` its ``status``.
 """
 
 from __future__ import annotations
@@ -19,10 +19,14 @@ from harness.evals.agent import STATUS
 from harness.evals.agent import problems as schema_problems
 
 
+def _not_json(name: str):
+    raise ValueError(f"{name} is not a JSON number")
+
+
 def problems(text: str, *, exit_code: int | None = None, status: str | None = None) -> list[str]:
     """Everything wrong with ``text`` as an eval document; empty when it is valid."""
     try:
-        document = json.loads(text)
+        document = json.loads(text, parse_constant=_not_json)
     except ValueError as error:
         return [f"not one JSON document: {error}"]
     found = schema_problems(document)
@@ -39,7 +43,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--exit-code", type=int, default=None, help="the exit code the command returned")
     parser.add_argument("--status", choices=list(STATUS.values()), default=None)
     args = parser.parse_args(argv)
-    found = problems(args.document.read_text(encoding="utf-8"), exit_code=args.exit_code, status=args.status)
+    try:
+        text = args.document.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        print(f"validate_eval_json: cannot read {args.document}: {error}", file=sys.stderr)
+        return 2
+    found = problems(text, exit_code=args.exit_code, status=args.status)
     for line in found:
         print(f"validate_eval_json: {line}", file=sys.stderr)
     if not found:

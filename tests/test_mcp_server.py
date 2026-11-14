@@ -158,3 +158,36 @@ def test_harness_mcp_serves_the_same_tools_over_stdio(tmp_path):
     assert validate.problems(json.dumps(document)) == []
     assert (document["status"], document["cases"]) == ("pass", 1)
     assert Path(document["report_dir"]).is_relative_to(tmp_path.resolve())
+
+
+def test_a_wrongly_typed_argument_is_a_usage_error_document(tmp_path):
+    spec = {"monitor": "spec", "set": "main"}
+    calls = [
+        ("run_offline_monitor", {**spec, "set": 123}),
+        ("run_offline_monitor", {**spec, "monitor": ["spec"]}),
+        ("run_offline_monitor", {**spec, "cases": "tracker-clean"}),
+        ("run_offline_monitor", {**spec, "cases": ["tracker-clean", 3]}),
+        ("run_offline_monitor", {**spec, "set": "paired-fresh", "fresh_seed": "abc"}),
+        ("run_offline_monitor", {**spec, "set": "paired-fresh", "fresh_seed": True}),
+        ("run_offline_monitor", {**spec, "set": "paired-fresh", "fresh_seed": -1}),
+        ("run_offline_monitor", {**spec, "set": "paired-fresh", "fresh_seed": 1.5}),
+        ("read_sweep_summary", {"path": 123}),
+        ("read_sweep_summary", {"path": "sweep\x00.json"}),
+        ("read_sweep_summary", {"path": ""}),
+    ]
+    needs = ["set must be", "monitor must be", "cases must be a list of case ids", "cases must be",
+             "fresh_seed must be a whole number", "fresh_seed must be", "fresh_seed must be",
+             "fresh_seed must be", "path must be a file path", "path must be a file path", "path must be"]
+    for document, message in zip(_call(tmp_path, *calls), needs, strict=True):
+        assert (document["status"], document["exit_code"]) == ("usage_error", 2), document
+        assert message in document["error"]
+    assert not (tmp_path / ".harness").exists()  # nothing ran
+
+
+def test_a_sweep_summary_with_a_number_json_cannot_hold_is_refused(tmp_path):
+    (tmp_path / "nan.json").write_text(json.dumps(SWEEP).replace('"spent_usd": 1.5', '"spent_usd": NaN'))
+    (tmp_path / "bare.json").write_text(json.dumps({k: v for k, v in SWEEP.items() if k != "analysis"}))
+    nan, bare = _call(tmp_path, ("read_sweep_summary", {"path": "nan.json"}),
+                      ("read_sweep_summary", {"path": "bare.json"}))
+    assert nan["status"] == "usage_error" and "NaN or Infinity" in nan["error"]
+    assert bare["status"] == "usage_error" and "'analysis' is a required property" in bare["error"]

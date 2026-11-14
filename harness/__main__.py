@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import shlex
 import sys
 from dataclasses import replace
@@ -14,6 +13,19 @@ from harness.demo import run_demo
 from harness.isolation import IsolationError, Stage
 from harness.runtime import execute_run
 from harness.store import Run, Store
+
+
+def _emit(document: dict) -> int:
+    """Print a document as strict JSON and return its exit code. A number that is not JSON is refused."""
+    from harness.evals.agent import EXIT_INFRASTRUCTURE, dumps, error_document
+
+    try:
+        print(dumps(document))
+    except ValueError:
+        message = "the result holds NaN or Infinity, which are not JSON numbers; nothing was printed"
+        print(dumps(error_document(document.get("command", "eval"), EXIT_INFRASTRUCTURE, message)))
+        return EXIT_INFRASTRUCTURE
+    return document["exit_code"]
 
 
 class _UsageError(Exception):
@@ -72,13 +84,11 @@ def main(argv: list[str] | None = None) -> int:
     except _UsageError as exc:
         from harness.evals.agent import EXIT_USAGE, error_document
 
-        print(json.dumps(error_document(_eval_command(argv), EXIT_USAGE, str(exc))))
-        return EXIT_USAGE
+        return _emit(error_document(_eval_command(argv), EXIT_USAGE, str(exc)))
     except _HelpRequested as exc:
         from harness.evals.agent import help_document
 
-        print(json.dumps(help_document(str(exc))))
-        return 0
+        return _emit(help_document(str(exc)))
 
 
 def _main(argv: list[str], parser_class: type[argparse.ArgumentParser]) -> int:
@@ -339,7 +349,7 @@ def _eval_sets(args: argparse.Namespace) -> int:
 
     document = sets_document()
     if args.json:
-        print(json.dumps(document))
+        return _emit(document)
     else:
         for entry in document["sets"]:
             print(f"{entry['name']}: {entry['cases']} cases ({entry['attacks']} attacks, "
@@ -354,13 +364,11 @@ def _sweep_summary(args: argparse.Namespace) -> int:
         document = sweep_summary_document(args.path)
     except UsageError as exc:
         if args.json:
-            print(json.dumps(error_document("eval sweep-summary", EXIT_USAGE, str(exc))))
-        else:
-            print(exc)
+            return _emit(error_document("eval sweep-summary", EXIT_USAGE, str(exc)))
+        print(exc)
         return EXIT_USAGE
     if args.json:
-        print(json.dumps(document))
-        return document["exit_code"]
+        return _emit(document)
     sweep = document["sweep"]
     print(f"sweep {sweep['date']}, harness {sweep['harness_commit']}: {len(sweep['rows'])} rows, "
           f"${sweep['spent_usd']} of ${sweep['max_usd']}")
@@ -383,6 +391,7 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         UsageError,
         error_document,
         monitor_document,
+        prepare_out,
         select_cases,
     )
     from harness.evals.monitor import (
@@ -401,8 +410,7 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         if not args.json:
             print(message)
             return 1
-        print(json.dumps(error_document("eval monitor", code, message)))
-        return code
+        return _emit(error_document("eval monitor", code, message))
 
     fresh: dict | None = None
 
@@ -414,8 +422,7 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         document = monitor_document(
             summary, results, monitor=name, set_name=set_name, report_dir=out, aborted=aborted, fresh=fresh
         )
-        print(json.dumps(document))
-        return document["exit_code"]
+        return _emit(document)
 
     if args.rescore is not None:
         try:
@@ -423,6 +430,10 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         except (OSError, ValueError, KeyError, TypeError) as exc:
             return stop(f"cannot rescore {args.rescore}: {exc}", EXIT_USAGE)
         out = args.out or args.rescore.parent / "rescored"
+        try:
+            prepare_out(out)
+        except UsageError as exc:
+            return stop(str(exc), EXIT_USAGE)
         return finish(write_report(results, out, monitor_name=name), results, out, name)
 
     if args.specs is not None and args.monitor != "spec":
@@ -453,6 +464,10 @@ def _monitor_eval(args: argparse.Namespace) -> int:
         trials, name = args.trials, args.monitor + (f" ({detail})" if detail else "")
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = args.out or Path(".harness") / "evals" / f"monitor-{args.monitor}-{stamp}"
+    try:
+        prepare_out(out)  # before any review runs, so an unwritable --out costs nothing
+    except UsageError as exc:
+        return stop(str(exc), EXIT_USAGE)
     jobs = 1 if args.monitor == "software" else max(1, args.jobs)
     # With --json, stdout holds the document alone; the per-review lines go to stderr.
     progress = (lambda line: print(line, file=sys.stderr)) if args.json else print

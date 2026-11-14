@@ -33,7 +33,7 @@ def _run(capsys, *argv: str) -> tuple[int, dict, str]:
     code = main(list(argv))
     captured = capsys.readouterr()
     assert validate.problems(captured.out, exit_code=code) == [], captured.out
-    assert len(captured.out.splitlines()) == 1
+    assert len(captured.out.splitlines()) == 1  # and strict JSON: the validator refuses NaN and Infinity
     return code, json.loads(captured.out), captured.err
 
 
@@ -171,6 +171,10 @@ def _without(key):
         (lambda d: d["rows"][0].update(catch_rate={"rate": 1.0}), "'ci95' is a required property"),
         (lambda d: d.update(trials="three"), "sweep/trials"),
         (lambda d: d.update(analysis=[1]), "sweep/analysis"),
+        (_without("analysis"), "'analysis' is a required property"),
+        (lambda d: d.update(spent_usd=float("nan")), "it holds NaN or Infinity"),
+        (lambda d: d["rows"][0]["catch_rate"].update(rate=float("inf")), "it holds NaN or Infinity"),
+        (lambda d: d["rows"][0].update(usd=-float("inf")), "it holds NaN or Infinity"),
     ],
 )
 def test_a_malformed_sweep_summary_is_a_usage_error_never_a_pass(capsys, tmp_path, damage, message):
@@ -303,3 +307,60 @@ def test_harness_mcp_without_the_extra_says_how_to_install_it(monkeypatch, capsy
     monkeypatch.setitem(sys.modules, "harness.mcp_server", None)  # as if `mcp` were not installed
     assert main(["mcp"]) == 2
     assert "uv sync --extra mcp" in capsys.readouterr().out
+
+
+def test_a_number_json_cannot_hold_is_never_printed(capsys, tmp_path):
+    """NaN, Infinity and an overflowing literal in a sweep.json: refused, and no document carries them."""
+    path = tmp_path / "sweep.json"
+    path.write_text(json.dumps(SWEEP).replace('"spent_usd": 1.5', '"spent_usd": 1e999'))
+    code, doc, _ = _run(capsys, "eval", "sweep-summary", str(path), "--json")
+    assert (code, doc["status"]) == (2, "usage_error") and "NaN or Infinity" in doc["error"]
+    # the validator refuses the bare words too, which Python's own parser would accept
+    assert validate.problems('{"schema_version": NaN}') and validate.problems('{"exit_code": Infinity}')
+    # a document that somehow held one is replaced by an error document, not printed
+    from harness.__main__ import _emit
+    from harness.evals.agent import sets_document
+
+    bad = {**sets_document(), "sets": [{"name": "x", "description": "", "cases": float("nan"),
+                                        "attacks": 0, "clean": 0}]}
+    assert _emit(bad) == 3
+    out = capsys.readouterr().out
+    assert validate.problems(out, exit_code=3, status="infrastructure_error") == [] and "NaN" in out
+    assert json.loads(out)["command"] == "eval sets"
+
+
+def test_an_out_directory_that_cannot_be_written_is_a_usage_error_before_anything_runs(capsys, tmp_path):
+    blocker = tmp_path / "a-file"
+    blocker.write_text("not a directory")
+    out = str(blocker / "report")
+    code, doc, err = _run(capsys, "eval", "monitor", "--monitor", "spec", "--json", "--out", out)
+    assert (code, doc["status"]) == (2, "usage_error") and "cannot write the report to" in doc["error"]
+    assert "[1/1]" not in err  # refused before a single case was reviewed
+    assert main(["eval", "monitor", "--monitor", "spec", "--out", out]) == 1  # text form: the old code
+    assert "cannot write the report to" in capsys.readouterr().out
+    saved = tmp_path / "results.json"
+    main(["eval", "monitor", "--case", "tracker-clean", "--out", str(tmp_path / "ok")])
+    capsys.readouterr()
+    saved.write_text((tmp_path / "ok" / "results.json").read_text())
+    code, doc, _ = _run(capsys, "eval", "monitor", "--rescore", str(saved), "--json", "--out", out)
+    assert code == 2 and "cannot write the report to" in doc["error"]
+
+
+def test_the_validator_exits_two_for_a_file_it_cannot_read(tmp_path, capsys):
+    assert validate.main([str(tmp_path / "no-such.json")]) == 2
+    assert "cannot read" in capsys.readouterr().err
+
+
+def test_the_schema_ties_each_command_to_its_own_fields(capsys):
+    from harness.evals.agent import error_document, help_document, problems, sets_document
+
+    sets = sets_document()
+    assert problems(sets) == []
+    assert problems({**sets, "sweep": {}})  # another command's field
+    assert problems({**sets, "failures": []})
+    assert problems({**sets, "command": "eval sweep-summary"})  # the right fields under the wrong name
+    assert problems({**help_document("usage"), "sets": []})
+    refused = error_document("eval sets", 2, "no")
+    assert problems(refused) == [] and problems({**refused, "sets": sets["sets"]})
+    assert problems({**error_document("eval", 2, "no"), "monitor": "spec"})
+    assert problems(error_document("eval monitor", 3, "the reviewer could not start")) == []
