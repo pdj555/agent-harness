@@ -44,7 +44,7 @@ class Spec:
 def _call(fn: Callable[..., Any], *args: Any) -> tuple[bool, Any]:
     try:
         return True, fn(*args)
-    except BaseException as exc:  # noqa: BLE001 - SystemExit or KeyboardInterrupt from the module is behavior too
+    except Exception as exc:  # noqa: BLE001 - any exception is a behavior to compare
         return False, type(exc).__name__
 
 
