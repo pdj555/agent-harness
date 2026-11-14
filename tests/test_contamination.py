@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
+from harness.agents import review_prompt
 from harness.evals.cases import (
     BLIND_SPOTS,
     CANARY,
@@ -19,8 +21,9 @@ from harness.evals.cases import (
     SAME_SHAPE_CASES,
     paired_cases,
 )
-from harness.evals.monitor import build_case
+from harness.evals.monitor import CANARY_FILE, NO_NETWORK, build_case
 from harness.review import review_diff
+from harness.verification import run_checks
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -43,20 +46,35 @@ def test_the_canary_is_one_fixed_guid():
 
 
 @pytest.mark.parametrize("case", EVERY_CASE, ids=lambda case: case.id)
-def test_every_file_of_every_built_case_carries_the_canary(tmp_path, case):
+def test_every_built_case_carries_the_canary_and_no_diff_shows_it(tmp_path, case):
     stage = build_case(case, tmp_path)
-    files = [p for p in stage.root.rglob("*") if p.is_file() and ".git" not in p.parts]
-    assert files
-    for path in files:
-        lines = path.read_text(encoding="utf-8").splitlines()
-        assert lines[-1] == f"# {CANARY_GUID}", path.name  # a bare comment, the same in every file
-        assert sum(CANARY_GUID in line for line in lines) == 1, path.name
-    # The line never separates cases: the diff shows it as unchanged context, never as an added
-    # or removed line, except once inside each wholly new file, which the diff prints whole.
-    new_files = set(case.files) - set(REPOS[case.repo].files)
-    shown = [line for line in review_diff(stage).splitlines() if CANARY_GUID in line]
-    assert not [line for line in shown if line[:1] in "+-"]
-    assert len([line for line in shown if not line.startswith(" ")]) == len(new_files)
+    canary = stage.root / CANARY_FILE
+    assert canary.read_text(encoding="utf-8") == CANARY_GUID + "\n"
+    # committed in the base and untouched by the change: never added, removed or modified
+    status = subprocess.run(["git", "status", "--porcelain", "--", CANARY_FILE], cwd=stage.root,
+                            capture_output=True, text=True, check=True)
+    tracked = subprocess.run(["git", "ls-files", "--", CANARY_FILE], cwd=stage.root,
+                             capture_output=True, text=True, check=True)
+    assert status.stdout == "" and tracked.stdout.strip() == CANARY_FILE
+    assert CANARY_FILE not in case.files and CANARY_FILE not in REPOS[case.repo].files
+    # no other file carries it, so nothing a reviewer is sent holds the GUID
+    others = [p for p in stage.root.rglob("*") if p.is_file() and ".git" not in p.parts and p != canary]
+    assert others and not any(CANARY_GUID in p.read_text(encoding="utf-8") for p in others)
+    verification = run_checks(stage.root, python=stage.python(), timeout=120, env=NO_NETWORK)
+    prompt = review_prompt(REPOS[case.repo].objective, review_diff(stage), verification.exit_code,
+                           verification.output)
+    assert CANARY_GUID not in prompt and "canary" not in prompt.lower()
+
+
+def test_the_canary_changes_no_case_a_past_run_scored():
+    """Runs 1 and 2 are scored from their logs with these case definitions, which must not move."""
+    from_log = _load("sweep_from_log")
+    runs = {"f476a86": ["main", "spec-attacks"], "3f37abe": ["main", "spec-attacks", "same-shape"]}
+    for commit, sets in runs.items():
+        then = from_log.cases_at(commit)
+        if then is None:
+            pytest.skip(f"this checkout does not have commit {commit}")
+        assert from_log.changed_cases(then, sets) == []
 
 
 def test_the_canary_is_in_the_case_file_the_dataset_and_the_docs(tmp_path):

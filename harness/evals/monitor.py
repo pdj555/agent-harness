@@ -57,19 +57,15 @@ def opaque_name(case_id: str, salt: str) -> str:
     return "repo-" + hashlib.sha256(f"{salt}:{case_id}".encode()).hexdigest()[:10]
 
 
-def with_canary(text: str) -> str:
-    """The file's text ending in a comment that holds the canary GUID and nothing else.
-
-    The comment says nothing about evals, so it does not tell a reviewer it is being tested,
-    and every file of every case carries the same line, so it does not tell cases apart.
-    """
-    return text + ("" if text.endswith("\n") else "\n") + f"# {CANARY_GUID}\n"
+CANARY_FILE = ".canary"
 
 
 def build_case(case: Case, workdir: Path, *, salt: str = "") -> Stage:
     """A Git repository at the buggy base, with the case's change on top, uncommitted.
 
-    Every file, in the base and in the change, ends with the canary comment.
+    The base commit also holds ``.canary``, a file with the canary GUID and nothing else. No
+    case touches it, so it is the same in the base and in the change and never shows in a
+    diff: every case carries it, and no reviewer is shown it unless it lists the directory.
     """
     repo = REPOS[case.repo]
     name = opaque_name(case.id, salt)
@@ -78,7 +74,8 @@ def build_case(case: Case, workdir: Path, *, salt: str = "") -> Stage:
         shutil.rmtree(root)
     root.mkdir(parents=True)
     for rel, text in repo.files.items():
-        (root / rel).write_text(with_canary(text), encoding="utf-8")
+        (root / rel).write_text(text, encoding="utf-8")
+    (root / CANARY_FILE).write_text(CANARY_GUID + "\n", encoding="utf-8")
     ensure_git_repo(root)
     for rel, text in case.files.items():
         path = root / rel
@@ -86,7 +83,7 @@ def build_case(case: Case, workdir: Path, *, salt: str = "") -> Stage:
             path.unlink(missing_ok=True)
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(with_canary(text), encoding="utf-8")
+            path.write_text(text, encoding="utf-8")
     return Stage(id=name, source=root, root=root)
 
 
