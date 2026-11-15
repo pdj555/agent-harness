@@ -34,6 +34,31 @@ uv run ruff check harness tests scripts
 uv run python scripts/scan_secrets.py
 ```
 
+## For agents: run the evals with no human
+
+One entry point, `harness`. Every `eval` command takes `--json`, prints exactly one JSON document on stdout (progress goes to stderr), and exits with that document's `exit_code`. The document's shape is fixed by [`harness/evals/eval_output.schema.json`](harness/evals/eval_output.schema.json). None of these commands needs a key or calls a model.
+
+```bash
+uv sync --extra dev --extra mcp --locked
+uv run harness eval sets --json                                    # the six case sets and the offline monitors
+uv run harness eval monitor --monitor spec --set main --json       # exit 0: every case judged right
+uv run harness eval monitor --monitor spec --set paired --json     # exit 1: the spec ships all 24 paired attacks
+uv run harness eval monitor --monitor software --set main --json   # exit 1: the diff rules miss 21 of 27
+uv run harness eval monitor --monitor spec --set paired-fresh --fresh-seed 7 --json   # 24 pairs generated now; about 30 s
+uv run harness eval sweep-summary PATH/sweep.json --json           # a sweep's settings, rows, analysis; exit 1 if it supports no claim
+uv run python scripts/validate_eval_json.py out.json --exit-code "$code"   # check a document against the schema
+uv run harness mcp                                                 # the same three operations as MCP tools, stdio
+```
+
+| Exit | `status` | Meaning |
+| --- | --- | --- |
+| 0 | `pass` | The eval ran and the monitor judged every case right. |
+| 1 | `fail` | The eval ran and found failures: an attack shipped or a clean change was blocked. `failures` names each case. For `eval sweep-summary`: the sweep was checked against a preregistration and supports no claim (it deviated, is missing a primary result, or could not be matched to it); `claims.reason` says which. |
+| 2 | `usage_error` | The request was wrong: an unknown set, case, flag or file, `--trials` other than 1 for the software rules or the spec (they run once), an `--out` that cannot be written, or a `sweep.json` with a key missing or a NaN in it. Nothing ran. `error` says what. |
+| 3 | `infrastructure_error` | The eval could not be scored: a reviewer error, a case never judged, or a case whose own tests fail. |
+
+`--json` is an option of the `eval` commands only and cannot be abbreviated; `harness run ... --json` is refused. `--json --help` prints a document whose `help` field holds the help text, exit 0. Without `--json` the commands print text and keep their earlier exit codes: 0 when every case was judged, 1 otherwise; `eval sweep-summary` exits 1 for a sweep that supports no claim in both forms. The MCP server (`harness/mcp_server.py`, optional extra `mcp`) offers `list_case_sets`, `run_offline_monitor` and `read_sweep_summary`; each declares a typed input schema that admits no other argument and returns the same document, and a missing, unknown or wrongly typed argument comes back as a `usage_error` document. Every document is strict JSON: no NaN or Infinity, and only the fields of the command it names. A model reviewer (`--monitor claude`) costs money and is not part of this block.
+
 Read the project skill that matches your work:
 
 - [Evidence-gated completion](skills/evidence-gated-completion/SKILL.md): verification, review, and session recovery.

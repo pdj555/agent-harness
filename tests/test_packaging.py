@@ -42,7 +42,10 @@ def test_direct_wheel_includes_only_allowlisted_demo_files(tmp_path: Path):
         packaged_demo = {
             name for name in archive.namelist() if name.startswith("harness/sample-repo/")
         }
+        names = set(archive.namelist())
     assert packaged_demo == DEMO_FILES
+    # the schema of `harness eval ... --json` ships with the code that prints it
+    assert "harness/evals/eval_output.schema.json" in names
 
 
 def test_secret_scan_rejects_sensitive_file_in_wheel(tmp_path: Path):

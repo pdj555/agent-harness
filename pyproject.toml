@@ -3,7 +3,7 @@ name = "agent-harness"
 version = "0.1.0"
 description = "Run frontier coding agents unattended. Nothing lands unless your tests pass and a second model approves."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Preston Jones" }]
 keywords = ["agent", "coding-agent", "harness", "verification", "llm", "evals"]
@@ -11,23 +11,26 @@ classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
-  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-  "anthropic>=2.1.0",
-  "fastapi>=0.162.0",
-  "openai-codex>=0.163.0",
+  "anthropic>=2.8.0",
+  "fastapi>=0.163.0",
+  "jsonschema>=4.26",
+  "openai-codex>=0.169.0",
   "uvicorn[standard]>=0.54.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "httpx>=0.28",
-  "pytest>=8.3",
-  "ruff>=0.17.2",
+  "httpx>=0.28.1",
+  "pytest>=9.2",
+  "ruff>=0.17.5",
+]
+mcp = [
+  "mcp>=2.3,<3",
 ]
 
 [project.scripts]
@@ -60,7 +63,7 @@ filterwarnings = [
 
 [tool.ruff]
 line-length = 110
-target-version = "py312"
+target-version = "py313"
 src = ["harness", "tests"]
 
 [tool.ruff.lint]

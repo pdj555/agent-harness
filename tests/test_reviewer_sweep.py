@@ -31,6 +31,8 @@ def test_sets_hold_the_published_cases_and_every_spec_attack():
     assert all(case.label != "clean" for case in sweep.SETS["spec-attacks"])
     labels = [case.label == "clean" for case in sweep.SETS["same-shape"]]
     assert sum(not clean for clean in labels) == 8 and sum(labels) == 14
+    paired = [case.label == "clean" for case in sweep.SETS["paired"]]
+    assert sum(paired) == 24 and len(paired) == 48
 
 
 def test_budget_refuses_reviews_once_the_cap_is_spent():
@@ -88,10 +90,16 @@ def test_run_writes_the_summary_the_log_rebuild_reads(monkeypatch, tmp_path):
 
     monkeypatch.setattr(sweep, "model_monitor", fake)
     out = tmp_path / "sweep"
+    prereg = Path(__file__).resolve().parent.parent / "docs" / "prereg" / "sweep-3.json"
     code = sweep.main(["--run", "--models", "claude-haiku-5-5", "--sets", "spec-attacks", "--trials", "1",
-                       "--jobs", "1", "--out", str(out)])
+                       "--jobs", "1", "--out", str(out), "--prereg", str(prereg)])
     assert code == 1  # a reviewer error makes the run exit nonzero
     record = json.loads((out / "sweep.json").read_text())
+    check = record["analysis"]["prereg"]
+    assert check["sha256"] == sweep.load_prereg(prereg)["sha256"]
+    assert check["path"] == "docs/prereg/sweep-3.json"
+    assert {d["setting"] for d in check["deviations"]} == {"models", "sets", "trials"}
+    assert f"sha256 {check['sha256']}" in (out / "sweep.md").read_text()
     row = record["rows"][0]
     assert row["judged_trials"] == 7 and row["reviewer_errors_by_cause"] == {"refusal": 1}
     assert row["usd"] == pytest.approx(8 * 1000 * 0.50 / 1_000_000)
@@ -99,6 +107,33 @@ def test_run_writes_the_summary_the_log_rebuild_reads(monkeypatch, tmp_path):
     assert table == sweep.render_sweep(record)
     expected = "| claude-haiku-5-5 | spec-attacks | 100% (59% to 100%) | n/a | 7 | 1 (1 refusal) | $0.00 |"
     assert expected in table
+
+
+def test_a_run_that_cannot_stand_as_the_preregistered_run_says_so_and_exits_nonzero(
+    monkeypatch, tmp_path, capsys
+):
+    """Every review right and none errored, but one model and one set where three and five were registered."""
+    import json
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+    verdict = lambda case, *rest: {"ship": not case.is_attack, "findings": [],  # noqa: E731
+                                   "usage": {"output_tokens": 10}}
+    monkeypatch.setattr(sweep, "model_monitor", lambda name, model, *, effort=None: verdict)
+    prereg = Path(__file__).resolve().parent.parent / "docs" / "prereg" / "sweep-3.json"
+    argv = ["--run", "--models", "claude-haiku-5-5", "--sets", "spec-attacks", "--jobs", "1",
+            "--out", str(tmp_path / "sweep")]
+    assert sweep.main([*argv, "--prereg", str(prereg)]) == 1
+    out = capsys.readouterr().out
+    assert "no claim is made: settings deviate from the preregistration: models, sets" in out
+    (line,) = [text for text in out.splitlines() if text.startswith(sweep.SETTINGS_PREFIX)]
+    logged = json.loads(line.removeprefix(sweep.SETTINGS_PREFIX))
+    assert logged["prereg_sha256"] == sweep.load_prereg(prereg)["sha256"]
+    assert (logged["models"], logged["sets"], logged["trials"]) == (["claude-haiku-5-5"], ["spec-attacks"], 3)
+    record = json.loads((tmp_path / "sweep" / "sweep.json").read_text())
+    assert record["analysis"]["claims"]["allowed"] is False and record["code_sha256"] == sweep.code_sha256()
+    # the same run with no preregistration claims nothing and is not a failure
+    assert sweep.main(argv) == 0
+    assert "no claim is made" not in capsys.readouterr().out
 
 
 def test_build_parser_defaults_are_the_published_settings():
