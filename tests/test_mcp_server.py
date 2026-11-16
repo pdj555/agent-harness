@@ -266,5 +266,8 @@ def test_calls_at_the_same_instant_get_their_own_report_and_a_rejected_call_writ
     assert counts == [1, 3]
     # A set name that is not a known set is refused before any directory is made,
     # even one built to walk out of the server's root.
-    _call(tmp_path, ("run_offline_monitor", {"monitor": "software", "set": f"{reports[0].name}/../../../x"}))
-    assert not (tmp_path.parent / "x-T").exists() and not any(tmp_path.parent.glob("x-*"))
+    # The first component names a directory that exists, so without the check the
+    # claim would land at tmp_path / "x-T", outside .harness/evals.
+    walk_out = reports[0].name.removeprefix("mcp-software-") + "/../../../x"
+    (refused,) = _call(tmp_path, ("run_offline_monitor", {"monitor": "software", "set": walk_out}))
+    assert refused["status"] == "usage_error" and not (tmp_path / "x-T").exists()
