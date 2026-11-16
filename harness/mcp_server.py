@@ -125,8 +125,10 @@ def build_server(root: Path | None = None) -> MCPServer:
         argument comes back as a usage_error document.
         """
         try:
-            out = new_report_dir(root / ".harness" / "evals", f"mcp-{monitor}-{set}")
-            return run_offline(monitor, set, out, cases, fresh_seed)
+            def claim() -> Path:
+                return new_report_dir(root / ".harness" / "evals", f"mcp-{monitor}-{set}")
+
+            return run_offline(monitor, set, claim, cases, fresh_seed)
         except UsageError as exc:
             return error_document("eval monitor", EXIT_USAGE, str(exc))
 

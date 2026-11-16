@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import secrets
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -273,17 +274,23 @@ def monitor_document(
 def run_offline(
     monitor: str,
     set_name: str,
-    out: Path,
+    out: Path | Callable[[], Path],
     case_ids: list[str] | None = None,
     fresh_seed: int | None = None,
 ) -> dict:
-    """Run a monitor that needs no key on a set and return its document. Writes the report to ``out``."""
+    """Run a monitor that needs no key on a set and return its document. Writes the report to ``out``.
+
+    ``out`` may be a function that claims the directory; it is called only after the
+    monitor, set and cases are known good, so a rejected request creates nothing.
+    """
     if monitor not in OFFLINE_MONITORS:
         raise UsageError(f"unknown offline monitor: {monitor}; choose from {', '.join(OFFLINE_MONITORS)}")
     try:
         cases, fresh = select_cases(set_name, case_ids, fresh_seed)
     except RuntimeError as error:
         return error_document("eval monitor", EXIT_INFRASTRUCTURE, str(error))
+    if callable(out):
+        out = out()
     prepare_out(out)
     review, label = OFFLINE_MONITORS[monitor]
     aborted = None
