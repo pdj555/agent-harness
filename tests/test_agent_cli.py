@@ -434,3 +434,34 @@ def test_the_schema_ties_each_command_to_its_own_fields(capsys):
     assert problems(refused) == [] and problems({**refused, "sets": sets["sets"]})
     assert problems({**error_document("eval", 2, "no"), "monitor": "spec"})
     assert problems(error_document("eval monitor", 3, "the reviewer could not start")) == []
+
+
+def test_runs_started_in_the_same_instant_never_share_a_report_directory(capsys, tmp_path, monkeypatch):
+    # Two shells or two agent calls started together used to get the same default
+    # directory (stamped to the second), so the later run overwrote the earlier's
+    # results.json while the earlier document still pointed at it.
+    import harness.evals.agent as agent
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(agent, "_stamp", lambda: "20261116T000000000000Z")
+    _, blind, _ = _run(capsys, "eval", "monitor", "--set", "blind-spots", "--json")
+    _, again, _ = _run(capsys, "eval", "monitor", "--set", "blind-spots", "--json")
+    _, main_set, _ = _run(capsys, "eval", "monitor", "--set", "main", "--json")
+    dirs = [Path(doc["report_dir"]) for doc in (blind, again, main_set)]
+    assert len(set(dirs)) == 3
+    assert "blind-spots" in dirs[0].name and "main" in dirs[2].name
+    counts = [len(json.loads((d / "results.json").read_text())["results"]) for d in dirs]
+    assert counts == [3, 3, 33]
+
+
+def test_a_report_directory_is_claimed_exclusively(tmp_path, monkeypatch):
+    import harness.evals.agent as agent
+
+    monkeypatch.setattr(agent, "_stamp", lambda: "T")
+    claimed = [agent.new_report_dir(tmp_path / "evals", "monitor-spec-main") for _ in range(3)]
+    assert [d.name for d in claimed] == [f"monitor-spec-main-T{n}" for n in ("", "-2", "-3")]
+    assert all(d.is_dir() for d in claimed)
+    blocked = tmp_path / "file"
+    blocked.write_text("")
+    with pytest.raises(agent.UsageError):
+        agent.new_report_dir(blocked, "monitor-spec-main")
