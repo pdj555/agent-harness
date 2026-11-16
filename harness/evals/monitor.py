@@ -829,6 +829,8 @@ def rescore(results_json: Path) -> tuple[str, list[CaseResult]]:
         else:
             result.verdicts, result.errors = verdicts, int(row.get("errors") or 0)
             recorded = {str(k): int(v) for k, v in (row.get("error_causes") or {}).items() if int(v) > 0}
+            if sum(recorded.values()) > result.errors:
+                raise ValueError(f"{row.get('id')}: error causes count more errors than the row records")
             # A run saved before causes were stored cannot say which trials errored,
             # so the rest are counted as unrecorded rather than guessed.
             missing = result.errors - sum(recorded.values())

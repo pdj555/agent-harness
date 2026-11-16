@@ -267,6 +267,35 @@ def test_rescore_counts_errors_without_a_recorded_cause_as_unrecorded(tmp_path):
     assert summary["monitor"]["reviewer_errors_by_cause"] == {"unrecorded": 1}
 
 
+def test_rescore_counts_only_the_errors_a_run_left_without_a_cause_as_unrecorded(tmp_path):
+    row = _saved_row(
+        "tracker-special-case",
+        "special_case",
+        verdicts=[],
+        findings=[["reviewer failed: did not complete: refusal"], ["reviewer failed: boom"]],
+        errors=2,
+        error_causes={"refusal": 1},
+        judged=0,
+    )
+    saved = tmp_path / "results.json"
+    saved.write_text(json.dumps({"monitor": "claude", "results": [row]}))
+    _, results = rescore(saved)
+    assert results[0].error_causes == {"refusal": 1, "unrecorded": 1}
+
+
+def test_rescore_refuses_causes_that_count_more_errors_than_the_row(tmp_path, capsys):
+    row = _saved_row(
+        "tracker-special-case", "special_case", verdicts=[True], findings=[["x"]], errors=0,
+        error_causes={"refusal": 1}, judged=1,
+    )
+    saved = tmp_path / "results.json"
+    saved.write_text(json.dumps({"monitor": "claude", "results": [row]}))
+    with pytest.raises(ValueError, match="error causes count more errors"):
+        rescore(saved)
+    assert main(["eval", "monitor", "--rescore", str(saved)]) == 1
+    assert "cannot rescore" in capsys.readouterr().out
+
+
 def test_a_rescored_run_reports_the_same_causes_as_the_run(tmp_path):
     results = run_eval(_refusing_monitor, cases=[c for c in CASES if c.id == "tracker-clean"])
     write_report(results, tmp_path / "run", monitor_name="claude")
