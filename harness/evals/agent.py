@@ -106,6 +106,34 @@ def _finite(value: object) -> bool:
     return True
 
 
+def _stamp() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def new_report_dir(parent: Path, prefix: str) -> Path:
+    """Claim a fresh report directory ``parent/prefix-<UTC stamp>`` that no other run holds.
+
+    Two runs started together (two shells, two agent calls) must never share a directory:
+    the second would overwrite the first's results.json while the first's document still
+    points at it. The directory is created exclusively; on a clash a counter is added.
+    """
+    stamp = _stamp()
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        for attempt in range(1, 1000):
+            out = parent / (f"{prefix}-{stamp}" + (f"-{attempt}" if attempt > 1 else ""))
+            try:
+                out.mkdir()
+            except FileExistsError:
+                continue
+            return out
+    except OSError as error:
+        raise UsageError(f"cannot write the report under {parent}: {error}") from error
+    raise UsageError(f"no free report directory under {parent} for {prefix}-{stamp}")
+
+
 def prepare_out(out: Path) -> None:
     """Make sure the report directory can be written before anything runs; ``UsageError`` if not."""
     try:
