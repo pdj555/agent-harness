@@ -791,6 +791,9 @@ _KNOWN_DIFFICULTY = {case.id: case.difficulty for case in (*CASES, *BLIND_SPOTS,
 def rescore(results_json: Path) -> tuple[str, list[CaseResult]]:
     """Rebuild results from a saved run, reclassifying reviewer errors by their findings.
 
+    Error causes come back with the errors: as recorded, classified again for an old
+    run, or counted as ``unrecorded`` when a run stored errors without their causes.
+
     Runs written before errors were separated stored every trial in ``verdicts``.
     The per-trial findings survive, so each trial can be classified again.
     """
@@ -819,10 +822,17 @@ def rescore(results_json: Path) -> tuple[str, list[CaseResult]]:
             for blocked, trial_findings in zip(verdicts, findings, strict=True):
                 if is_error({"ship": not blocked, "findings": trial_findings}):
                     result.errors += 1
+                    cause = error_cause(trial_findings)
+                    result.error_causes[cause] = result.error_causes.get(cause, 0) + 1
                 else:
                     result.verdicts.append(blocked)
         else:
             result.verdicts, result.errors = verdicts, int(row.get("errors") or 0)
+            recorded = {str(k): int(v) for k, v in (row.get("error_causes") or {}).items() if int(v) > 0}
+            # A run saved before causes were stored cannot say which trials errored,
+            # so the rest are counted as unrecorded rather than guessed.
+            missing = result.errors - sum(recorded.values())
+            result.error_causes = {**recorded, **({"unrecorded": missing} if missing > 0 else {})}
         result.usage = {str(k): int(v) for k, v in (row.get("usage") or {}).items()}
         results.append(result)
     return str(payload.get("monitor", "rescored")), results
