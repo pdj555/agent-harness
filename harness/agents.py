@@ -136,11 +136,19 @@ class Agent(Protocol):
 class LoopAgent:
     """The harness's own loop: one model step, then harness tools, until the model stops."""
 
-    def __init__(self, provider: Provider, *, role: str = "principal", system: str = SYSTEM) -> None:
+    def __init__(
+        self,
+        provider: Provider,
+        *,
+        role: str = "principal",
+        system: str = SYSTEM,
+        compact_after_chars: int = 60_000,
+    ) -> None:
         self.provider = provider
         self.name = provider.name
         self.model = getattr(provider, "model", None)
         self.role = role
+        self.compact_after_chars = compact_after_chars
         self.messages: list[dict] = [{"role": "system", "content": system}]
         self.steps = 0
         self._bound: tuple[int, str] | None = None
@@ -191,7 +199,9 @@ class LoopAgent:
             return
         self._bound = key
         stored = ctx.store.get_messages(ctx.run_id)
-        if stored == self.messages[: len(stored)]:
+        if [_shape(message) for message in stored] == [
+            _shape(message) for message in self.messages[: len(stored)]
+        ]:
             self._stored = len(stored)
         else:
             self._stored = len(self.messages)
@@ -212,6 +222,7 @@ class LoopAgent:
         tools = tool_specs(self.role)
         while self.steps < ctx.max_steps:
             self.steps += 1
+            self._compact()
             self._persist(ctx)
             ctx.check("continuing the run")
             completion = self._complete_with_recovery(tools, ctx)
@@ -247,6 +258,43 @@ class LoopAgent:
                     ctx.check("continuing after a tool call")
             self._note_progress(completion, results, ctx)
         raise StepLimit(f"used all {ctx.max_steps} steps without a final answer")
+
+    def _compact(self) -> None:
+        """Shrink old tool results in the live conversation past a budget.
+
+        Every step re-sends the whole conversation, so long runs pay for
+        early tool output again and again. Past the budget, the oldest tool
+        results become stubs naming what was there; assistant decisions and
+        the newest results stay exact. Only the live view shrinks: the
+        store keeps the full trajectory, and a restored agent wakes with
+        the complete record.
+        """
+        tool_indexes = [i for i, m in enumerate(self.messages) if m["role"] == "tool"]
+        total = sum(len(self.messages[i].get("content") or "") for i in tool_indexes)
+        if total <= self.compact_after_chars:
+            return
+        # The newest step's results are the model's current evidence: the
+        # tool messages after the last assistant message stay exact.
+        last_assistant = max(
+            (i for i, m in enumerate(self.messages) if m["role"] == "assistant"),
+            default=-1,
+        )
+        protected = {i for i in tool_indexes if i > last_assistant}
+        for i in tool_indexes:
+            if total <= self.compact_after_chars:
+                break
+            if i in protected:
+                continue
+            message = self.messages[i]
+            content = message.get("content") or ""
+            if content.startswith("[compacted:"):
+                continue
+            stub = (
+                f"[compacted: {message.get('name', 'tool')} result of "
+                f"{len(content)} chars, already used]"
+            )
+            message["content"] = stub
+            total -= len(content) - len(stub)
 
     def _note_progress(self, completion: Completion, results: list[dict], ctx: TurnContext) -> None:
         """Detect a circling run: the same calls returning the same results.
@@ -301,7 +349,9 @@ class LoopAgent:
         failures = 0
         while True:
             try:
-                return self.provider.complete(self.messages, tools)
+                completion = self.provider.complete(self.messages, tools)
+                self._record_usage(ctx)
+                return completion
             except Exception as exc:
                 if ctx.stop_requested():
                     raise RunStopped() from exc
@@ -326,6 +376,19 @@ class LoopAgent:
                         }
                     )
                     self._persist(ctx)
+
+    def _record_usage(self, ctx: TurnContext) -> None:
+        """Mirror the provider's token totals onto the run record.
+
+        Cost accounting lives on the run, beside its checks and review, so
+        every run reports what it spent next to what it proved. Providers
+        that do not track usage leave the record untouched.
+        """
+        if ctx.quiet:
+            return
+        usage = getattr(self.provider, "usage", None)
+        if isinstance(usage, dict) and usage:
+            ctx.store.update_run(ctx.run_id, usage=dict(usage))
 
     def _run_read_only(self, calls: list, ctx: TurnContext) -> list[dict]:
         """Run a step's read-only calls concurrently; record them in order.
@@ -432,6 +495,16 @@ class LoopAgent:
         close = getattr(self.provider, "close", None)
         if close is not None:
             close()
+
+
+def _shape(message: dict) -> tuple:
+    """A message's identity for session binding: role and call linkage.
+
+    Content is excluded on purpose: compaction rewrites old tool contents
+    in the live conversation, and the binding must still recognize the
+    conversation as the stored log's continuation.
+    """
+    return (message.get("role"), message.get("name"), message.get("tool_call_id"))
 
 
 def _assistant_message(completion: Completion) -> dict:

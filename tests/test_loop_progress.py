@@ -123,6 +123,69 @@ def test_three_failures_still_fail_the_run(ctx: TurnContext):
     assert provider.calls == 3
 
 
+def test_provider_usage_is_recorded_on_the_run(ctx: TurnContext):
+    class MeteredProvider:
+        name = "metered"
+
+        def __init__(self) -> None:
+            self.usage: dict[str, int] = {}
+
+        def complete(self, messages: list[dict], tools: list[dict]) -> Completion:
+            self.usage["input_tokens"] = self.usage.get("input_tokens", 0) + 100
+            self.usage["output_tokens"] = self.usage.get("output_tokens", 0) + 25
+            return Completion(text="done")
+
+    agent = LoopAgent(MeteredProvider())
+    assert agent.turn("fix it", ctx) == "done"
+    run = ctx.store.get_run(ctx.run_id)
+    assert run is not None
+    assert run.usage == {"input_tokens": 100, "output_tokens": 25}
+
+
+class BigOutputProvider:
+    name = "big-output"
+
+    def __init__(self, steps: int) -> None:
+        self.steps_left = steps
+        self.seen_tool_chars: list[int] = []
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> Completion:
+        self.seen_tool_chars.append(
+            sum(len(m.get("content") or "") for m in messages if m["role"] == "tool")
+        )
+        if self.steps_left == 0:
+            return Completion(text="done")
+        self.steps_left -= 1
+        return _call(
+            "run_shell",
+            {"command": f"python3 -c \"print('x' * 5000)\" # step {self.steps_left}"},
+        )
+
+
+def test_compaction_shrinks_old_tool_results_and_keeps_the_newest(ctx: TurnContext):
+    provider = BigOutputProvider(steps=6)
+    agent = LoopAgent(provider, compact_after_chars=6_000)
+    assert agent.turn("fix it", ctx) == "done"
+    # Without compaction the final call would re-send ~30k chars of tool output.
+    assert provider.seen_tool_chars[-1] < 12_000
+    tool_messages = [m for m in agent.messages if m["role"] == "tool"]
+    assert any(m["content"].startswith("[compacted:") for m in tool_messages)
+    assert len(tool_messages[-1]["content"]) > 4_000
+
+
+def test_compaction_leaves_the_stored_trajectory_complete(ctx: TurnContext):
+    provider = BigOutputProvider(steps=6)
+    agent = LoopAgent(provider, compact_after_chars=6_000)
+    assert agent.turn("fix it", ctx) == "done"
+    stored = ctx.store.get_messages(ctx.run_id)
+    assert len(stored) == len(agent.messages)
+    stored_tools = [m for m in stored if m["role"] == "tool"]
+    assert all(not m["content"].startswith("[compacted:") for m in stored_tools)
+    restored = LoopAgent.restore(BigOutputProvider(steps=0), stored, steps=agent.steps)
+    restored_tools = [m for m in restored.messages if m["role"] == "tool"]
+    assert len(restored_tools[-1]["content"]) > 4_000
+
+
 def test_read_only_step_runs_concurrently_and_records_in_order(ctx: TurnContext, monkeypatch):
     import time
 
