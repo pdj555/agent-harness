@@ -124,6 +124,37 @@ def test_three_failures_still_fail_the_run(ctx: TurnContext):
     assert provider.calls == 3
 
 
+class RefusingProvider:
+    name = "refusing"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> Completion:
+        self.calls += 1
+        raise RuntimeError("Anthropic response did not complete: refusal")
+
+
+def test_a_terminal_response_is_not_retried(ctx: TurnContext):
+    """A refusal is a completed response with a terminal stop reason, not
+    a transient failure: one call, and the run fails with its text intact
+    so the eval monitor can still count it as a refusal."""
+    provider = RefusingProvider()
+    agent = LoopAgent(provider)
+    with pytest.raises(AgentFailed, match="did not complete: refusal"):
+        agent.turn("fix it", ctx)
+    assert provider.calls == 1
+
+
+def test_a_circling_reviewer_uses_its_whole_step_budget(ctx: TurnContext):
+    """The reviewer's bounded turn keeps its step-limit contract: no early
+    stall stop, so a reviewer that never answers reports the step limit."""
+    agent = LoopAgent(CirclingProvider(), role="reviewer")
+    with pytest.raises(StepLimit, match="used all 6 steps without a final answer"):
+        agent.turn("review it", replace(ctx, quiet=True, max_steps=6))
+    assert agent.steps == 6
+
+
 def test_provider_usage_is_recorded_on_the_run(ctx: TurnContext):
     class MeteredProvider:
         name = "metered"

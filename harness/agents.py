@@ -310,7 +310,14 @@ class LoopAgent:
         identical steps in a row earn one warning naming the problem; a run
         that keeps circling after the warning is stopped as stalled instead
         of burning its whole step budget.
+
+        Principal runs only. A reviewer's turn is a bounded judgment with
+        its own step budget (12) and its own error taxonomy in the eval
+        monitor: a reviewer that never answers must exhaust that budget and
+        report the step limit, not an early stall stop.
         """
+        if self.role != "principal":
+            return
         signature = (
             tuple(
                 (call.name, json.dumps(call.arguments or {}, sort_keys=True, default=str))
@@ -352,6 +359,13 @@ class LoopAgent:
         continues from current state instead of assuming its last action
         landed. A third failure is the backend's real answer: AgentFailed.
         Every retry is recorded on the run.
+
+        A response that arrived with a terminal stop reason (a refusal, a
+        token cap) is not a transient failure: the provider raises it as
+        "Anthropic response did not complete: ..." and retrying the same
+        step cannot change it, so it fails the run on the first call. The
+        eval monitor counts a refusal by its single call; retrying it
+        would also bill the same refusal three times.
         """
         failures = 0
         while True:
@@ -362,6 +376,8 @@ class LoopAgent:
             except Exception as exc:
                 if ctx.stop_requested():
                     raise RunStopped() from exc
+                if str(exc).startswith("Anthropic response did not complete:"):
+                    raise AgentFailed(str(exc)) from exc
                 failures += 1
                 if failures >= 3:
                     raise AgentFailed(str(exc)) from exc
