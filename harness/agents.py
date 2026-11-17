@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -38,6 +39,10 @@ Leave edits uncommitted so software can verify and apply the full change.
 """
 
 AGENT_NAMES = ("claude", "codex", "openrouter")
+
+# Tools that only read the stage. A step made solely of these may run its
+# calls concurrently; any mutating call keeps the whole step serial.
+READ_ONLY_TOOLS = frozenset({"list_files", "search", "read_file", "git_status", "git_diff"})
 
 
 class RunStopped(Exception):
@@ -140,6 +145,9 @@ class LoopAgent:
         self.steps = 0
         self._bound: tuple[int, str] | None = None
         self._stored = 0
+        self._last_step_signature: tuple | None = None
+        self._stall_streak = 0
+        self._stall_nudged = False
 
     @classmethod
     def restore(cls, provider: Provider, messages: list[dict], steps: int = 0) -> LoopAgent:
@@ -206,12 +214,7 @@ class LoopAgent:
             self.steps += 1
             self._persist(ctx)
             ctx.check("continuing the run")
-            try:
-                completion = self.provider.complete(self.messages, tools)
-            except Exception as exc:
-                if ctx.stop_requested():
-                    raise RunStopped() from exc
-                raise AgentFailed(str(exc)) from exc
+            completion = self._complete_with_recovery(tools, ctx)
             if ctx.stop_requested():
                 for call in completion.tool_calls:
                     ctx.store.add_event(
@@ -222,15 +225,167 @@ class LoopAgent:
                 return completion.text or ""
             self.messages.append(_assistant_message(completion))
             self._persist(ctx)
-            for call in completion.tool_calls:
-                if ctx.stop_requested():
-                    skipped = f"{call.name} skipped because stop was requested"
-                    ctx.store.add_event(ctx.run_id, "decision", skipped)
-                    raise RunStopped()
-                self.messages.append(self._run_tool(call.name, call.id, call.arguments or {}, ctx))
-                self._persist(ctx)
+            results = []
+            if len(completion.tool_calls) > 1 and all(
+                call.name in READ_ONLY_TOOLS for call in completion.tool_calls
+            ):
+                results = self._run_read_only(completion.tool_calls, ctx)
+                for result in results:
+                    self.messages.append(result)
+                    self._persist(ctx)
                 ctx.check("continuing after a tool call")
+            else:
+                for call in completion.tool_calls:
+                    if ctx.stop_requested():
+                        skipped = f"{call.name} skipped because stop was requested"
+                        ctx.store.add_event(ctx.run_id, "decision", skipped)
+                        raise RunStopped()
+                    result = self._run_tool(call.name, call.id, call.arguments or {}, ctx)
+                    results.append(result)
+                    self.messages.append(result)
+                    self._persist(ctx)
+                    ctx.check("continuing after a tool call")
+            self._note_progress(completion, results, ctx)
         raise StepLimit(f"used all {ctx.max_steps} steps without a final answer")
+
+    def _note_progress(self, completion: Completion, results: list[dict], ctx: TurnContext) -> None:
+        """Detect a circling run: the same calls returning the same results.
+
+        A step that repeats the previous step exactly made no progress. Three
+        identical steps in a row earn one warning naming the problem; a run
+        that keeps circling after the warning is stopped as stalled instead
+        of burning its whole step budget.
+        """
+        signature = (
+            tuple(
+                (call.name, json.dumps(call.arguments or {}, sort_keys=True, default=str))
+                for call in completion.tool_calls
+            ),
+            tuple(result["content"] for result in results),
+        )
+        if signature == self._last_step_signature:
+            self._stall_streak += 1
+        else:
+            self._stall_streak = 0
+            self._last_step_signature = signature
+        if self._stall_streak == 2 and not self._stall_nudged:
+            self._stall_nudged = True
+            if not ctx.quiet:
+                ctx.store.add_event(
+                    ctx.run_id, "decision", "stall warning: repeated identical tool calls"
+                )
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Your last three steps repeated the same tool calls with the same "
+                        "results and made no progress. Change approach: inspect something "
+                        "different, run the project's checks, or reconsider the plan. Do "
+                        "not repeat the same call again."
+                    ),
+                }
+            )
+            self._persist(ctx)
+        elif self._stall_nudged and self._stall_streak >= 4:
+            raise StepLimit("stalled: the same tool calls repeated without progress")
+
+    def _complete_with_recovery(self, tools: list[dict], ctx: TurnContext) -> Completion:
+        """One model step that survives a transient provider failure.
+
+        First failure: retry the step as-is. Second failure: retry once more
+        with a note in the conversation naming the failure, so the model
+        continues from current state instead of assuming its last action
+        landed. A third failure is the backend's real answer: AgentFailed.
+        Every retry is recorded on the run.
+        """
+        failures = 0
+        while True:
+            try:
+                return self.provider.complete(self.messages, tools)
+            except Exception as exc:
+                if ctx.stop_requested():
+                    raise RunStopped() from exc
+                failures += 1
+                if failures >= 3:
+                    raise AgentFailed(str(exc)) from exc
+                if not ctx.quiet:
+                    ctx.store.add_event(
+                        ctx.run_id,
+                        "decision",
+                        f"model call failed ({exc}); retry {failures} of 2",
+                    )
+                if failures == 2:
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"The previous model call failed: {exc}. Continue from the "
+                                "current state. If a tool call was interrupted, inspect "
+                                "before repeating it; do not assume it ran."
+                            ),
+                        }
+                    )
+                    self._persist(ctx)
+
+    def _run_read_only(self, calls: list, ctx: TurnContext) -> list[dict]:
+        """Run a step's read-only calls concurrently; record them in order.
+
+        Only the tool execution itself is parallel: every store write and
+        event stays on this thread, in call order, so the run record reads
+        exactly as if the calls had run one by one. A step containing any
+        mutating call never reaches this path.
+        """
+        if ctx.stop_requested():
+            for call in calls:
+                skipped = f"{call.name} skipped because stop was requested"
+                ctx.store.add_event(ctx.run_id, "decision", skipped)
+            raise RunStopped()
+
+        def invoke(call) -> tuple[str, bool]:
+            try:
+                output = execute(
+                    call.name,
+                    call.arguments or {},
+                    stage=ctx.stage,
+                    role=self.role,
+                    helper=ctx.helper,
+                    stopped=ctx.stop_requested(),
+                    timeout=ctx.check_timeout,
+                )
+                return output, False
+            except (PathDenied, PermissionDenied, ToolError) as exc:
+                return f"{call.name} denied: {exc}", True
+
+        with ThreadPoolExecutor(max_workers=len(calls)) as pool:
+            outcomes = list(pool.map(invoke, calls))
+        results = []
+        for call, (output, is_error) in zip(calls, outcomes, strict=True):
+            if is_error:
+                ctx.store.add_event(ctx.run_id, "decision", output)
+            else:
+                if not ctx.quiet:
+                    ctx.store.add_event(ctx.run_id, "action", human_action(call.name, call.arguments))
+                if call.name in {"git_diff", "git_status"}:
+                    ctx.refresh()
+                    if not ctx.quiet:
+                        ctx.store.add_event(ctx.run_id, "artifact", output[:2000])
+            content = redact(output)
+            if len(content) > 8000:
+                content = content[:8000] + (
+                    "\n[TOOL OUTPUT TRUNCATED. Use read_file with start_line/end_line "
+                    "to inspect smaller sections before deciding.]"
+                )
+            results.append(
+                {
+                    "role": "tool",
+                    "name": call.name,
+                    "tool_call_id": call.id,
+                    "arguments": call.arguments or {},
+                    "content": content,
+                    "is_error": is_error,
+                }
+            )
+        return results
 
     def _run_tool(self, name: str, call_id: str, arguments: dict, ctx: TurnContext) -> dict:
         if not ctx.quiet:
