@@ -8,6 +8,7 @@ with the recovery recorded, instead of killing the run.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -184,6 +185,49 @@ def test_compaction_leaves_the_stored_trajectory_complete(ctx: TurnContext):
     restored = LoopAgent.restore(BigOutputProvider(steps=0), stored, steps=agent.steps)
     restored_tools = [m for m in restored.messages if m["role"] == "tool"]
     assert len(restored_tools[-1]["content"]) > 4_000
+
+
+class SoakProvider:
+    """Emits a distinct shell call per step; every tenth output is large."""
+
+    name = "soak"
+
+    def __init__(self, total: int) -> None:
+        self.total = total
+        self.issued = 0
+        self.max_tool_chars_seen = 0
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> Completion:
+        self.max_tool_chars_seen = max(
+            self.max_tool_chars_seen,
+            sum(len(m.get("content") or "") for m in messages if m["role"] == "tool"),
+        )
+        if self.issued >= self.total:
+            return Completion(text="soak complete")
+        self.issued += 1
+        size = 5000 if self.issued % 10 == 0 else 100
+        return _call(
+            "run_shell",
+            {"command": f"python3 -c \"print('x' * {size})\" # soak {self.issued}"},
+        )
+
+
+def test_long_run_wakes_midway_and_finishes_with_bounded_context(ctx: TurnContext):
+    provider = SoakProvider(total=100)
+    agent = LoopAgent(provider, compact_after_chars=20_000)
+    # First leg: exhaust a 60-step budget, as a crashed or paused run would.
+    with pytest.raises(StepLimit):
+        agent.turn("fix it", replace(ctx, max_steps=60))
+    assert agent.steps == 60
+    # Wake: rebuild from the stored trajectory and session state, keep going.
+    stored = ctx.store.get_messages(ctx.run_id)
+    state = ctx.store.get_session_state(ctx.run_id)
+    assert state is not None
+    woken = LoopAgent.restore(provider, stored, steps=state["steps"], compact_after_chars=20_000)
+    assert woken.turn("continue", replace(ctx, max_steps=120)) == "soak complete"
+    assert woken.steps == 101  # 100 tool steps plus the final answer step
+    # Compaction held the re-sent tool output near the budget all run long.
+    assert provider.max_tool_chars_seen < 40_000
 
 
 def test_read_only_step_runs_concurrently_and_records_in_order(ctx: TurnContext, monkeypatch):

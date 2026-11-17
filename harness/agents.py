@@ -158,9 +158,16 @@ class LoopAgent:
         self._stall_nudged = False
 
     @classmethod
-    def restore(cls, provider: Provider, messages: list[dict], steps: int = 0) -> LoopAgent:
+    def restore(
+        cls,
+        provider: Provider,
+        messages: list[dict],
+        steps: int = 0,
+        *,
+        compact_after_chars: int = 60_000,
+    ) -> LoopAgent:
         """Rebuild an agent from a run's persisted conversation (the wake path)."""
-        agent = cls(provider)
+        agent = cls(provider, compact_after_chars=compact_after_chars)
         if messages:
             agent.messages = [dict(message) for message in messages]
         pending: dict[str, dict] = {}
