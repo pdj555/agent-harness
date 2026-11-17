@@ -78,7 +78,7 @@ def test_circling_run_gets_one_warning_before_the_stop(ctx: TurnContext):
 
 
 def test_progressing_run_is_not_flagged_as_stalled(ctx: TurnContext):
-    from harness.provider import ScriptedProvider
+    from harness.provider import BUGGY_PRIORITY, FIXED_PRIORITY, ScriptedProvider
 
     agent = LoopAgent(
         ScriptedProvider(
@@ -86,12 +86,16 @@ def test_progressing_run_is_not_flagged_as_stalled(ctx: TurnContext):
                 _call("read_file", {"path": "tracker.py"}),
                 _call("read_file", {"path": "test_tracker.py"}),
                 _call("read_file", {"path": "README.md"}),
+                _call(
+                    "edit_file",
+                    {"path": "tracker.py", "old": BUGGY_PRIORITY, "new": FIXED_PRIORITY},
+                ),
                 Completion(text="done"),
             ]
         )
     )
     assert agent.turn("fix it", ctx) == "done"
-    assert agent.steps == 4
+    assert agent.steps == 5
 
 
 def test_one_provider_failure_is_retried_and_recovers(ctx: TurnContext):
@@ -276,13 +280,25 @@ def test_read_only_step_runs_concurrently_and_records_in_order(ctx: TurnContext,
         ToolCall(name="read_file", arguments={"path": path}, id=f"c{i}")
         for i, path in enumerate(("tracker.py", "test_tracker.py", "README.md"))
     ]
-    agent = LoopAgent(ScriptedProvider([Completion(tool_calls=calls), Completion(text="done")]))
+    agent = LoopAgent(
+        ScriptedProvider(
+            [
+                Completion(tool_calls=calls),
+                Completion(text="done"),
+                # The no-edit stop above earns one nudge; answer it with a
+                # mutating call so the run can finish.
+                _call("edit_file", {"path": "tracker.py", "old": "a", "new": "b"}),
+                Completion(text="done"),
+            ]
+        )
+    )
     started = time.time()
     assert agent.turn("fix it", ctx) == "done"
     elapsed = time.time() - started
-    assert elapsed < 0.6  # serial would take 0.9s of tool time alone
+    # Serial would take 0.9s for the reads plus 0.3s for the edit.
+    assert elapsed < 0.9
     tool_messages = [m for m in agent.messages if m["role"] == "tool"]
-    assert [m["tool_call_id"] for m in tool_messages] == ["c0", "c1", "c2"]
+    assert [m["tool_call_id"] for m in tool_messages[:3]] == ["c0", "c1", "c2"]
     assert tool_messages[0]["content"] == "contents of tracker.py"
 
 
@@ -305,3 +321,84 @@ def test_step_with_a_mutating_call_stays_serial(ctx: TurnContext, monkeypatch):
     started = time.time()
     assert agent.turn("fix it", ctx) == "done"
     assert time.time() - started >= 0.6
+
+
+def _no_edit_nudges(agent: LoopAgent) -> list[dict]:
+    return [
+        message
+        for message in agent.messages
+        if message["role"] == "user" and "without having changed anything" in message["content"]
+    ]
+
+
+def test_no_edit_stop_is_nudged_once_and_the_edit_lands(ctx: TurnContext):
+    """The premature-stop class: inspect, then finish in text with no edit.
+    The first such stop earns one nudge; the run then makes its edit."""
+    from harness.provider import BUGGY_PRIORITY, FIXED_PRIORITY, ScriptedProvider
+
+    agent = LoopAgent(
+        ScriptedProvider(
+            [
+                _call("read_file", {"path": "tracker.py"}),
+                Completion(text="I would swap the priority labels in tracker.py."),
+                _call(
+                    "edit_file",
+                    {"path": "tracker.py", "old": BUGGY_PRIORITY, "new": FIXED_PRIORITY},
+                ),
+                Completion(text="done"),
+            ]
+        )
+    )
+    assert agent.turn("fix it", ctx) == "done"
+    assert agent.steps == 4
+    assert len(_no_edit_nudges(agent)) == 1
+    assert FIXED_PRIORITY in (ctx.stage.root / "tracker.py").read_text(encoding="utf-8")
+    events = ctx.store.get_events(ctx.run_id)
+    assert any("no-edit stop" in event["detail"] for event in events)
+
+
+def test_a_second_no_edit_stop_stands(ctx: TurnContext):
+    """One nudge per turn: a model that again stops in text, plainly saying
+    no change is needed, is allowed to finish."""
+    from harness.provider import ScriptedProvider
+
+    agent = LoopAgent(
+        ScriptedProvider(
+            [
+                _call("read_file", {"path": "tracker.py"}),
+                Completion(text="looks fine"),
+                Completion(text="no change needed: the code already matches the tests"),
+            ]
+        )
+    )
+    assert agent.turn("fix it", ctx) == "no change needed: the code already matches the tests"
+    assert agent.steps == 3
+    assert len(_no_edit_nudges(agent)) == 1
+
+
+def test_an_immediate_text_answer_is_not_nudged(ctx: TurnContext):
+    """A run that never touched a tool is answering, not stopping mid-work."""
+    from harness.provider import ScriptedProvider
+
+    agent = LoopAgent(ScriptedProvider([Completion(text="the answer")]))
+    assert agent.turn("what model is this?", ctx) == "the answer"
+    assert agent.steps == 1
+    assert _no_edit_nudges(agent) == []
+
+
+def test_a_reviewer_no_edit_stop_is_not_nudged(ctx: TurnContext):
+    """A reviewer's text verdict is its whole job; it never edits."""
+    from harness.provider import ScriptedProvider
+
+    agent = LoopAgent(
+        ScriptedProvider(
+            [
+                _call("read_file", {"path": "tracker.py"}),
+                Completion(text='{"ship": true, "findings": []}'),
+            ]
+        ),
+        role="reviewer",
+    )
+    assert agent.turn("review it", replace(ctx, quiet=True)) == '{"ship": true, "findings": []}'
+    assert agent.steps == 2
+    assert _no_edit_nudges(agent) == []

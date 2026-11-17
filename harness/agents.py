@@ -22,7 +22,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from harness.authority import PathDenied, PermissionDenied
+from harness.authority import MUTATING_TOOLS, PathDenied, PermissionDenied
 from harness.isolation import IsolationError, Stage
 from harness.provider import SECRET_ENV, Completion, Provider
 from harness.store import Store
@@ -227,6 +227,9 @@ class LoopAgent:
         self.messages.append({"role": "user", "content": prompt})
         self._persist(ctx)
         tools = tool_specs(self.role)
+        inspected = False
+        mutated = False
+        no_edit_nudged = False
         while self.steps < ctx.max_steps:
             self.steps += 1
             self._compact()
@@ -240,7 +243,49 @@ class LoopAgent:
                     )
                 raise RunStopped()
             if not completion.tool_calls:
+                if (
+                    self.role == "principal"
+                    and inspected
+                    and not mutated
+                    and not no_edit_nudged
+                    and self.steps < ctx.max_steps
+                ):
+                    # A premature stop: the run inspected the stage, then
+                    # finished in text without changing anything. Describing
+                    # a fix is not making one, so the stop is not accepted
+                    # yet: one changed-approach nudge, then the model's next
+                    # stop stands, whether it edits or plainly says no
+                    # change is needed. Principal only - a reviewer's text
+                    # verdict is its whole job, and a run that never touched
+                    # a tool is answering, not stopping mid-work.
+                    no_edit_nudged = True
+                    if not ctx.quiet:
+                        ctx.store.add_event(
+                            ctx.run_id,
+                            "decision",
+                            "no-edit stop: nudged to make the change instead of describing it",
+                        )
+                    self.messages.append(_assistant_message(completion))
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "You are about to finish without having changed anything: "
+                                "this run has made no edit, run no command, and delegated "
+                                "nothing. Describing a fix is not making one. Change "
+                                "approach: make the smallest edit that addresses the "
+                                "objective now, then run the project's checks. If the "
+                                "evidence truly shows no change is needed, say so plainly "
+                                "in your next answer and this stop will stand."
+                            ),
+                        }
+                    )
+                    self._persist(ctx)
+                    continue
                 return completion.text or ""
+            inspected = True
+            if any(call.name in MUTATING_TOOLS for call in completion.tool_calls):
+                mutated = True
             self.messages.append(_assistant_message(completion))
             self._persist(ctx)
             results = []
