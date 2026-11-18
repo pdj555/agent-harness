@@ -17,7 +17,7 @@ classifiers = [
 ]
 dependencies = [
   "anthropic>=2.8.0",
-  "fastapi>=0.163.0",
+  "fastapi>=0.163.1",
   "jsonschema>=4.26",
   "openai-codex>=0.169.0",
   "uvicorn[standard]>=0.54.0",
