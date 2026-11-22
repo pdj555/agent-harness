@@ -15,7 +15,14 @@ from harness.agents import ClaudeAgent, LoopAgent, TurnContext
 from harness.anthropic import AnthropicProvider
 from harness.config import Config
 from harness.isolation import create_stage
-from harness.provider import Completion, DeterministicProvider, ScriptedProvider, ToolCall
+from harness.provider import (
+    BUGGY_PRIORITY,
+    FIXED_PRIORITY,
+    Completion,
+    DeterministicProvider,
+    ScriptedProvider,
+    ToolCall,
+)
 from harness.runtime import _wake_agent, execute_run
 from harness.store import Store
 from tests.helpers import copy_sample, git_init
@@ -49,10 +56,25 @@ class RecordingProvider:
 
 
 def _one_tool_call_script() -> ScriptedProvider:
+    # The edit matters: a principal run that only inspects and then stops in
+    # text earns a no-edit nudge before its stop stands (test_loop_progress).
     return ScriptedProvider(
         [
             Completion(
                 tool_calls=[ToolCall(name="list_files", arguments={"pattern": "*.py"}, id="c1")]
+            ),
+            Completion(
+                tool_calls=[
+                    ToolCall(
+                        name="edit_file",
+                        arguments={
+                            "path": "tracker.py",
+                            "old": BUGGY_PRIORITY,
+                            "new": FIXED_PRIORITY,
+                        },
+                        id="c2",
+                    )
+                ]
             ),
             Completion(text="finished"),
         ]
@@ -83,10 +105,17 @@ def test_loop_conversation_is_persisted_and_readable_in_slices(ctx: TurnContext)
 
     stored = ctx.store.get_messages(ctx.run_id)
     assert stored == agent.messages
-    assert [message["role"] for message in stored] == ["system", "user", "assistant", "tool"]
+    assert [message["role"] for message in stored] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+    ]
     assert ctx.store.get_messages(ctx.run_id, offset=2) == stored[2:]
     assert ctx.store.get_messages(ctx.run_id, offset=1, limit=2) == stored[1:3]
-    assert ctx.store.get_session_state(ctx.run_id) == {"steps": 2}
+    assert ctx.store.get_session_state(ctx.run_id) == {"steps": 3}
 
 
 # ----------------------------------------------------------------------- wake
@@ -136,6 +165,17 @@ def test_claude_wakes_from_its_persisted_conversation(ctx: TurnContext, monkeypa
             "stop_reason": "tool_use",
             "content": [{"type": "tool_use", "id": "read", "name": "list_files", "input": {"pattern": "*"}}],
         },
+        {
+            "stop_reason": "tool_use",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "edit",
+                    "name": "edit_file",
+                    "input": {"path": "tracker.py", "old": BUGGY_PRIORITY, "new": FIXED_PRIORITY},
+                }
+            ],
+        },
         {"stop_reason": "end_turn", "content": [{"type": "text", "text": "finished"}]},
         {"stop_reason": "end_turn", "content": [{"type": "text", "text": "continued"}]},
     ]
@@ -160,8 +200,8 @@ def test_claude_wakes_from_its_persisted_conversation(ctx: TurnContext, monkeypa
     assert woken.messages == messages
     assert woken.turn("continue", ctx) == "continued"
     blocks = [block for message in requests[-1]["messages"] for block in message["content"]]
-    assert len([block for block in blocks if block["type"] == "tool_use"]) == 1
-    assert len([block for block in blocks if block["type"] == "tool_result"]) == 1
+    assert len([block for block in blocks if block["type"] == "tool_use"]) == 2
+    assert len([block for block in blocks if block["type"] == "tool_result"]) == 2
 
 
 @pytest.mark.parametrize("interrupt_after", [0, 1])

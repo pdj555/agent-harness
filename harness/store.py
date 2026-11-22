@@ -48,6 +48,7 @@ class Run:
     checks: list[dict] = field(default_factory=list)
     review: dict | None = None
     verification: dict | None = None
+    usage: dict = field(default_factory=dict)
     blockers: list[str] = field(default_factory=list)
     result: str | None = None
     diff: str = ""
@@ -341,6 +342,7 @@ class Store:
             "checks": run.checks,
             "review": run.review,
             "verification": run.verification,
+            "usage": run.usage,
             "blockers": run.blockers,
             "result": run.result,
             "diff": run.diff,
@@ -405,6 +407,7 @@ def _run_from_row(row: sqlite3.Row) -> Run:
         checks=payload.get("checks") or [],
         review=payload.get("review"),
         verification=payload.get("verification"),
+        usage=payload.get("usage") or {},
         blockers=payload.get("blockers") or [],
         result=payload.get("result"),
         diff=payload.get("diff") or "",

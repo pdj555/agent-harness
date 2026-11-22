@@ -17,11 +17,12 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from harness.authority import PathDenied, PermissionDenied
+from harness.authority import MUTATING_TOOLS, PathDenied, PermissionDenied
 from harness.isolation import IsolationError, Stage
 from harness.provider import SECRET_ENV, Completion, Provider
 from harness.store import Store
@@ -38,6 +39,10 @@ Leave edits uncommitted so software can verify and apply the full change.
 """
 
 AGENT_NAMES = ("claude", "codex", "openrouter")
+
+# Tools that only read the stage. A step made solely of these may run its
+# calls concurrently; any mutating call keeps the whole step serial.
+READ_ONLY_TOOLS = frozenset({"list_files", "search", "read_file", "git_status", "git_diff"})
 
 
 class RunStopped(Exception):
@@ -131,20 +136,38 @@ class Agent(Protocol):
 class LoopAgent:
     """The harness's own loop: one model step, then harness tools, until the model stops."""
 
-    def __init__(self, provider: Provider, *, role: str = "principal", system: str = SYSTEM) -> None:
+    def __init__(
+        self,
+        provider: Provider,
+        *,
+        role: str = "principal",
+        system: str = SYSTEM,
+        compact_after_chars: int = 60_000,
+    ) -> None:
         self.provider = provider
         self.name = provider.name
         self.model = getattr(provider, "model", None)
         self.role = role
+        self.compact_after_chars = compact_after_chars
         self.messages: list[dict] = [{"role": "system", "content": system}]
         self.steps = 0
         self._bound: tuple[int, str] | None = None
         self._stored = 0
+        self._last_step_signature: tuple | None = None
+        self._stall_streak = 0
+        self._stall_nudged = False
 
     @classmethod
-    def restore(cls, provider: Provider, messages: list[dict], steps: int = 0) -> LoopAgent:
+    def restore(
+        cls,
+        provider: Provider,
+        messages: list[dict],
+        steps: int = 0,
+        *,
+        compact_after_chars: int = 60_000,
+    ) -> LoopAgent:
         """Rebuild an agent from a run's persisted conversation (the wake path)."""
-        agent = cls(provider)
+        agent = cls(provider, compact_after_chars=compact_after_chars)
         if messages:
             agent.messages = [dict(message) for message in messages]
         pending: dict[str, dict] = {}
@@ -183,7 +206,9 @@ class LoopAgent:
             return
         self._bound = key
         stored = ctx.store.get_messages(ctx.run_id)
-        if stored == self.messages[: len(stored)]:
+        if [_shape(message) for message in stored] == [
+            _shape(message) for message in self.messages[: len(stored)]
+        ]:
             self._stored = len(stored)
         else:
             self._stored = len(self.messages)
@@ -202,16 +227,15 @@ class LoopAgent:
         self.messages.append({"role": "user", "content": prompt})
         self._persist(ctx)
         tools = tool_specs(self.role)
+        inspected = False
+        mutated = False
+        no_edit_nudged = False
         while self.steps < ctx.max_steps:
             self.steps += 1
+            self._compact()
             self._persist(ctx)
             ctx.check("continuing the run")
-            try:
-                completion = self.provider.complete(self.messages, tools)
-            except Exception as exc:
-                if ctx.stop_requested():
-                    raise RunStopped() from exc
-                raise AgentFailed(str(exc)) from exc
+            completion = self._complete_with_recovery(tools, ctx)
             if ctx.stop_requested():
                 for call in completion.tool_calls:
                     ctx.store.add_event(
@@ -219,18 +243,280 @@ class LoopAgent:
                     )
                 raise RunStopped()
             if not completion.tool_calls:
+                if (
+                    self.role == "principal"
+                    and inspected
+                    and not mutated
+                    and not no_edit_nudged
+                    and self.steps < ctx.max_steps
+                ):
+                    # A premature stop: the run inspected the stage, then
+                    # finished in text without changing anything. Describing
+                    # a fix is not making one, so the stop is not accepted
+                    # yet: one changed-approach nudge, then the model's next
+                    # stop stands, whether it edits or plainly says no
+                    # change is needed. Principal only - a reviewer's text
+                    # verdict is its whole job, and a run that never touched
+                    # a tool is answering, not stopping mid-work.
+                    no_edit_nudged = True
+                    if not ctx.quiet:
+                        ctx.store.add_event(
+                            ctx.run_id,
+                            "decision",
+                            "no-edit stop: nudged to make the change instead of describing it",
+                        )
+                    self.messages.append(_assistant_message(completion))
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "You are about to finish without having changed anything: "
+                                "this run has made no edit, run no command, and delegated "
+                                "nothing. Describing a fix is not making one. Change "
+                                "approach: make the smallest edit that addresses the "
+                                "objective now, then run the project's checks. If the "
+                                "evidence truly shows no change is needed, say so plainly "
+                                "in your next answer and this stop will stand."
+                            ),
+                        }
+                    )
+                    self._persist(ctx)
+                    continue
                 return completion.text or ""
+            inspected = True
+            if any(call.name in MUTATING_TOOLS for call in completion.tool_calls):
+                mutated = True
             self.messages.append(_assistant_message(completion))
             self._persist(ctx)
-            for call in completion.tool_calls:
-                if ctx.stop_requested():
-                    skipped = f"{call.name} skipped because stop was requested"
-                    ctx.store.add_event(ctx.run_id, "decision", skipped)
-                    raise RunStopped()
-                self.messages.append(self._run_tool(call.name, call.id, call.arguments or {}, ctx))
-                self._persist(ctx)
+            results = []
+            if len(completion.tool_calls) > 1 and all(
+                call.name in READ_ONLY_TOOLS for call in completion.tool_calls
+            ):
+                results = self._run_read_only(completion.tool_calls, ctx)
+                for result in results:
+                    self.messages.append(result)
+                    self._persist(ctx)
                 ctx.check("continuing after a tool call")
+            else:
+                for call in completion.tool_calls:
+                    if ctx.stop_requested():
+                        skipped = f"{call.name} skipped because stop was requested"
+                        ctx.store.add_event(ctx.run_id, "decision", skipped)
+                        raise RunStopped()
+                    result = self._run_tool(call.name, call.id, call.arguments or {}, ctx)
+                    results.append(result)
+                    self.messages.append(result)
+                    self._persist(ctx)
+                    ctx.check("continuing after a tool call")
+            self._note_progress(completion, results, ctx)
         raise StepLimit(f"used all {ctx.max_steps} steps without a final answer")
+
+    def _compact(self) -> None:
+        """Shrink old tool results in the live conversation past a budget.
+
+        Every step re-sends the whole conversation, so long runs pay for
+        early tool output again and again. Past the budget, the oldest tool
+        results become stubs naming what was there; assistant decisions and
+        the newest results stay exact. Only the live view shrinks: the
+        store keeps the full trajectory, and a restored agent wakes with
+        the complete record.
+        """
+        tool_indexes = [i for i, m in enumerate(self.messages) if m["role"] == "tool"]
+        total = sum(len(self.messages[i].get("content") or "") for i in tool_indexes)
+        if total <= self.compact_after_chars:
+            return
+        # The newest step's results are the model's current evidence: the
+        # tool messages after the last assistant message stay exact.
+        last_assistant = max(
+            (i for i, m in enumerate(self.messages) if m["role"] == "assistant"),
+            default=-1,
+        )
+        protected = {i for i in tool_indexes if i > last_assistant}
+        for i in tool_indexes:
+            if total <= self.compact_after_chars:
+                break
+            if i in protected:
+                continue
+            message = self.messages[i]
+            content = message.get("content") or ""
+            if content.startswith("[compacted:"):
+                continue
+            stub = (
+                f"[compacted: {message.get('name', 'tool')} result of "
+                f"{len(content)} chars, already used]"
+            )
+            message["content"] = stub
+            total -= len(content) - len(stub)
+
+    def _note_progress(self, completion: Completion, results: list[dict], ctx: TurnContext) -> None:
+        """Detect a circling run: the same calls returning the same results.
+
+        A step that repeats the previous step exactly made no progress. Three
+        identical steps in a row earn one warning naming the problem; a run
+        that keeps circling after the warning is stopped as stalled instead
+        of burning its whole step budget.
+
+        Principal runs only. A reviewer's turn is a bounded judgment with
+        its own step budget (12) and its own error taxonomy in the eval
+        monitor: a reviewer that never answers must exhaust that budget and
+        report the step limit, not an early stall stop.
+        """
+        if self.role != "principal":
+            return
+        signature = (
+            tuple(
+                (call.name, json.dumps(call.arguments or {}, sort_keys=True, default=str))
+                for call in completion.tool_calls
+            ),
+            tuple(result["content"] for result in results),
+        )
+        if signature == self._last_step_signature:
+            self._stall_streak += 1
+        else:
+            self._stall_streak = 0
+            self._last_step_signature = signature
+        if self._stall_streak == 2 and not self._stall_nudged:
+            self._stall_nudged = True
+            if not ctx.quiet:
+                ctx.store.add_event(
+                    ctx.run_id, "decision", "stall warning: repeated identical tool calls"
+                )
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Your last three steps repeated the same tool calls with the same "
+                        "results and made no progress. Change approach: inspect something "
+                        "different, run the project's checks, or reconsider the plan. Do "
+                        "not repeat the same call again."
+                    ),
+                }
+            )
+            self._persist(ctx)
+        elif self._stall_nudged and self._stall_streak >= 4:
+            raise StepLimit("stalled: the same tool calls repeated without progress")
+
+    def _complete_with_recovery(self, tools: list[dict], ctx: TurnContext) -> Completion:
+        """One model step that survives a transient provider failure.
+
+        First failure: retry the step as-is. Second failure: retry once more
+        with a note in the conversation naming the failure, so the model
+        continues from current state instead of assuming its last action
+        landed. A third failure is the backend's real answer: AgentFailed.
+        Every retry is recorded on the run.
+
+        A response that arrived with a terminal stop reason (a refusal, a
+        token cap) is not a transient failure: the provider raises it as
+        "Anthropic response did not complete: ..." and retrying the same
+        step cannot change it, so it fails the run on the first call. The
+        eval monitor counts a refusal by its single call; retrying it
+        would also bill the same refusal three times.
+        """
+        failures = 0
+        while True:
+            try:
+                completion = self.provider.complete(self.messages, tools)
+                self._record_usage(ctx)
+                return completion
+            except Exception as exc:
+                if ctx.stop_requested():
+                    raise RunStopped() from exc
+                if str(exc).startswith("Anthropic response did not complete:"):
+                    raise AgentFailed(str(exc)) from exc
+                failures += 1
+                if failures >= 3:
+                    raise AgentFailed(str(exc)) from exc
+                if not ctx.quiet:
+                    ctx.store.add_event(
+                        ctx.run_id,
+                        "decision",
+                        f"model call failed ({exc}); retry {failures} of 2",
+                    )
+                if failures == 2:
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"The previous model call failed: {exc}. Continue from the "
+                                "current state. If a tool call was interrupted, inspect "
+                                "before repeating it; do not assume it ran."
+                            ),
+                        }
+                    )
+                    self._persist(ctx)
+
+    def _record_usage(self, ctx: TurnContext) -> None:
+        """Mirror the provider's token totals onto the run record.
+
+        Cost accounting lives on the run, beside its checks and review, so
+        every run reports what it spent next to what it proved. Providers
+        that do not track usage leave the record untouched.
+        """
+        if ctx.quiet:
+            return
+        usage = getattr(self.provider, "usage", None)
+        if isinstance(usage, dict) and usage:
+            ctx.store.update_run(ctx.run_id, usage=dict(usage))
+
+    def _run_read_only(self, calls: list, ctx: TurnContext) -> list[dict]:
+        """Run a step's read-only calls concurrently; record them in order.
+
+        Only the tool execution itself is parallel: every store write and
+        event stays on this thread, in call order, so the run record reads
+        exactly as if the calls had run one by one. A step containing any
+        mutating call never reaches this path.
+        """
+        if ctx.stop_requested():
+            for call in calls:
+                skipped = f"{call.name} skipped because stop was requested"
+                ctx.store.add_event(ctx.run_id, "decision", skipped)
+            raise RunStopped()
+
+        def invoke(call) -> tuple[str, bool]:
+            try:
+                output = execute(
+                    call.name,
+                    call.arguments or {},
+                    stage=ctx.stage,
+                    role=self.role,
+                    helper=ctx.helper,
+                    stopped=ctx.stop_requested(),
+                    timeout=ctx.check_timeout,
+                )
+                return output, False
+            except (PathDenied, PermissionDenied, ToolError) as exc:
+                return f"{call.name} denied: {exc}", True
+
+        with ThreadPoolExecutor(max_workers=len(calls)) as pool:
+            outcomes = list(pool.map(invoke, calls))
+        results = []
+        for call, (output, is_error) in zip(calls, outcomes, strict=True):
+            if is_error:
+                ctx.store.add_event(ctx.run_id, "decision", output)
+            else:
+                if not ctx.quiet:
+                    ctx.store.add_event(ctx.run_id, "action", human_action(call.name, call.arguments))
+                if call.name in {"git_diff", "git_status"}:
+                    ctx.refresh()
+                    if not ctx.quiet:
+                        ctx.store.add_event(ctx.run_id, "artifact", output[:2000])
+            content = redact(output)
+            if len(content) > 8000:
+                content = content[:8000] + (
+                    "\n[TOOL OUTPUT TRUNCATED. Use read_file with start_line/end_line "
+                    "to inspect smaller sections before deciding.]"
+                )
+            results.append(
+                {
+                    "role": "tool",
+                    "name": call.name,
+                    "tool_call_id": call.id,
+                    "arguments": call.arguments or {},
+                    "content": content,
+                    "is_error": is_error,
+                }
+            )
+        return results
 
     def _run_tool(self, name: str, call_id: str, arguments: dict, ctx: TurnContext) -> dict:
         if not ctx.quiet:
@@ -277,6 +563,16 @@ class LoopAgent:
         close = getattr(self.provider, "close", None)
         if close is not None:
             close()
+
+
+def _shape(message: dict) -> tuple:
+    """A message's identity for session binding: role and call linkage.
+
+    Content is excluded on purpose: compaction rewrites old tool contents
+    in the live conversation, and the binding must still recognize the
+    conversation as the stored log's continuation.
+    """
+    return (message.get("role"), message.get("name"), message.get("tool_call_id"))
 
 
 def _assistant_message(completion: Completion) -> dict:
