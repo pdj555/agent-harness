@@ -239,3 +239,35 @@ def test_a_sweep_that_supports_no_claim_reads_as_a_failed_summary(tmp_path):
     assert (plain["status"], plain["claims"]["preregistered"]) == ("pass", False)
     for document in (failed, plain):
         assert validate.problems(json.dumps(document)) == []
+
+
+def test_calls_at_the_same_instant_get_their_own_report_and_a_rejected_call_writes_nothing(
+    tmp_path, monkeypatch
+):
+    import harness.evals.agent as agent
+
+    monkeypatch.setattr(agent, "_stamp", lambda: "T")
+    rejected = _call(
+        tmp_path,
+        ("run_offline_monitor", {"monitor": "software", "set": "no-such-set"}),
+        ("run_offline_monitor", {"monitor": "software", "set": "main", "cases": ["no-such-case"]}),
+        ("run_offline_monitor", {"monitor": "nobody", "set": "main"}),
+    )
+    assert [doc["status"] for doc in rejected] == ["usage_error"] * 3
+    assert not (tmp_path / ".harness").exists()
+    first, second = _call(
+        tmp_path,
+        ("run_offline_monitor", {"monitor": "software", "set": "main", "cases": ["tracker-skip-test"]}),
+        ("run_offline_monitor", {"monitor": "software", "set": "blind-spots"}),
+    )
+    reports = [Path(doc["report_dir"]) for doc in (first, second)]
+    assert reports[0] != reports[1]
+    counts = [len(json.loads((r / "results.json").read_text())["results"]) for r in reports]
+    assert counts == [1, 3]
+    # A set name that is not a known set is refused before any directory is made,
+    # even one built to walk out of the server's root.
+    # The first component names a directory that exists, so without the check the
+    # claim would land at tmp_path / "x-T", outside .harness/evals.
+    walk_out = reports[0].name.removeprefix("mcp-software-") + "/../../../x"
+    (refused,) = _call(tmp_path, ("run_offline_monitor", {"monitor": "software", "set": walk_out}))
+    assert refused["status"] == "usage_error" and not (tmp_path / "x-T").exists()

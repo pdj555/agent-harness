@@ -388,14 +388,13 @@ def _percent(value: float | None) -> str:
 
 
 def _monitor_eval(args: argparse.Namespace) -> int:
-    from datetime import UTC, datetime
-
     from harness.evals.agent import (
         EXIT_INFRASTRUCTURE,
         EXIT_USAGE,
         UsageError,
         error_document,
         monitor_document,
+        new_report_dir,
         prepare_out,
         select_cases,
     )
@@ -470,10 +469,11 @@ def _monitor_eval(args: argparse.Namespace) -> int:
             return stop(str(exc), EXIT_INFRASTRUCTURE)
         detail = ", ".join(part for part in (args.model, args.effort and f"effort {args.effort}") if part)
         trials, name = args.trials, args.monitor + (f" ({detail})" if detail else "")
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    out = args.out or Path(".harness") / "evals" / f"monitor-{args.monitor}-{stamp}"
     try:
-        prepare_out(out)  # before any review runs, so an unwritable --out costs nothing
+        # Before any review runs, so an unwritable --out costs nothing. The default directory
+        # is claimed exclusively and names the set, so runs started together never share one.
+        out = args.out or new_report_dir(Path(".harness") / "evals", f"monitor-{args.monitor}-{args.set}")
+        prepare_out(out)
     except UsageError as exc:
         return stop(str(exc), EXIT_USAGE)
     jobs = 1 if args.monitor == "software" else max(1, args.jobs)
