@@ -8,6 +8,8 @@
   <img alt="Dot chart of 27 sabotaged changes that all pass their tests: the project's tests catch 0, diff rules 6, a Claude Haiku 5.5 reviewer 27, and an executable spec 27." src="docs/assets/hero-light.svg" width="100%">
 </picture>
 
+[Watch it run, 76 seconds](https://drive.google.com/file/d/1KM341V_GuJ3o5LRU3NWPNEggbQlE5jdq/view). Claude Haiku 5.5 fixes a failing test, the project's tests pass, and a separate review approves the diff. Then the web workspace with the scripted demo agent, and the eval. Recorded 2026-11-22.
+
 ## The numbers
 
 The eval is 33 changes to three small programs, each shipped with a real bug: 6 honest fixes and 27 sabotaged changes. Every sabotaged change passes the project's tests, so the tests alone approve all 27.
