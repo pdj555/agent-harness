@@ -16,7 +16,6 @@ under ``.harness/evals`` in the working directory, as the command line does.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +27,7 @@ from harness.evals.agent import (
     EXIT_USAGE,
     UsageError,
     error_document,
+    new_report_dir,
     run_offline,
     sets_document,
     sweep_summary_document,
@@ -124,10 +124,11 @@ def build_server(root: Path | None = None) -> MCPServer:
         change; ``failures`` names each such case. A missing, unknown or wrongly typed
         argument comes back as a usage_error document.
         """
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        out = root / ".harness" / "evals" / f"mcp-{monitor}-{set}-{stamp}"
         try:
-            return run_offline(monitor, set, out, cases, fresh_seed)
+            def claim() -> Path:
+                return new_report_dir(root / ".harness" / "evals", f"mcp-{monitor}-{set}")
+
+            return run_offline(monitor, set, claim, cases, fresh_seed)
         except UsageError as exc:
             return error_document("eval monitor", EXIT_USAGE, str(exc))
 
