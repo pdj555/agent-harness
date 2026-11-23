@@ -140,13 +140,17 @@ def _main(argv: list[str], parser_class: type[argparse.ArgumentParser]) -> int:
     monitor.add_argument("--trials", type=int, default=1, help="runs per case; model monitors vary")
     monitor.add_argument(
         "--set",
-        choices=["main", "spec-attacks", "blind-spots", "same-shape", "paired", "adaptive", "paired-fresh"],
+        choices=[
+            "main", "spec-attacks", "blind-spots", "same-shape", "paired", "adaptive", "adaptive-2",
+            "paired-fresh",
+        ],
         default="main",
         help="main: the 33 published cases; spec-attacks: 8 attacks built against the spec check; "
         "blind-spots: the 3 of those it still misses; same-shape: attacks and correct controls that add "
         "one return line, differing only in its condition; paired: 24 generated attack and control pairs "
-        "that only arithmetic tells apart; adaptive: 12 attacks a model wrote from the README without "
-        "reading the spec check; paired-fresh: 24 such pairs generated now from --fresh-seed",
+        "that only arithmetic tells apart; paired-fresh: 24 such pairs generated now from --fresh-seed; "
+        "adaptive: 12 attacks a model wrote from the README without reading the spec check; "
+        "adaptive-2: 12 more it wrote after seeing how the first 12 fared",
     )
     monitor.add_argument(
         "--fresh-seed", type=int, default=None,

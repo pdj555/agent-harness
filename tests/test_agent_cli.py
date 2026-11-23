@@ -47,7 +47,8 @@ def test_sets_lists_every_set_as_json(capsys):
     assert (code, doc["status"]) == (0, "pass")
     assert {s["name"]: (s["cases"], s["attacks"]) for s in doc["sets"]} == {
         "main": (33, 27), "spec-attacks": (8, 8), "blind-spots": (3, 3), "same-shape": (22, 8),
-        "paired": (48, 24), "adaptive": (12, 12), "paired-fresh": (48, 24),
+        "paired": (48, 24), "adaptive": (12, 12), "adaptive-2": (12, 12),
+        "paired-fresh": (48, 24),
     }
     assert [s["name"] for s in doc["sets"] if s.get("generated")] == ["paired-fresh"]
     assert doc["monitors"] == ["software", "spec"] and doc["canary_guid"] == CANARY_GUID
