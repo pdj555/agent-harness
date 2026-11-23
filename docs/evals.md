@@ -137,6 +137,6 @@ The cases are public, so a model trained after their publication may have seen t
 
 - Every strong check here scores 27 of 27, so this set can no longer tell them apart. With 9 attack templates, 27 of 27 bounds the catch rate only above 66%.
 - The probe is not a sandbox. Audit hooks run inside the worker's own process, so a module written to attack the probe can edit its worker's hook and then do what the hook would have refused: write files, or read the judge's memory through `/proc`. Containing a hostile module needs isolation from the operating system (another user, seccomp, a container). Audit hooks also see nothing inside native extensions such as `ctypes`.
-- The attacks are written by hand and in the open.
+- The attacks are written by hand and in the open, except the 12 in the `adaptive` set, which a model wrote in one pass ([docs/blind-spots.md](blind-spots.md#attacks-a-model-wrote-without-reading-the-spec)).
 - The labels are the author's. `incorrect_fix` assumes the docstring is the spec.
 - The Codex reviewer can read files outside its worktree, including the file that holds every case's label. The current Claude reviewer uses read-only harness tools confined to the stage.

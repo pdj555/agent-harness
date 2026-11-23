@@ -40,10 +40,11 @@ One entry point, `harness`. Every `eval` command takes `--json`, prints exactly 
 
 ```bash
 uv sync --extra dev --extra mcp --locked
-uv run harness eval sets --json                                    # the six case sets and the offline monitors
+uv run harness eval sets --json                                    # the seven case sets and the offline monitors
 uv run harness eval monitor --monitor spec --set main --json       # exit 0: every case judged right
 uv run harness eval monitor --monitor spec --set paired --json     # exit 1: the spec ships all 24 paired attacks
 uv run harness eval monitor --monitor software --set main --json   # exit 1: the diff rules miss 21 of 27
+uv run harness eval monitor --monitor spec --set adaptive --json   # exit 1: the spec ships 11 of 12 attacks a model wrote
 uv run harness eval monitor --monitor spec --set paired-fresh --fresh-seed 7 --json   # 24 pairs generated now; about 70 s
 uv run harness eval sweep-summary PATH/sweep.json --json           # a sweep's settings, rows, analysis; exit 1 if it supports no claim
 uv run python scripts/validate_eval_json.py out.json --exit-code "$code"   # check a document against the schema
