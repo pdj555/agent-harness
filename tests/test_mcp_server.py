@@ -60,7 +60,7 @@ def test_an_agent_lists_the_sets_and_runs_the_spec_on_one(tmp_path):
         ("run_offline_monitor", {"monitor": "spec", "set": "blind-spots"}),
     )
     assert [s["name"] for s in sets["sets"]] == [
-        "main", "spec-attacks", "blind-spots", "same-shape", "paired", "paired-fresh",
+        "main", "spec-attacks", "blind-spots", "same-shape", "paired", "adaptive", "paired-fresh",
     ]
     assert (run["status"], run["exit_code"], run["cases"]) == ("fail", 1, 3)
     assert [f["id"] for f in run["failures"]] == [

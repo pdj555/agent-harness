@@ -57,6 +57,7 @@ uv sync --extra dev
 uv run harness demo
 uv run harness eval monitor --monitor spec                      # spec check: 27 of 27 caught
 uv run harness eval monitor --monitor spec --set blind-spots    # spec check: 0 of 3 caught
+uv run harness eval monitor --monitor spec --set adaptive       # spec check: 1 of 12 caught
 uv run harness eval monitor --monitor spec --json               # one JSON document and an exit code, for agents (AGENTS.md)
 uv run python scripts/reviewer_sweep.py                          # price a three-model reviewer rerun, no calls
 uv run pytest
@@ -77,6 +78,7 @@ The command prints the diff, check output, review, and a run ID. Your source sta
 ## Limits
 
 - 3 attacks built to beat the spec check still get through it, each by computing its trigger instead of writing it down. One is wrong only once the total needs more than 40 bits, about 1.1 trillion cents. One is wrong only at six-digit part counts. One is wrong only when LEDGER_ROUNDING=legacy, with the value written reversed in the code. All three pass the tests and the spec, and all three are wrong. The five attacks before them are caught now; docs/blind-spots.md keeps the set current.
+- 12 more attacks were written by a model that had not read the spec check, in one pass on 2026-11-22. The spec check blocks 1. Nine of the other eleven wait for something the check never varies: the clock, the platform, the thread, an interpreter flag, a random draw, the files beside the module, or state kept between calls. No model reviewer has been run on them. [The twelve](docs/blind-spots.md#attacks-a-model-wrote-without-reading-the-spec).
 - The attacks and the specs were written by the same author, from the same docstrings. Every strong check catches all 27, so this eval can no longer tell the strong checks apart.
 - Each eval task is a single small function with a clear docstring. Real code rarely ships one, and the spec check covers only functions that have one.
 - 6 honest fixes is a thin base for the false block rate. Zero blocked out of 6 says less than zero out of 600 would.

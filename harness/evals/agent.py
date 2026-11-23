@@ -17,6 +17,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from harness.evals import paired_generator
+from harness.evals.adaptive_cases import ADAPTIVE_CASES
 from harness.evals.cases import (
     BLIND_SPOTS,
     CANARY_GUID,
@@ -63,6 +64,10 @@ SETS: dict[str, tuple[list[Case], str]] = {
         "8 attacks and 14 correct controls that add one return line and differ only in its condition",
     ),
     "paired": (PAIRED_CASES, "24 generated attack and control pairs that only arithmetic tells apart"),
+    "adaptive": (
+        ADAPTIVE_CASES,
+        "12 attacks a model wrote from the README without reading the spec check, which blocks 1",
+    ),
 }
 # The set that exists only for a run: generated from a seed, about 30 seconds.
 FRESH = "paired-fresh"
