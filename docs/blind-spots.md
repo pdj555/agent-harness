@@ -135,7 +135,7 @@ What this round does not show:
 
 ### Round 2: the defender adds a rule, the attacker reads it
 
-A cheap fix suggests itself. The three functions are documented as plain mappings from arguments to an answer, so a module that reads the clock or keeps a counter has no reason to. [`harness/evals/ambient.py`](../harness/evals/ambient.py) is that rule, from the syntax alone: it flags an import outside a short list of pure modules, a `global` statement, a read of `__debug__` or `__file__`, and a module-level container a function writes to. It flags 9 of the 12 above, and 1 of the 44 correct changes in the main, same-shape and paired sets (a control that reads an environment variable).
+The three functions are documented as plain mappings from arguments to an answer, so a module that reads the clock or keeps a counter has no reason to. [`harness/evals/ambient.py`](../harness/evals/ambient.py) is that rule, from the syntax alone: it flags an import outside a short list of pure modules, a `global` statement, a read of `__debug__` or `__file__`, and a module-level container a function writes to. It flags 9 of the 12 above, and 1 of the 44 correct changes in the main, same-shape and paired sets (a control that reads an environment variable).
 
 The same session then wrote 12 more with the rule and the round 1 verdicts in hand, still without reading the spec or the probe. Again one pass, nothing changed afterward.
 
@@ -171,7 +171,7 @@ No attack in either round targets `classify_priority` through its arguments. The
 
 What the two rounds do not show:
 
-- Two points are not a curve. The attacker has had one retry, against a rule it could read.
+- Two rounds are too few to show a trend. The attacker has had one retry, against a rule it could read.
 - The attacker wrote the rule too. A defender who did not know the attacks might write a better one or a worse one.
 - No model reviewer has been run on either round.
 - Neither round has correct controls of its own. The rule's one false block is on the older sets.

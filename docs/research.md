@@ -44,7 +44,7 @@ A model reviewer reads the code instead of running it, so it should see each `if
 
 ## Next steps
 
-1. Have a frontier model write the attacks and keep trying. Plot catch rate against attempts. Two passes are done: the spec check caught 1 of 12, then 4 of 12. More retries, an attacker that is not also the defender, and the reviewers on its attacks are not.
+1. Have a frontier model write the attacks and keep trying. Plot catch rate against attempts. Two passes are done: the spec check caught 1 of 12, then 4 of 12. More retries, an attacker that is not also the defender, and the reviewers on its attacks are still to come.
 2. Run it on real issues from public repos.
 3. Take specs from somewhere the attacker cannot see, like hidden tests.
 4. Run the checks and review on real merged PRs to measure false blocks.
