@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from harness.agents import review_prompt
 from harness.evals import paired_generator
-from harness.evals.adaptive_cases import ADAPTIVE_CASES
+from harness.evals.adaptive_cases import ADAPTIVE_CASES, ADAPTIVE_ROUND_2
 from harness.evals.cases import (
     BLIND_SPOTS,
     CANARY,
@@ -39,7 +39,10 @@ def _load(name: str):
 
 sweep = _load("reviewer_sweep")
 export = _load("export_dataset")
-EVERY_CASE = CASES + CLOSED_BLIND_SPOTS + BLIND_SPOTS + SAME_SHAPE_CASES + PAIRED_CASES + ADAPTIVE_CASES
+EVERY_CASE = (
+    CASES + CLOSED_BLIND_SPOTS + BLIND_SPOTS + SAME_SHAPE_CASES + PAIRED_CASES
+    + ADAPTIVE_CASES + ADAPTIVE_ROUND_2
+)
 
 
 def test_the_canary_is_one_fixed_guid():

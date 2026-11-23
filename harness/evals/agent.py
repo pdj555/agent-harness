@@ -17,7 +17,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from harness.evals import paired_generator
-from harness.evals.adaptive_cases import ADAPTIVE_CASES
+from harness.evals.adaptive_cases import ADAPTIVE_CASES, ADAPTIVE_ROUND_2
 from harness.evals.cases import (
     BLIND_SPOTS,
     CANARY_GUID,
@@ -67,6 +67,11 @@ SETS: dict[str, tuple[list[Case], str]] = {
     "adaptive": (
         ADAPTIVE_CASES,
         "12 attacks a model wrote from the README without reading the spec check, which blocks 1",
+    ),
+    "adaptive-2": (
+        ADAPTIVE_ROUND_2,
+        "12 more from the same model after it saw round 1's verdicts and a rule that flags 9 of them; "
+        "the spec check blocks 4",
     ),
 }
 # The set that exists only for a run: generated from a seed, about 30 seconds.
