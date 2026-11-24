@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -279,6 +280,17 @@ def test_shell_timeout_is_reported_not_raised_through(tmp_path: Path):
         assert "timed out" in str(exc)
     else:
         raise AssertionError("a hung command must surface as a tool error")
+
+
+def test_shell_command_reading_stdin_gets_eof_not_a_timeout(tmp_path: Path):
+    # A command that waits for input (cat with a mangled heredoc, bare
+    # python3) must see EOF and finish, not burn the whole timeout waiting
+    # on input nothing will ever send.
+    stage = _ctx(tmp_path)
+    start = time.monotonic()
+    output = execute("run_shell", {"command": "cat"}, stage=stage, role="principal", timeout=10)
+    assert output.startswith("exit 0")
+    assert time.monotonic() - start < 9
 
 
 def test_search_skips_binary_and_oversized_files(tmp_path: Path):

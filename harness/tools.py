@@ -279,6 +279,11 @@ def _run_shell(stage: Stage, command: str, timeout: int) -> str:
             timeout=timeout,
             env=env,
             check=False,
+            # Commands get an EOF stdin: a command that reads input (cat with a
+            # mangled heredoc, bare python3) must finish immediately with a
+            # visible result, not wait on the harness's own stdin until the
+            # full timeout burns. Nothing in this tool takes interactive input.
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
         raise ToolError(str(exc)) from exc
